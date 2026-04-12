@@ -697,6 +697,30 @@ class IsolationContextManager:
             log.warning(f"Failed to auto-commit in worktree {isolated_path}: {e}")
             return False
 
+    def _clear_workspace_between_rounds(self, workspace_dir: str) -> None:
+        """Remove all non-.git files from workspace after a round's branch switch.
+
+        Backend setup (.codex/, AGENTS.md), scratch (.massgen_scratch/),
+        caches (.cache/), and any other leftover files are deleted so the
+        next round starts with a clean workspace.  Only .git/ is preserved
+        to maintain branch history for cross-agent visibility.
+        """
+        preserved = {".git"}
+        try:
+            for item in os.listdir(workspace_dir):
+                if item in preserved:
+                    continue
+                item_path = os.path.join(workspace_dir, item)
+                if os.path.islink(item_path):
+                    os.unlink(item_path)
+                elif os.path.isfile(item_path):
+                    os.unlink(item_path)
+                elif os.path.isdir(item_path):
+                    shutil.rmtree(item_path)
+            log.info(f"Cleared workspace between rounds: {workspace_dir}")
+        except Exception as e:
+            log.warning(f"Failed to clear workspace between rounds: {e}")
+
     def cleanup_round(self, context_path: str) -> None:
         """Remove worktree but keep the branch (for cross-agent visibility).
 
@@ -749,6 +773,15 @@ class IsolationContextManager:
                     log.info(f"Switched workspace back to {default_branch} (kept branch)")
             except Exception as e:
                 log.warning(f"Failed to switch workspace branch: {e}")
+
+            # Clear all non-.git files from the workspace.
+            # The branch switch removes tracked files, but git-excluded and
+            # untracked files (.codex/, .massgen_scratch/, .cache/, etc.)
+            # survive.  Stale leftovers confuse stateless agents that land in
+            # the same workspace on the next round.  Backend setup (Codex
+            # config, AGENTS.md, etc.) is recreated fresh each round anyway.
+            workspace_dir = isolated_path or context_path
+            self._clear_workspace_between_rounds(workspace_dir)
 
         elif mode == "shadow":
             manager = ctx.get("manager")

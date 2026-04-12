@@ -9,28 +9,230 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Recent Releases
 
-**v0.1.65 (March 18, 2026)** - MassGen Refinery Plugin
-Standalone MCP servers (quality, workflow, media) bring MassGen's checklist-based evaluation and multi-round refinement to Claude Code through the massgen-refinery plugin. Single-agent refinement working; multi-agent experimental.
+**v0.1.75 (April 10, 2026)** - Codex Hooks & Checkpoint WebUI
+Hybrid hook system for Codex backend combining native and MCP capabilities. Checkpoint workflows now auto-launch the WebUI for visual monitoring. Standalone checkpoint MCP server documentation and safety policy integration.
 
-**v0.1.64 (March 16, 2026)** - Gemini CLI Backend
-Gemini CLI as a first-class backend with session persistence, MCP tools, and Docker support. WebSocket streaming for OpenAI Response API. Execution trace analyzer subagent. Copilot Docker mode. Response API duplicate fix.
+**v0.1.74 (April 8, 2026)** - Checkpoint Improvements & Tool Call Fixes
+Major improvements to standalone checkpoint MCP server. Fix for duplicate tool calls in ChatCompletions (including for MiniMax on OpenRouter) and Response API backends. Pre-collab evaluation criteria refinements.
 
-**v0.1.63 (March 13, 2026)** - Ensemble & Contracts
-Subagent ensemble pattern with `disable_injection` and `defer_voting_until_all_answered` as defaults. Round evaluator transformation pressure and success contracts. Lighter refinement for subagents. Killed agent handling.
-
-**v0.1.62 (March 11, 2026)** - MassGen Skill & Viewer
-New general-purpose MassGen Skill with 4 modes (general, evaluate, plan, spec) for use from Claude Code and other AI agents. Session viewer for real-time observation. Backend improvements for Claude Code, Codex, and Copilot. Headless and web quickstart modes.
-
-**v0.1.61 (March 9, 2026)** - Round Evaluator Paradigm
-New round evaluator subagent type that delegates evaluation to specialized evaluator subagents for deeper quality assessment. Major orchestrator refactoring with improved evaluation prompts, task plan injection, and subagent fixes.
-
-**v0.1.60 (March 6, 2026)** - Multimodal Tools, Subagent Enhancements & GPT-5.4
-Rewritten read_media with clearer schema and MediaCallLedgerHook for media call tracking. Subagent enhancements: inherit_spawning_agent_backend, final_answer_strategy, per-agent subagent_agents. GPT-5.4 as default OpenAI flagship. Decomp mode cooperates with checklist workflow. Codex prompt caching calculation fix for pricing accuracy.
-
-**v0.1.59 (March 4, 2026)** - Quality Round Improvements
-Planning improvements with auto-added improvements to task plan and plan review enhancements. Checklist and evaluation enhancements with better eval gen config and Gemini tool name normalization. Subagent behavior adjustments and media generation fixes.
+**v0.1.73 (April 6, 2026)** - Eval Criteria Evolver & Checkpoint Objectives
+New eval criteria evolver subagent that evolves criteria across rounds. Initial draft of checkpoint objective mode for safety planning of irreversible actions. Improved visibility of evaluation criteria.
 
 ---
+
+## [0.1.75] - 2026-04-10
+
+### Added
+- **Codex Native Hooks** ([#1053](https://github.com/massgen/MassGen/pull/1053)): Hybrid hook system for Codex backend combining native hooks and MCP capabilities
+- **Checkpoint WebUI Auto-Launch** ([#1053](https://github.com/massgen/MassGen/pull/1053)): Checkpoint workflows now auto-launch the WebUI with configurable host/port for visual monitoring
+- **Standalone MCP Server Documentation**: Guide for `massgen-checkpoint-mcp` with setup, examples, troubleshooting, and safety policy integration
+
+### Changed
+- **Checkpoint Planning Improvements** ([#1053](https://github.com/massgen/MassGen/pull/1053)): Precondition validation and recovery tree support; user/system prompt and eval criteria pass-through to checkpoint agents
+- **Safety Policy Update**: Updated safety policy for checkpoint based on Claude Code safe mode
+
+### Fixed
+- **WebUI Automation Redirect** ([#1053](https://github.com/massgen/MassGen/pull/1053)): Fixed erroneous setup redirect during automation mode
+
+### Documentation, Configurations and Resources
+- **Updated Coordination Workflow**: Updated `docs/modules/coordination_workflow.md` with hook architecture and delivery rules
+- **Updated Injection Guide**: Updated `docs/modules/injection.md`
+- **Standalone MCP README**: New comprehensive `massgen/mcp_tools/standalone/README.md`
+
+### Technical Details
+- **Major Focus**: Codex Hooks & Checkpoint WebUI — deeper Codex integration and visual checkpoint monitoring
+- **PRs Merged**: [#1053](https://github.com/massgen/MassGen/pull/1053)
+- **Contributors**: @ncrispino, @HenryQi and the MassGen team
+
+---
+
+## [0.1.74] - 2026-04-08
+
+### Changed
+- **Checkpoint MCP Improvements** ([#1050](https://github.com/massgen/MassGen/pull/1050)): Major enhancements to standalone checkpoint MCP server (`massgen/mcp_tools/standalone/checkpoint_mcp_server.py`) — refinements to subprocess execution, isolation, workspace handling, and event relay
+- **Pre-collab Criteria Refinements** ([#1050](https://github.com/massgen/MassGen/pull/1050)): Improvements to evaluation criteria generation in `precollab_utils.py`
+
+### Fixed
+- **Duplicate Tool Calls** ([#1050](https://github.com/massgen/MassGen/pull/1050)): Resolved duplicate tool call issues in `base_with_custom_tool_and_mcp.py`, `chat_completions.py` (including for MiniMax on OpenRouter), and `response.py` backends
+
+### Documentation, Configurations and Resources
+- **Updated Checkpoint Module**: Updated `docs/modules/checkpoint.md` with checkpoint MCP improvements
+- **OpenSpec Updates**: Updated `openspec/changes/update-checkpoint-coordination-objectives/` design, spec, and tasks
+
+### Technical Details
+- **Major Focus**: Checkpoint MCP improvements and stability fixes
+- **PRs Merged**: [#1050](https://github.com/massgen/MassGen/pull/1050)
+- **Contributors**: @ncrispino, @HenryQi and the MassGen team
+
+---
+
+## [0.1.73] - 2026-04-06
+
+### Added
+- **Eval Criteria Evolver Subagent** ([#1047](https://github.com/massgen/MassGen/pull/1047)): New subagent type that evolves evaluation criteria across rounds — sharper, more opinionated criteria as the run progresses
+- **Checkpoint Objective Mode (Initial Draft)** ([#1047](https://github.com/massgen/MassGen/pull/1047)): Initial draft of checkpoint MCP with `objective` mode for safety planning of irreversible actions (deletions, deployments, financial operations); returns ordered plan with per-step constraints and recursive recovery trees
+
+### Changed
+- **Improved Eval Criteria Visibility**: See what criteria agents are working against, more clearly
+- **Trace Analyzer Improvements**: Refinements to trace analyzer subagent behavior
+
+### Fixed
+- **Evolver Fixes**: Stability fixes for the criteria evolver subagent
+
+### Documentation, Configurations and Resources
+- **Updated Checkpoint Module**: Updated `docs/modules/checkpoint.md` with objective mode documentation
+- **OpenSpec Change**: New `openspec/changes/update-checkpoint-coordination-objectives/` proposal and spec for objective mode
+
+### Technical Details
+- **Major Focus**: Eval Criteria Evolver & Checkpoint Objectives — self-improving criteria and safety planning
+- **PRs Merged**: [#1047](https://github.com/massgen/MassGen/pull/1047)
+- **Contributors**: @ncrispino, @HenryQi and the MassGen team
+
+---
+
+## [0.1.72] - 2026-04-03
+
+### Changed
+- **Grok Backend Update** ([#1044](https://github.com/massgen/MassGen/pull/1044)): Updated Grok backend with latest improvements
+
+### Added
+- **Circuit Breaker Phase 2** ([#1038](https://github.com/massgen/MassGen/pull/1038)): LLM API circuit breaker extended to ChatCompletions, Response API, and Gemini backends (was Claude-only in v0.1.68); Gemini also handles 503 errors
+- **Config Plumbing Smoke Tests** ([#1038](https://github.com/massgen/MassGen/pull/1038)): Smoke tests verify circuit breaker wiring and API call timing for all backends
+
+### Fixed
+- **Response API Timing** ([#1038](https://github.com/massgen/MassGen/pull/1038)): Added start/end API call timing to ResponseBackend non-MCP path
+
+### Technical Details
+- **Major Focus**: Circuit Breaker Phase 2 — rate limit protection across all major backends
+- **PRs Merged**: [#1038](https://github.com/massgen/MassGen/pull/1038), [#1044](https://github.com/massgen/MassGen/pull/1044)
+- **Contributors**: @amabito, @HenryQi, @ncrispino and the MassGen team
+
+---
+
+## [0.1.71] - 2026-04-01
+
+### Changed
+- **Better Evaluation Criteria**: Improved criteria generation for higher-quality, more opinionated output
+- **System Prompt Tuning**: Adjusted system prompts for better agent performance across coordination rounds
+
+### Fixed
+- **Final Injection Fix**: Corrected injection behavior at the final stage
+- **Eval Criteria GPT Pre-Collab Fix**: Resolved evaluation criteria issues with GPT models during pre-collaboration phase
+- **Execution Trace Analyzer Launch Fix**: Trace analyzer now starts correctly
+- **Trace Memory Fix**: Corrected memory handling in execution traces
+- **Auto Round Memory Fix**: Fixed automatic round handling for memory
+
+### Documentation, Configurations and Resources
+- **Updated Log Analyzer Skill**: Updated `massgen/skills/massgen-log-analyzer/SKILL.md`
+- **Updated Execution Trace Analyzer**: Updated `massgen/subagent_types/execution_trace_analyzer/SUBAGENT.md`
+
+### Technical Details
+- **Major Focus**: Stability and polish for v0.1.70's evaluation criteria system
+- **Contributors**: @ncrispino, @HenryQi and the MassGen team
+
+---
+
+## [0.1.70] - 2026-03-30
+
+### Added
+- **Evaluation Criteria Redesign** ([#1035](https://github.com/massgen/MassGen/pull/1035)): Three-tier categorization (`primary`, `standard`, `stretch`) with anti-pattern definitions per criterion and aspiration statements
+- **Improved Checklist-Gated Evaluation** ([#1035](https://github.com/massgen/MassGen/pull/1035)): Tighter iterative submission cycles — improved scoring, gap analysis, and improvement proposals drive more meaningful iteration before final voting
+- **Fast Iteration Mode** ([#1035](https://github.com/massgen/MassGen/pull/1035)): Streamlined multi-round submission phases via `fast_iteration.yaml` config
+- **WebUI Review Modal** ([#1035](https://github.com/massgen/MassGen/pull/1035)): Approve and comment on outputs directly in the browser when working in git
+- **Background Trace Analysis** ([#1035](https://github.com/massgen/MassGen/pull/1035)): Execution trace analyzer starts automatically from round 2
+
+### Changed
+- **Improved Evaluation Criteria Generation** ([#1035](https://github.com/massgen/MassGen/pull/1035)): Criteria generation now produces opinionated, task-specific criteria with aspiration statements
+- **Enhanced Workspace Cleanup** ([#1035](https://github.com/massgen/MassGen/pull/1035)): Improved isolation between rounds
+- **Refined Per-Round Token Tracking** ([#1035](https://github.com/massgen/MassGen/pull/1035)): More accurate per-round token usage tracking
+
+### Fixed
+- **Subagent Fixes** ([#1035](https://github.com/massgen/MassGen/pull/1035)): General fixes for subagent behavior and path issues
+
+### Documentation, Configurations and Resources
+- **Updated Coordination Workflow**: Updated `docs/modules/coordination_workflow.md` with checklist-gated workflow documentation
+- **Updated Subagents Guide**: Updated `docs/modules/subagents.md` with background trace analysis
+- **New Injection Guide**: New `docs/modules/injection.md` for injection documentation
+- **Updated Concepts Guide**: Updated `docs/source/user_guide/concepts.rst` with evaluation criteria redesign
+- **Updated YAML Schema**: Updated `docs/source/reference/yaml_schema.rst` with new configuration options
+- **Updated MassGen Skill**: Updated `massgen/skills/massgen/SKILL.md` with opinionated criteria format
+- **Updated Criteria Guide**: Updated `massgen/skills/massgen/references/criteria_guide.md` with three-tier system
+- **New Config**: New `massgen/configs/features/fast_iteration.yaml` for fast iteration mode
+
+### Technical Details
+- **Major Focus**: Evaluation Criteria Redesign — three-tier categorization with anti-patterns and checklist-gated workflow
+- **PRs Merged**: [#1035](https://github.com/massgen/MassGen/pull/1035)
+- **Contributors**: @ncrispino, @HenryQi and the MassGen team
+
+## [0.1.69] - 2026-03-27
+
+### Added
+- **WebUI Automation Auto-Start** ([#1032](https://github.com/massgen/MassGen/pull/1032)): Automation mode now auto-starts coordination runs without browser interaction — open the URL at any point to monitor progress, even mid-run
+- **MassGen Skill Redesign** ([#1032](https://github.com/massgen/MassGen/pull/1032)): Increased usability and integration with the WebUI; skill now launches the WebUI for live session tracking
+- **Quickstart Wizard Rework** ([#1032](https://github.com/massgen/MassGen/pull/1032)): New WelcomeStep, SkillsStep, ApiKeyStep redesign, DockerStep expansion, and SetupModeStep restructure for smoother onboarding
+- **Workspace Browser Expansion** ([#1032](https://github.com/massgen/MassGen/pull/1032)): WorkspaceModal and improved workspace connection
+
+### Changed
+- **Flexible Evaluation Criteria Fields** ([#1032](https://github.com/massgen/MassGen/pull/1032)): Criteria JSON now accepts `description` or `name` as alternatives to `text` field for more flexible criterion authoring
+- **Automatic Config Resolution** ([#1032](https://github.com/massgen/MassGen/pull/1032)): Automation mode auto-resolves config when none is specified (same as CLI without `--web`)
+
+### Fixed
+- **Web Automation Skill Lifecycle** ([#1032](https://github.com/massgen/MassGen/pull/1032)): Web automation now correctly auto-ends when a skill completes
+- **WebUI Version Default** ([#1032](https://github.com/massgen/MassGen/pull/1032)): Fixed WebUI defaulting to v2
+
+### Documentation, Configurations and Resources
+- **Updated WebUI Guide**: Updated `docs/source/user_guide/webui.rst` with automation mode flags, auto-start behavior, and interactive examples
+- **MassGen Skill**: Updated `massgen/skills/massgen/SKILL.md` with WebUI wrapper and monitoring instructions
+- **Advanced Workflows**: Updated `massgen/skills/massgen/references/advanced_workflows.md` with skill WebUI integration patterns
+- **Config Setup**: Updated `massgen/skills/massgen/references/config_setup.md` with updated quickstart guidance
+
+### Technical Details
+- **Major Focus**: WebUI Automation & Improved Skill — seamless integration between the skill workflow and WebUI monitoring
+- **PRs Merged**: [#1032](https://github.com/massgen/MassGen/pull/1032)
+- **Contributors**: @ncrispino, @HenryQi and the MassGen team
+
+## [0.1.68] - 2026-03-25
+
+### Added
+- **Checkpoint Coordination Mode** ([#1028](https://github.com/massgen/MassGen/pull/1028)): New delegator pattern — main agent plans solo then calls `checkpoint()` to delegate execution to fresh agent instances with clean backends and cloned workspaces
+- **WebUI Checkpoint Support** ([#1028](https://github.com/massgen/MassGen/pull/1028)): Checkpoint mode display integrated into the modernized WebUI
+- **LLM API Circuit Breaker** ([#1024](https://github.com/massgen/MassGen/pull/1024)): Automatic 429 rate limit handling with circuit breaker pattern for Claude backend
+
+### Fixed
+- **LiteLLM Supply Chain Fix** ([#1025](https://github.com/massgen/MassGen/pull/1025)): Pinned litellm<=1.82.6 and committed uv.lock to prevent dependency attacks
+
+### Technical Details
+- **Major Focus**: Checkpoint Mode — delegator pattern for multi-agent coordination
+- **PRs Merged**: [#1028](https://github.com/massgen/MassGen/pull/1028), [#1025](https://github.com/massgen/MassGen/pull/1025), [#1024](https://github.com/massgen/MassGen/pull/1024)
+- **Contributors**: @ncrispino, @amabito, @HenryQi and the MassGen team
+
+## [0.1.67] - 2026-03-23
+
+### Added
+- **Modernized WebUI** ([#1016](https://github.com/massgen/MassGen/pull/1016)): Complete UI redesign with inline final answers, keyboard shortcuts, and Zustand state management (message, mode, tile, agent, theme stores)
+- **RoundBudgetGuardHook** ([#1013](https://github.com/massgen/MassGen/pull/1013)): Per-round cost enforcement with configurable warning thresholds (50%, 75%, 90%) and graceful termination on budget overrun
+- **Unified Pre-Collab Phases** ([#1016](https://github.com/massgen/MassGen/pull/1016)): Persona generation, evaluation criteria, and prompt improvement now run in parallel with unified TUI batch display
+- **Regression Guard** ([#1016](https://github.com/massgen/MassGen/pull/1016)): Blind A/B verification subagent before submitting revisions to catch silent regressions
+
+### Technical Details
+- **Major Focus**: Modernized WebUI and quality improvements
+- **PRs Merged**: [#1016](https://github.com/massgen/MassGen/pull/1016), [#1013](https://github.com/massgen/MassGen/pull/1013)
+- **Contributors**: @ncrispino, @amabito, @HenryQi and the MassGen team
+
+## [0.1.66] - 2026-03-20
+
+### Added
+- **Step Mode** ([#1011](https://github.com/massgen/MassGen/pull/1011)): New `--step` CLI flag runs a single agent for one iteration then exits, loading/writing state from a session directory — building block for external orchestrators like massgen-refinery
+- **Console Text Sanitization** ([#1010](https://github.com/massgen/MassGen/pull/1010)): Reusable `sanitize_console_text` utility for safe TUI and logger rendering
+
+### Fixed
+- **Codex Windows UTF-8** ([#1010](https://github.com/massgen/MassGen/pull/1010)): Ensure UTF-8 encoding when writing files in Codex backend
+- **TUI Event Pipeline** ([#1010](https://github.com/massgen/MassGen/pull/1010)): Console safety features for logger and text sanitization in event pipeline
+
+### Technical Details
+- **Major Focus**: Step Mode — building block for external orchestrators
+- **PRs Merged**: [#1011](https://github.com/massgen/MassGen/pull/1011), [#1010](https://github.com/massgen/MassGen/pull/1010)
+- **Contributors**: @ncrispino, @praneeth999, @HenryQi and the MassGen team
 
 ## [0.1.65] - 2026-03-18
 

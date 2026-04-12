@@ -20,7 +20,7 @@ MassGen is asynchronous: agents are not lockstep-synchronized and can sit in dif
 | `massgen/coordination_tracker.py` | Source of truth for answer labels, rounds, votes, restart events, status snapshots |
 | `massgen/backend/*` | Provider/runtime integration (tool transport, hooks, streaming chunks, MCP/custom tool execution) |
 | `massgen/mcp_tools/hooks.py` | Injection, reminder, and per-round timeout hook primitives |
-| `massgen/mcp_tools/checklist_tools_server.py` | Checklist policy tooling (`submit_checklist`, `propose_improvements`) |
+| `massgen/mcp_tools/checklist_tools_server.py` | Checklist policy tooling (`submit_checklist`, `draft_approach`) |
 
 ## Key Entry Points
 
@@ -50,14 +50,14 @@ Use this as a mental model for how one real turn flows:
    - terminal branch: submit `vote` (or `stop` in decomposition mode)
 6. Optional checklist-gated mode:
    - agent runs `submit_checklist`
-   - if gaps exist, it may call `propose_improvements` and then `new_answer`
+   - if gaps exist, it may call `draft_approach` and then `new_answer`
    - in voting mode, accepted terminal verdicts move to `vote`
    - in decomposition mode, accepted terminal verdicts move to `stop`, and the checklist scores the agent's current subtask work rather than ranking all peers as competing final answers
    - when decomposition provides per-agent execution criteria, those criteria are routed to that agent's prompt and checklist tool state; otherwise runtime decomposition defaults are synthesized from the owned subtask
    - when `coordination.round_evaluator_before_checklist: true`, the parent is
      guided to run one blocking `round_evaluator` subagent before round 2+ and
      then use that packet as the diagnostic basis for `submit_checklist` /
-     `propose_improvements`
+     `draft_approach`
    - when `coordination.orchestrator_managed_round_evaluator: true` is also
      enabled, the orchestrator owns that launch instead
 7. Restart and/or mid-stream injection delivers fresh peer updates.
@@ -336,7 +336,8 @@ When new peer work exists, delivery path is selected by backend capability:
 |---|---|
 | `set_general_hook_manager` | General hook manager (`MidStreamInjectionHook`) |
 | `supports_native_hooks()` | Native backend hook adapter (Claude Code path) |
-| `supports_mcp_server_hooks()` | MCP server-level hook file IPC (Codex path) |
+| `supports_native_hooks()` + `supports_mcp_server_hooks()` | Hybrid native-hook + MCP/file IPC delivery (Codex path) |
+| `supports_mcp_server_hooks()` | MCP server-level hook file IPC |
 | none of the above | Defensive hookless fallback via enforcement-message injection/restart |
 
 ### Delivery rules
@@ -437,18 +438,26 @@ Enforcement loop behavior:
 Checklist mode is policy, not the core coordination primitive:
 
 - enabled with `voting_sensitivity: checklist_gated`
+- **fast iteration mode** (`fast_iteration_mode: true`): streamlines the post-candidate phases so agents submit faster and iterate across rounds instead of over-polishing within one round. When enabled:
+  - Phases 1-3 (evidence gathering, scoring, executing improvements) remain at full depth
+  - Phase 4 (spawning subagents for plateaued criteria) is skipped — the next round handles plateaus
+  - Phase 5 is streamlined: one quick verification pass, then submit with a "Known Gaps" note listing what the next round should address. Verification replay and essential files manifest are preserved (they help next rounds start faster)
+  - The Substantiveness Test is replaced with a Quick Impact Check ("is this a real gap fix, or polish the next round will catch?")
+  - The Confidence Assessment still targets excellence, but frames it as achieved across rounds, not within one
+  - "Obviously and substantially better" language is removed — agents submit when they've fixed real gaps
+  - Also threads to pre-collab subagent runs (persona generation, evaluation criteria, decomposition, prompt improvement)
 - default behavior blocks checklist before first answer unless `checklist_first_answer: true`
 - when `defer_peer_updates_until_restart: true`, peer updates wait for restart unless `allow_midstream_peer_updates_before_checklist_submit` keeps the pre-submit window open
 - common flow:
   1. implement + verify
   2. if `round_evaluator_before_checklist: true` and this is round 2+, launch one blocking `round_evaluator` before checklist submission
   3. if the evaluator returns valid structured `next_tasks`, those tasks are auto-injected into the parent plan
-  4. in that task-driven branch, the parent uses `get_task_plan` as the source of truth, may open the evaluator artifact paths for rationale, and does not call `submit_checklist` or `propose_improvements`
+  4. in that task-driven branch, the parent uses `get_task_plan` as the source of truth, may open the evaluator artifact paths for rationale, and does not call `submit_checklist` or `draft_approach`
   5. in that task-driven branch, the parent implements, verifies, and submits via `new_answer` directly; for pure text artifacts, the final artifact body goes straight into `new_answer.content`
   6. if structured `next_tasks` are missing or invalid, the parent uses the returned critique/spec packet as the diagnostic basis for checklist submission
   7. in that degraded fallback branch, the parent references the surfaced `critique_packet.md` path directly as `report_path` and calls `submit_checklist`
   8. if checklist returns `status=validation_error`, fix payload/report and call `submit_checklist` again
-  9. if accepted iterate verdict, call `propose_improvements`
+  9. if accepted iterate verdict, call `draft_approach`
   10. implement plan (use `improvement_spec` from the evaluator packet as richer guidance when present)
   11. write/update `memory/short_term/verification_latest.md` using the replay contract sections
       `Verification Contract`, `Inputs and Artifacts`, `Replay Steps`, `Latest Verification Result`,
@@ -468,7 +477,7 @@ Checklist mode is policy, not the core coordination primitive:
     - `execution.mode: "delegate"` means the task is a good subagent target when the parent can delegate to a matching specialized subagent
     - the evaluator should base delegation hints on the parent-facing `PARENT DELEGATION OPTIONS` context, not on whether the evaluator child run itself can spawn subagents
     - if the task brief says no parent-specialized subagents are available, task handoff stays inline-only and should not offer delegate execution hints
-  - the round evaluator never calls `submit_checklist`, `propose_improvements`, or `vote` itself
+  - the round evaluator never calls `submit_checklist`, `draft_approach`, or `vote` itself
   - when valid structured `next_tasks` are present, the evaluator result header points to exact `critique_packet.md` and `next_tasks.json` paths and the parent treats those files as reference-only, not something to rewrite into a second report
   - the parent should not run a second full self-evaluation pass after delegation; only close explicit `evidence_gaps` if grounded checklist submission still needs more facts
   - generated child YAML for `round_evaluator` always mounts the shared temp-workspace root read-only
@@ -481,7 +490,7 @@ Checklist mode is policy, not the core coordination primitive:
 - scoring scope:
   - voting mode: when multiple answers are in context, `submit_checklist` expects per-agent scores across the candidate answers
   - decomposition mode: `submit_checklist` evaluates the agent's current owned work against the latest peer context, using flat criterion scores for that current work
-- `propose_improvements` is only valid after the latest accepted iterate checklist result
+- `draft_approach` is only valid after the latest accepted iterate checklist result
 - after injection updates arrive post-checklist, one bounded recheck is allowed:
   - preferred: score only newly injected labels (delta recheck)
   - also allowed: score all latest context labels

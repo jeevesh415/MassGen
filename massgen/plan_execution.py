@@ -789,11 +789,12 @@ Requirements use the Easy Approach to Requirements Syntax:
 - **WHILE** <state> **THE SYSTEM SHALL** <behavior> (state-driven)
 - **IF** <condition> **THEN THE SYSTEM SHALL** <response> (unwanted behavior)
 
-### Verification
-After implementing, verify each requirement:
-1. Check the verification criteria in the spec
-2. Run/test the implementation against those criteria
+### Verification (Grouped)
+After implementing requirements, verify in logical groups:
+1. Check the verification criteria in the spec for all implemented requirements
+2. Run/test the full implementation against those criteria
 3. Document which requirements are satisfied in your changedoc
+4. If verification reveals issues, fix them and re-verify (1-2 loops max)
 
 ### Spec Traceability in Changedoc
 Tie every decision in your changedoc to a requirement ID:

@@ -178,7 +178,7 @@ class RoundTokenUsage:
 
     # Context window usage
     context_window_size: int = 0  # Model's max context
-    context_usage_pct: float = 0.0  # input_tokens / context_window_size * 100
+    context_usage_pct: float = 0.0  # round input_tokens / context_window_size * 100 (cost proxy; can exceed 100% on multi-call backends)
 
     # Tool usage in this round
     tool_calls_count: int = 0

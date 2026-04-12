@@ -243,6 +243,26 @@ def test_on_subagent_complete_queues_pending_results(mock_orchestrator):
     assert orchestrator._pending_subagent_results[agent_id][0][1] == result
 
 
+def test_on_subagent_complete_schedules_background_wait_interrupt(mock_orchestrator):
+    orchestrator = mock_orchestrator(num_agents=1)
+    agent_id = "agent_a"
+    result = SubagentResult(
+        subagent_id="sub-1",
+        status="completed",
+        success=True,
+        answer="done",
+        workspace_path="/tmp/sub-1",
+        execution_time_seconds=1.2,
+    )
+    scheduled: list[tuple[str, str]] = []
+
+    orchestrator._schedule_background_wait_interrupt_for_agent = lambda aid, trigger="background_subagent_complete": scheduled.append((aid, trigger))
+
+    orchestrator._on_subagent_complete(agent_id, "sub-1", result)
+
+    assert scheduled == [(agent_id, "background_subagent_complete")]
+
+
 def test_get_pending_subagent_results_polls_mcp_and_deduplicates(mock_orchestrator):
     orchestrator = mock_orchestrator(num_agents=1)
     agent_id = "agent_a"
@@ -254,7 +274,8 @@ def test_get_pending_subagent_results_polls_mcp_and_deduplicates(mock_orchestrat
 
         def call_tool(self, name, args):
             self.calls.append((name, args))
-            if name == f"mcp__subagent_{agent_id}__list_subagents":
+            expected_server = orchestrator._subagent_server_name(agent_id)
+            if name == f"mcp__{expected_server}__list_subagents":
                 return {
                     "success": True,
                     "subagents": [
@@ -285,7 +306,8 @@ def test_get_pending_subagent_results_polls_mcp_and_deduplicates(mock_orchestrat
     assert first[0][0] == "sub-complete"
     assert first[0][1].status == "completed"
     assert second == []
-    assert all(name == f"mcp__subagent_{agent_id}__list_subagents" for name, _ in agent.mcp_client.calls)
+    expected_server = orchestrator._subagent_server_name(agent_id)
+    assert all(name == f"mcp__{expected_server}__list_subagents" for name, _ in agent.mcp_client.calls)
 
 
 def test_get_pending_subagent_results_uses_backend_mcp_executor(mock_orchestrator):
@@ -330,9 +352,10 @@ def test_get_pending_subagent_results_uses_backend_mcp_executor(mock_orchestrato
     assert first[0][0] == "sub-complete"
     assert first[0][1].status == "completed"
     assert second == []
+    expected_server = orchestrator._subagent_server_name(agent_id)
     assert captured_calls == [
-        (f"mcp__subagent_{agent_id}__list_subagents", {}),
-        (f"mcp__subagent_{agent_id}__list_subagents", {}),
+        (f"mcp__{expected_server}__list_subagents", {}),
+        (f"mcp__{expected_server}__list_subagents", {}),
     ]
 
 
@@ -358,9 +381,10 @@ def test_send_runtime_message_to_subagent_uses_backend_mcp_executor(mock_orchest
     )
 
     assert delivered is True
+    expected_server = orchestrator._subagent_server_name(agent_id)
     assert captured_calls == [
         (
-            f"mcp__subagent_{agent_id}__send_message_to_subagent",
+            f"mcp__{expected_server}__send_message_to_subagent",
             {
                 "subagent_id": "sub-1",
                 "message": "focus on tests",
@@ -391,9 +415,10 @@ def test_continue_subagent_uses_backend_mcp_executor(mock_orchestrator):
     )
 
     assert continued is True
+    expected_server = orchestrator._subagent_server_name(agent_id)
     assert captured_calls == [
         (
-            f"mcp__subagent_{agent_id}__continue_subagent",
+            f"mcp__{expected_server}__continue_subagent",
             {
                 "subagent_id": "sub-1",
                 "message": "Continue and add citations.",

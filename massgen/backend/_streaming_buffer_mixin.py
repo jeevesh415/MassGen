@@ -107,6 +107,7 @@ class StreamingBufferMixin:
                 if hasattr(self, "config") and isinstance(self.config, dict):
                     model = self.config.get("model", "unknown")
                 self._init_execution_trace(agent_id=agent_id, model=model)
+                self._inject_short_term_memories_into_trace()
 
     def _finalize_streaming_buffer(self, agent_id: str | None = None) -> None:
         """Finalize and optionally save the streaming buffer.
@@ -400,3 +401,45 @@ class StreamingBufferMixin:
             The ExecutionTraceWriter instance, or None if not initialized
         """
         return self._execution_trace
+
+    def _add_injected_context_to_trace(self, name: str, content: str) -> None:
+        """Add an injected context entry to the execution trace.
+
+        Args:
+            name: The memory file stem (e.g., "trace_analysis_round_2")
+            content: The full file content
+        """
+        if self._execution_trace:
+            self._execution_trace.add_injected_context(name=name, content=content)
+
+    def _inject_short_term_memories_into_trace(self) -> None:
+        """Scan memory/short_term/ in the agent workspace and inject .md files as INJECTED_CONTEXT.
+
+        Called at the start of each new answer/round so that trace analysis files
+        (and other short-term memories written by the orchestrator between rounds)
+        are visible in the execution trace for that round.
+        """
+        fs_mgr = getattr(self, "filesystem_manager", None)
+        if fs_mgr is None:
+            logger.debug("[StreamingBuffer] _inject_short_term_memories: no filesystem_manager, skipping")
+            return
+        cwd = getattr(fs_mgr, "cwd", None)
+        if cwd is None:
+            logger.debug("[StreamingBuffer] _inject_short_term_memories: filesystem_manager.cwd is None, skipping")
+            return
+        short_term_dir = Path(cwd) / "memory" / "short_term"
+        logger.info(f"[StreamingBuffer] _inject_short_term_memories: scanning {short_term_dir} (exists={short_term_dir.exists()})")
+        if not short_term_dir.exists():
+            return
+        injected = 0
+        for mem_file in sorted(short_term_dir.glob("*.md")):
+            try:
+                self._add_injected_context_to_trace(
+                    name=mem_file.stem,
+                    content=mem_file.read_text(encoding="utf-8"),
+                )
+                injected += 1
+            except OSError as e:
+                logger.warning(f"[StreamingBuffer] Could not read memory file {mem_file}: {e}")
+        if injected:
+            logger.info(f"[StreamingBuffer] _inject_short_term_memories: injected {injected} file(s) into trace")

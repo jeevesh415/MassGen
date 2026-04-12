@@ -35,6 +35,11 @@ from .base_with_custom_tool_and_mcp import (
     ToolExecutionConfig,
     UploadFileError,
 )
+from .llm_circuit_breaker import (
+    CircuitBreakerOpenError,
+    LLMCircuitBreaker,
+    LLMCircuitBreakerConfig,
+)
 
 
 class _WSEvent:
@@ -84,7 +89,12 @@ class _WSEvent:
 class ResponseBackend(StreamingBufferMixin, CustomToolAndMCPBackend):
     """Backend using the standard Response API format with multimodal support."""
 
+    _XAI_X_SEARCH_CUSTOM_TOOL_CALL_ID_PREFIX = "xs_"
+    _XAI_X_SEARCH_CUSTOM_TOOL_NAME_PREFIX = "x_"
+
     def __init__(self, api_key: str | None = None, **kwargs):
+        # Extract circuit breaker config before passing to super
+        cb_config = self._build_circuit_breaker_config(kwargs)
         super().__init__(api_key, **kwargs)
         self.api_key = api_key or os.getenv("OPENAI_API_KEY")
         self.formatter = ResponseFormatter()
@@ -106,7 +116,40 @@ class ResponseBackend(StreamingBufferMixin, CustomToolAndMCPBackend):
         self._vector_store_ids: list[str] = []
         self._uploaded_file_ids: list[str] = []
 
+        # xAI currently surfaces some builtin tools as custom_tool_call items.
+        # Keep minimal per-stream state so we can label midstream input chunks.
+        self._xai_custom_tool_names_by_call_id: dict[str, str] = {}
+        self._xai_custom_tool_inputs_by_call_id: dict[str, str] = {}
+        self._xai_custom_tool_calls_reported: set[str] = set()
+
         # Note: _streaming_buffer is provided by StreamingBufferMixin
+        self.circuit_breaker = LLMCircuitBreaker(
+            config=cb_config,
+            backend_name="response_api",
+        )
+
+    @staticmethod
+    def _build_circuit_breaker_config(
+        kwargs: dict[str, Any],
+    ) -> LLMCircuitBreakerConfig:
+        """Extract circuit breaker settings from kwargs and build config."""
+        cb_kwargs: dict[str, Any] = {}
+        prefix = "llm_circuit_breaker_"
+        keys_to_pop: list[str] = []
+        for key in kwargs:
+            if key.startswith(prefix):
+                param = key[len(prefix) :]
+                cb_kwargs[param] = kwargs[key]
+                keys_to_pop.append(key)
+        for key in keys_to_pop:
+            kwargs.pop(key)
+        return LLMCircuitBreakerConfig(**cb_kwargs)
+
+    def _reset_provider_tool_state(self) -> None:
+        """Clear per-stream provider tool state."""
+        self._xai_custom_tool_names_by_call_id.clear()
+        self._xai_custom_tool_inputs_by_call_id.clear()
+        self._xai_custom_tool_calls_reported.clear()
 
     def supports_upload_files(self) -> bool:
         return True
@@ -123,6 +166,7 @@ class ResponseBackend(StreamingBufferMixin, CustomToolAndMCPBackend):
         """
         # Clear streaming buffer at start of new stream (mixin respects _compression_retry)
         self._clear_streaming_buffer(**kwargs)
+        self._reset_provider_tool_state()
         agent_id = kwargs.get("agent_id", self.agent_id)
 
         ws_transport = None
@@ -244,12 +288,20 @@ class ResponseBackend(StreamingBufferMixin, CustomToolAndMCPBackend):
         _compression_retry = kwargs.get("_compression_retry", False)
         ws_transport = kwargs.get("_ws_transport")
 
+        # Start API call timing for non-MCP path
+        model = api_params.get("model", "unknown")
+        self.start_api_call_timing(model)
+
         try:
             stream = await self._create_response_stream(
                 api_params,
                 client,
                 ws_transport,
+                agent_id=agent_id,
             )
+        except CircuitBreakerOpenError:
+            self.end_api_call_timing(success=False, error="circuit_breaker_open")
+            raise
         except Exception as e:
             # Debug: Catch input[N].content format errors and print the problematic message
             error_str = str(e)
@@ -271,6 +323,7 @@ class ResponseBackend(StreamingBufferMixin, CustomToolAndMCPBackend):
             from ._context_errors import is_context_length_error
 
             if is_context_length_error(e) and not _compression_retry:
+                self.end_api_call_timing(success=False, error=str(e))
                 logger.warning(
                     f"[{self.get_provider_name()}] Context length exceeded, " f"attempting compression recovery...",
                 )
@@ -307,6 +360,7 @@ class ResponseBackend(StreamingBufferMixin, CustomToolAndMCPBackend):
                     api_params,
                     client,
                     ws_transport,
+                    agent_id=agent_id,
                 )
 
                 # Notify user that compression succeeded
@@ -323,10 +377,128 @@ class ResponseBackend(StreamingBufferMixin, CustomToolAndMCPBackend):
                     f"[{self.get_provider_name()}] Compression recovery successful via summarization " f"({input_count} items)",
                 )
             else:
+                self.end_api_call_timing(success=False, error=str(e))
                 raise
 
         async for chunk in self._process_stream(stream, all_params, agent_id):
             yield chunk
+
+    @staticmethod
+    def _get_response_item_field(item: Any, field: str, default: Any = None) -> Any:
+        """Read a field from either an SDK object or a plain dict."""
+        if isinstance(item, dict):
+            return item.get(field, default)
+        return getattr(item, field, default)
+
+    @staticmethod
+    def _parse_response_item_json(value: Any) -> dict[str, Any]:
+        """Parse a JSON-ish input payload from a provider output item."""
+        if isinstance(value, dict):
+            return value
+        if isinstance(value, str) and value:
+            try:
+                parsed = json.loads(value)
+            except json.JSONDecodeError:
+                return {}
+            return parsed if isinstance(parsed, dict) else {}
+        return {}
+
+    def _is_xai_x_search_custom_tool_item(self, item: Any) -> bool:
+        """Return True when xAI surfaces X search as provider custom_tool_call items.
+
+        xAI's Responses API currently emits X search work as ``custom_tool_call``
+        items (for example ``x_keyword_search`` and ``x_thread_fetch``) rather
+        than the ``response.x_search_call.*`` events we initially expected.
+        """
+        if self.get_provider_name() != "Grok":
+            return False
+        if self._get_response_item_field(item, "type") != "custom_tool_call":
+            return False
+        name = self._get_response_item_field(item, "name", "") or ""
+        call_id = self._get_response_item_field(item, "call_id", "") or ""
+        return call_id.startswith(self._XAI_X_SEARCH_CUSTOM_TOOL_CALL_ID_PREFIX) or name.startswith(
+            self._XAI_X_SEARCH_CUSTOM_TOOL_NAME_PREFIX,
+        )
+
+    def _record_xai_custom_tool_start(self, item: Any) -> None:
+        """Track xAI custom tool call metadata for subsequent input delta events."""
+        if not self._is_xai_x_search_custom_tool_item(item):
+            return
+        call_id = self._get_response_item_field(item, "call_id", "") or ""
+        name = self._get_response_item_field(item, "name", "") or ""
+        if call_id and name:
+            self._xai_custom_tool_names_by_call_id[call_id] = name
+
+    def _format_xai_x_search_custom_tool_input_chunk(
+        self,
+        call_id: str,
+        payload: dict[str, Any],
+        agent_id: str | None,
+    ) -> TextStreamChunk | None:
+        """Format a midstream xAI custom tool input payload when enough is known."""
+        tool_name = self._xai_custom_tool_names_by_call_id.get(call_id, "")
+        if not tool_name:
+            if payload.get("post_id"):
+                tool_name = "x_thread_fetch"
+            elif payload.get("query"):
+                tool_name = "x_search"
+            else:
+                return None
+
+        if call_id in self._xai_custom_tool_calls_reported:
+            return None
+
+        if not (payload.get("query") or payload.get("post_id")):
+            return None
+
+        self._xai_custom_tool_calls_reported.add(call_id)
+        return self._format_xai_x_search_custom_tool_chunk(
+            {
+                "name": tool_name,
+                "input": payload,
+            },
+            agent_id,
+        )
+
+    def _format_xai_x_search_custom_tool_chunk(
+        self,
+        item: Any,
+        agent_id: str | None,
+        *,
+        strip_newlines: bool = False,
+    ) -> TextStreamChunk:
+        """Format xAI provider custom tool items into user-visible stream chunks."""
+        tool_name = self._get_response_item_field(item, "name", "x_search")
+        payload = self._parse_response_item_json(self._get_response_item_field(item, "input"))
+        query = payload.get("query", "")
+        post_id = payload.get("post_id", "")
+
+        if tool_name in {"x_keyword_search", "x_semantic_search"}:
+            if query:
+                log_stream_chunk("backend.response", "x_search_query", query, agent_id)
+                content = f"\n🔎 [X Search Query] '{query}' via {tool_name}\n"
+            else:
+                log_stream_chunk("backend.response", "x_search", f"Running {tool_name}", agent_id)
+                content = f"\n🔎 [Provider Tool: X Search] Running {tool_name}...\n"
+        elif tool_name in {"x_thread_fetch", "x_post_fetch"}:
+            if post_id:
+                log_stream_chunk("backend.response", "x_thread_fetch", post_id, agent_id)
+                content = f"\n🧵 [X Thread Fetch] {post_id}\n"
+            else:
+                log_stream_chunk("backend.response", "x_thread_fetch", f"Running {tool_name}", agent_id)
+                content = f"\n🧵 [X Thread Fetch] Running {tool_name}...\n"
+        else:
+            log_stream_chunk("backend.response", "x_search", f"Running {tool_name}", agent_id)
+            content = f"\n🔎 [Provider Tool: X Search] Running {tool_name}...\n"
+
+        if strip_newlines:
+            content = content.strip("\n")
+
+        return TextStreamChunk(
+            type=ChunkType.CONTENT,
+            content=content,
+            source="response_api",
+        )
 
     def _append_tool_result_message(
         self,
@@ -471,7 +643,11 @@ class ResponseBackend(StreamingBufferMixin, CustomToolAndMCPBackend):
                 api_params,
                 client,
                 ws_transport,
+                agent_id=agent_id,
             )
+        except CircuitBreakerOpenError:
+            self.end_api_call_timing(success=False, error="circuit_breaker_open")
+            raise
         except Exception as e:
             # Debug: Catch input[N].content format errors and print the problematic message
             error_str = str(e)
@@ -533,6 +709,7 @@ class ResponseBackend(StreamingBufferMixin, CustomToolAndMCPBackend):
                     api_params,
                     client,
                     ws_transport,
+                    agent_id=agent_id,
                 )
 
                 # Notify user that compression succeeded
@@ -656,6 +833,11 @@ class ResponseBackend(StreamingBufferMixin, CustomToolAndMCPBackend):
 
         # Execute any captured function calls
         if captured_function_calls and response_completed:
+            captured_function_calls = self._deduplicate_captured_tool_calls(
+                captured_function_calls,
+                source="response.output_items",
+            )
+
             # Categorize function calls using helper method
             mcp_calls, custom_calls, provider_calls = self._categorize_tool_calls(captured_function_calls)
 
@@ -1431,6 +1613,69 @@ class ResponseBackend(StreamingBufferMixin, CustomToolAndMCPBackend):
                 source="response_api",
             )
 
+        elif chunk_type == "response.x_search_call.in_progress":
+            log_stream_chunk("backend.response", "x_search", "Starting X search", agent_id)
+            return TextStreamChunk(
+                type=ChunkType.CONTENT,
+                content="\n🔎 [Provider Tool: X Search] Starting search...",
+                source="response_api",
+            )
+        elif chunk_type == "response.x_search_call.searching":
+            log_stream_chunk("backend.response", "x_search", "Searching X", agent_id)
+            return TextStreamChunk(
+                type=ChunkType.CONTENT,
+                content="\n🔎 [Provider Tool: X Search] Searching...",
+                source="response_api",
+            )
+        elif chunk_type == "response.x_search_call.completed":
+            log_stream_chunk("backend.response", "x_search", "X search completed", agent_id)
+            return TextStreamChunk(
+                type=ChunkType.CONTENT,
+                content="\n✅ [Provider Tool: X Search] Search completed",
+                source="response_api",
+            )
+        elif chunk_type == "response.output_item.added":
+            if hasattr(chunk, "item") and chunk.item and self._is_xai_x_search_custom_tool_item(chunk.item):
+                self._record_xai_custom_tool_start(chunk.item)
+                tool_name = self._get_response_item_field(chunk.item, "name", "x_search")
+                log_stream_chunk("backend.response", "x_search", f"Starting {tool_name}", agent_id)
+                return TextStreamChunk(
+                    type=ChunkType.CONTENT,
+                    content=f"\n🔎 [Provider Tool: X Search] Running {tool_name}...\n",
+                    source="response_api",
+                )
+        elif chunk_type == "response.custom_tool_call_input.delta":
+            call_id = getattr(chunk, "call_id", "") or ""
+            if call_id:
+                previous = self._xai_custom_tool_inputs_by_call_id.get(call_id, "")
+                delta = getattr(chunk, "delta", "") or ""
+                current = previous + delta
+                self._xai_custom_tool_inputs_by_call_id[call_id] = current
+                payload = self._parse_response_item_json(current)
+                formatted = self._format_xai_x_search_custom_tool_input_chunk(
+                    call_id,
+                    payload,
+                    agent_id,
+                )
+                if formatted is not None:
+                    return formatted
+        elif chunk_type == "response.custom_tool_call_input.done":
+            call_id = getattr(chunk, "call_id", "") or ""
+            if call_id:
+                final_input = getattr(chunk, "input", None)
+                if isinstance(final_input, str) and final_input:
+                    self._xai_custom_tool_inputs_by_call_id[call_id] = final_input
+                payload = self._parse_response_item_json(
+                    self._xai_custom_tool_inputs_by_call_id.get(call_id, ""),
+                )
+                formatted = self._format_xai_x_search_custom_tool_input_chunk(
+                    call_id,
+                    payload,
+                    agent_id,
+                )
+                if formatted is not None:
+                    return formatted
+
         elif chunk_type == "response.code_interpreter_call.in_progress":
             log_stream_chunk("backend.response", "code_interpreter", "Starting execution", agent_id)
             return TextStreamChunk(
@@ -1438,13 +1683,31 @@ class ResponseBackend(StreamingBufferMixin, CustomToolAndMCPBackend):
                 content="\n💻 [Provider Tool: Code Interpreter] Starting execution...",
                 source="response_api",
             )
-        elif chunk_type == "response.code_interpreter_call.executing":
+        elif chunk_type in {"response.code_interpreter_call.executing", "response.code_interpreter_call.interpreting"}:
             log_stream_chunk("backend.response", "code_interpreter", "Executing", agent_id)
             return TextStreamChunk(
                 type=ChunkType.CONTENT,
                 content="\n💻 [Provider Tool: Code Interpreter] Executing...",
                 source="response_api",
             )
+        elif chunk_type == "response.code_interpreter_call_code.delta":
+            code_delta = getattr(chunk, "delta", "") or ""
+            if code_delta:
+                log_stream_chunk("backend.response", "code_executed", code_delta, agent_id)
+                return TextStreamChunk(
+                    type=ChunkType.CONTENT,
+                    content=f"💻 [Code Executed]\n```\n{code_delta}\n```\n",
+                    source="response_api",
+                )
+        elif chunk_type == "response.code_interpreter_call_code.done":
+            code_text = getattr(chunk, "code", None) or getattr(chunk, "text", None) or ""
+            if code_text:
+                log_stream_chunk("backend.response", "code_executed", code_text, agent_id)
+                return TextStreamChunk(
+                    type=ChunkType.CONTENT,
+                    content=f"💻 [Code Executed]\n```\n{code_text}\n```\n",
+                    source="response_api",
+                )
         elif chunk_type == "response.code_interpreter_call.completed":
             log_stream_chunk("backend.response", "code_interpreter", "Execution completed", agent_id)
             return TextStreamChunk(
@@ -1498,6 +1761,18 @@ class ResponseBackend(StreamingBufferMixin, CustomToolAndMCPBackend):
                                 content=f"\n🔍 [Search Query] '{search_query}'\n",
                                 source="response_api",
                             )
+                elif hasattr(chunk.item, "type") and chunk.item.type == "x_search_call":
+                    if hasattr(chunk.item, "action") and ("query" in chunk.item.action):
+                        search_query = chunk.item.action["query"]
+                        if search_query:
+                            log_stream_chunk("backend.response", "x_search_query", search_query, agent_id)
+                            return TextStreamChunk(
+                                type=ChunkType.CONTENT,
+                                content=f"\n🔎 [X Search Query] '{search_query}'\n",
+                                source="response_api",
+                            )
+                elif self._is_xai_x_search_custom_tool_item(chunk.item):
+                    return self._format_xai_x_search_custom_tool_chunk(chunk.item, agent_id)
                 elif hasattr(chunk.item, "type") and chunk.item.type == "code_interpreter_call":
                     if hasattr(chunk.item, "code") and chunk.item.code:
                         # Format code as a proper code block - don't assume language
@@ -1661,6 +1936,23 @@ class ResponseBackend(StreamingBufferMixin, CustomToolAndMCPBackend):
                                     content=content,
                                     source="response_api",
                                 )
+                        elif item.get("type") == "x_search_call":
+                            status = item.get("status", "unknown")
+                            query = item.get("action", {}).get("query", "")
+                            results = item.get("results")
+
+                            if query:
+                                content = f"\n🔧 X Search [{status.title()}]: {query}"
+                                if results:
+                                    content += f" → Found {len(results)} results"
+                                log_stream_chunk("backend.response", "x_search_result", content, agent_id)
+                                return TextStreamChunk(
+                                    type=ChunkType.CONTENT,
+                                    content=content,
+                                    source="response_api",
+                                )
+                        elif self._is_xai_x_search_custom_tool_item(item):
+                            return self._format_xai_x_search_custom_tool_chunk(item, agent_id, strip_newlines=True)
                         elif item.get("type") == "image_generation_call":
                             # Image generation result in completed response
                             status = item.get("status", "unknown")
@@ -1758,12 +2050,19 @@ class ResponseBackend(StreamingBufferMixin, CustomToolAndMCPBackend):
         """Extract content from OpenAI Responses API tool result message."""
         return tool_result_message.get("output", "")
 
-    async def _create_response_stream(self, api_params, client, ws_transport=None):
+    async def _create_response_stream(self, api_params, client, ws_transport=None, agent_id=None):
         """Create a response stream via HTTP or websocket transport."""
         if ws_transport is not None and ws_transport.is_connected:
             logger.debug("[WebSocket] Sending response.create via WebSocket")
             return self._ws_event_stream(ws_transport, api_params)
-        return await client.responses.create(**api_params)
+
+        async def _make_api_call():
+            return await client.responses.create(**api_params)
+
+        return await self.circuit_breaker.call_with_retry(
+            _make_api_call,
+            agent_id=agent_id,
+        )
 
     async def _ws_event_stream(self, ws_transport, api_params):
         """Wrap websocket JSON events as objects matching SDK stream chunks."""

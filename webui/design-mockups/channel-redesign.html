@@ -1,0 +1,425 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Channel Redesign — Tools + Plan + Reasoning</title>
+<style>
+  :root {
+    --bg: #313338; --surface: #2b2d31; --surface-raised: #383a40;
+    --border: #1e1f22; --border-subtle: #2b2d31;
+    --text: #f2f3f5; --text-secondary: #b5bac1; --text-muted: #80848e;
+    --accent: #5865f2; --online: #23a559;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif; background: #1e1f22; color: var(--text); padding: 32px; }
+  h1 { font-size: 20px; font-weight: 600; margin-bottom: 4px; }
+  h2 { font-size: 16px; font-weight: 600; margin: 40px 0 8px; color: var(--accent); }
+  .sub { color: var(--text-muted); font-size: 13px; margin-bottom: 20px; max-width: 750px; line-height: 1.5; }
+  .mono { font-family: 'SF Mono', 'Fira Code', monospace; }
+  .label { display: inline-block; font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 1px; padding: 3px 10px; border-radius: 4px; margin-bottom: 10px; color: white; }
+  .label.a { background: #5865f2; }
+  .label.b { background: #23a559; }
+  .label.c { background: #eb459e; }
+
+  .channel { background: var(--bg); border-radius: 10px; border: 1px solid var(--border); max-width: 700px; overflow: hidden; margin-bottom: 16px; }
+  .ch-header { display: flex; align-items: center; gap: 10px; padding: 8px 14px; border-bottom: 1px solid var(--border); background: var(--surface); font-size: 14px; }
+  .badge { width: 18px; height: 18px; border-radius: 4px; background: var(--accent); color: white; font-size: 10px; font-weight: 700; display: flex; align-items: center; justify-content: center; }
+  .model { font-size: 11px; color: var(--text-muted); background: var(--surface-raised); padding: 1px 6px; border-radius: 3px; border: 1px solid var(--border-subtle); }
+
+  .msgs { padding: 6px 0; }
+  .divider { display: flex; align-items: center; gap: 10px; padding: 8px 14px; }
+  .divider .line { flex: 1; height: 1px; background: var(--border); }
+  .divider .lbl { font-size: 10px; font-weight: 600; text-transform: uppercase; letter-spacing: 1px; color: var(--text-muted); }
+
+  .tool-badge { font-family: 'SF Mono', monospace; font-size: 11px; padding: 1px 5px; border-radius: 3px; background: rgba(88,101,242,0.1); color: #7c8af2; border: 1px solid rgba(88,101,242,0.2); white-space: nowrap; }
+  .dot { width: 5px; height: 5px; border-radius: 50%; flex-shrink: 0; }
+  .dot.ok { background: var(--online); }
+  .elapsed { font-size: 11px; color: var(--text-muted); flex-shrink: 0; }
+
+  .note { font-size: 12px; color: var(--text-muted); margin-top: 8px; padding: 8px 12px; background: var(--surface); border-radius: 6px; border: 1px solid var(--border); line-height: 1.6; max-width: 700px; margin-bottom: 32px; }
+  .note strong { color: var(--text-secondary); }
+</style>
+</head>
+<body>
+
+<h1>Channel Redesign — Holistic View</h1>
+<p class="sub">Three options addressing all the issues at once: tool call visual weight, plan panel placement, reasoning noise, and how everything flows together.</p>
+
+<!-- ================================================================ -->
+<!-- OPTION A: ULTRA-COMPACT TOOLS + INLINE PLAN                     -->
+<!-- ================================================================ -->
+
+<h2>Option A — "Ultra-Compact"</h2>
+<p class="sub" style="margin-bottom:12px;">
+  Tools are single-line rows (no card border). Reasoning collapsed to one line. Plan is an inline progress bar at the top, not a floating panel. Everything is lightweight.
+</p>
+
+<span class="label a">A</span>
+<div class="channel">
+  <div class="ch-header">
+    <div class="badge">2</div>
+    <span style="font-weight:500;">agent b</span>
+    <span class="model">gemini-3-flash</span>
+    <span style="font-size:11px; color:var(--text-muted);">• Done</span>
+  </div>
+  <div class="msgs">
+    <!-- Plan — inline progress bar, not floating -->
+    <div style="padding: 6px 14px; border-bottom: 1px solid var(--border-subtle);">
+      <div style="display: flex; align-items: center; gap: 8px; margin-bottom: 4px;">
+        <span style="font-size: 10px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.5px; color: var(--text-muted);">Plan</span>
+        <span style="font-size: 11px; color: var(--online); font-weight: 500;">7/7</span>
+        <div style="flex: 1; height: 3px; background: var(--border-subtle); border-radius: 2px; overflow: hidden;">
+          <div style="width: 100%; height: 100%; background: var(--online); border-radius: 2px;"></div>
+        </div>
+      </div>
+    </div>
+
+    <div class="divider"><div class="line"></div><span class="lbl">Round 1</span><div class="line"></div></div>
+
+    <!-- Reasoning — single line, collapsed -->
+    <div style="padding: 1px 14px;">
+      <div style="display: flex; align-items: center; gap: 6px; padding: 2px 0; cursor: pointer; opacity: 0.6;">
+        <svg width="10" height="10" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M4 2l4 4-4 4" stroke-linecap="round"/></svg>
+        <span style="font-size: 10px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.5px; color: rgba(139,92,246,0.6);">Reasoning</span>
+        <span style="font-size: 11px; color: var(--text-muted); font-style: italic; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1;">Considering Poetic Forms — Evaluating Answer Completeness</span>
+      </div>
+    </div>
+
+    <!-- Tool batch — no card, just a compact header row -->
+    <div style="padding: 2px 14px;">
+      <div style="display: flex; align-items: center; gap: 6px; padding: 3px 0; cursor: pointer;">
+        <svg width="10" height="10" viewBox="0 0 12 12" fill="none" stroke="var(--text-muted)" stroke-width="1.5" style="transform:rotate(90deg);"><path d="M4 2l4 4-4 4" stroke-linecap="round"/></svg>
+        <div class="dot ok"></div>
+        <span class="tool-badge">mcp_filesystem</span>
+        <span style="font-size: 11px; color: var(--text-muted);">×2</span>
+        <div style="flex:1;"></div>
+        <span class="elapsed">13ms</span>
+      </div>
+      <!-- Indented rows -->
+      <div style="margin-left: 16px; border-left: 1px solid var(--border-subtle); padding-left: 10px;">
+        <div style="display: flex; align-items: center; gap: 5px; padding: 1px 0; font-size: 11px;">
+          <div class="dot ok"></div>
+          <span class="mono" style="color: var(--text-secondary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1;">.massgen_scratch/verification</span>
+          <span class="elapsed">6ms</span>
+        </div>
+        <div style="display: flex; align-items: center; gap: 5px; padding: 1px 0; font-size: 11px;">
+          <div class="dot ok"></div>
+          <span class="mono" style="color: var(--text-secondary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1;">.massgen_scratch/verification/verify.py</span>
+          <span class="elapsed">7ms</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- Another reasoning -->
+    <div style="padding: 1px 14px;">
+      <div style="display: flex; align-items: center; gap: 6px; padding: 2px 0; cursor: pointer; opacity: 0.6;">
+        <svg width="10" height="10" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M4 2l4 4-4 4" stroke-linecap="round"/></svg>
+        <span style="font-size: 10px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.5px; color: rgba(139,92,246,0.6);">Reasoning</span>
+        <span style="font-size: 11px; color: var(--text-muted); font-style: italic; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1;">Composing the Poem — Crafting a Combined Response</span>
+      </div>
+    </div>
+
+    <!-- Another batch -->
+    <div style="padding: 2px 14px;">
+      <div style="display: flex; align-items: center; gap: 6px; padding: 3px 0; cursor: pointer;">
+        <svg width="10" height="10" viewBox="0 0 12 12" fill="none" stroke="var(--text-muted)" stroke-width="1.5" style="transform:rotate(90deg);"><path d="M4 2l4 4-4 4" stroke-linecap="round"/></svg>
+        <div class="dot ok"></div>
+        <span class="tool-badge">mcp_filesystem</span>
+        <span style="font-size: 11px; color: var(--text-muted);">×3</span>
+        <div style="flex:1;"></div>
+        <span class="elapsed">32ms</span>
+      </div>
+      <div style="margin-left: 16px; border-left: 1px solid var(--border-subtle); padding-left: 10px;">
+        <div style="display: flex; align-items: center; gap: 5px; padding: 1px 0; font-size: 11px;">
+          <div class="dot ok"></div>
+          <span class="mono" style="color: var(--text-secondary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1;">tasks</span>
+          <span class="elapsed">9ms</span>
+        </div>
+        <div style="display: flex; align-items: center; gap: 5px; padding: 1px 0; font-size: 11px;">
+          <div class="dot ok"></div>
+          <span class="mono" style="color: var(--text-secondary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1;">CONTEXT.md</span>
+          <span class="elapsed">11ms</span>
+        </div>
+        <div style="display: flex; align-items: center; gap: 5px; padding: 1px 0; font-size: 11px;">
+          <div class="dot ok"></div>
+          <span class="mono" style="color: var(--text-secondary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1;">tasks/changedoc.md</span>
+          <span class="elapsed">12ms</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- Reasoning -->
+    <div style="padding: 1px 14px;">
+      <div style="display: flex; align-items: center; gap: 6px; padding: 2px 0; cursor: pointer; opacity: 0.6;">
+        <svg width="10" height="10" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M4 2l4 4-4 4" stroke-linecap="round"/></svg>
+        <span style="font-size: 10px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.5px; color: rgba(139,92,246,0.6);">Reasoning</span>
+        <span style="font-size: 11px; color: var(--text-muted); font-style: italic; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1;">Synthesizing a New Answer</span>
+      </div>
+    </div>
+
+    <!-- Big batch -->
+    <div style="padding: 2px 14px;">
+      <div style="display: flex; align-items: center; gap: 6px; padding: 3px 0; cursor: pointer;">
+        <svg width="10" height="10" viewBox="0 0 12 12" fill="none" stroke="var(--text-muted)" stroke-width="1.5"><path d="M4 2l4 4-4 4" stroke-linecap="round"/></svg>
+        <div class="dot ok"></div>
+        <span class="tool-badge">mcp</span>
+        <span style="font-size: 11px; color: var(--text-muted);">×5</span>
+        <div style="flex:1;"></div>
+        <span class="elapsed">86ms</span>
+      </div>
+    </div>
+
+    <!-- Answer -->
+    <div style="padding: 6px 14px;">
+      <div style="border-left: 3px solid rgba(234,179,8,0.5); padding: 8px 12px; border-radius: 0 6px 6px 0; background: rgba(234,179,8,0.04); cursor: pointer;">
+        <div style="display: flex; align-items: center; gap: 6px; margin-bottom: 4px;">
+          <span style="color: #eab308;">★</span>
+          <span style="font-size: 11px; font-weight: 600; color: #eab308; background: rgba(234,179,8,0.15); padding: 1px 6px; border-radius: 3px;">agent2.1</span>
+          <span style="font-size: 11px; color: var(--text-muted);">submitted</span>
+        </div>
+        <p style="font-size: 12px; color: var(--text-secondary); display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; line-height: 1.4;">
+          I have created a lyrical poem about love, focusing on simple rhythmic structure to explore themes of parti...
+        </p>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="note">
+  <strong>A — Ultra-Compact</strong><br>
+  • Plan is an <strong>inline progress bar</strong> pinned at top of channel — not floating<br>
+  • Tools have <strong>no card border</strong> — just chevron + dot + badge + count as a row<br>
+  • Expanded rows use a thin 1px left-border (lighter than 2px)<br>
+  • Multiple reasoning blocks are <strong>merged into single lines</strong> with combined title<br>
+  • Everything is very tight — maximum content per screen
+</div>
+
+<!-- ================================================================ -->
+<!-- OPTION B: CARD TOOLS + SIDEBAR PLAN                             -->
+<!-- ================================================================ -->
+
+<h2>Option B — "Clean Cards + Docked Plan"</h2>
+<p class="sub" style="margin-bottom:12px;">
+  Tools keep the card look but are slimmer. Plan is a collapsible strip docked to the right edge (not floating over content). Consecutive reasoning blocks are auto-merged.
+</p>
+
+<span class="label b">B</span>
+<div class="channel">
+  <div class="ch-header">
+    <div class="badge">2</div>
+    <span style="font-weight:500;">agent b</span>
+    <span class="model">gemini-3-flash</span>
+    <span style="font-size:11px; color:var(--text-muted);">• Done</span>
+  </div>
+  <!-- Layout: messages + plan strip -->
+  <div style="display: flex;">
+    <!-- Messages -->
+    <div style="flex: 1; min-width: 0;">
+      <div class="msgs">
+        <div class="divider"><div class="line"></div><span class="lbl">Round 1</span><div class="line"></div></div>
+
+        <!-- Merged reasoning -->
+        <div style="padding: 2px 14px;">
+          <div style="border-left: 2px solid rgba(139,92,246,0.3); padding: 4px 10px; cursor: pointer;">
+            <div style="display: flex; align-items: center; gap: 6px;">
+              <svg width="10" height="10" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M4 2l4 4-4 4" stroke-linecap="round"/></svg>
+              <span style="font-size: 10px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.5px; color: rgba(139,92,246,0.6);">Reasoning</span>
+              <span style="font-size: 11px; color: var(--text-muted);">×4 blocks</span>
+            </div>
+          </div>
+        </div>
+
+        <!-- Tool batch card — slim -->
+        <div style="padding: 3px 14px;">
+          <div style="background: var(--surface); border: 1px solid var(--border-subtle); border-radius: 6px;">
+            <div style="display: flex; align-items: center; gap: 6px; padding: 5px 8px; cursor: pointer;">
+              <svg width="10" height="10" viewBox="0 0 12 12" fill="none" stroke="var(--text-muted)" stroke-width="1.5" style="transform:rotate(90deg);"><path d="M4 2l4 4-4 4" stroke-linecap="round"/></svg>
+              <div class="dot ok"></div>
+              <span class="tool-badge">mcp_filesystem</span>
+              <span style="font-size: 11px; color: var(--text-muted);">×2</span>
+              <div style="flex:1;"></div>
+              <span class="elapsed">13ms</span>
+            </div>
+          </div>
+          <div style="margin-left: 14px; border-left: 2px solid var(--border-subtle); padding-left: 10px; margin-top: 2px;">
+            <div style="display: flex; align-items: center; gap: 5px; padding: 2px 0; font-size: 11px;">
+              <div class="dot ok"></div>
+              <span class="mono" style="color: var(--text-secondary); flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">.massgen_scratch/verification</span>
+              <span class="elapsed">6ms</span>
+            </div>
+            <div style="display: flex; align-items: center; gap: 5px; padding: 2px 0; font-size: 11px;">
+              <div class="dot ok"></div>
+              <span class="mono" style="color: var(--text-secondary); flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">.massgen_scratch/verification/verify.py</span>
+              <span class="elapsed">7ms</span>
+            </div>
+          </div>
+        </div>
+
+        <!-- Another slim batch card -->
+        <div style="padding: 3px 14px;">
+          <div style="background: var(--surface); border: 1px solid var(--border-subtle); border-radius: 6px;">
+            <div style="display: flex; align-items: center; gap: 6px; padding: 5px 8px; cursor: pointer;">
+              <svg width="10" height="10" viewBox="0 0 12 12" fill="none" stroke="var(--text-muted)" stroke-width="1.5"><path d="M4 2l4 4-4 4" stroke-linecap="round"/></svg>
+              <div class="dot ok"></div>
+              <span class="tool-badge">mcp</span>
+              <span style="font-size: 11px; color: var(--text-muted);">×5</span>
+              <div style="flex:1;"></div>
+              <span class="elapsed">86ms</span>
+            </div>
+          </div>
+        </div>
+
+        <!-- Answer -->
+        <div style="padding: 6px 14px;">
+          <div style="border-left: 3px solid rgba(234,179,8,0.5); padding: 8px 12px; border-radius: 0 6px 6px 0; background: rgba(234,179,8,0.04); cursor: pointer;">
+            <div style="display: flex; align-items: center; gap: 6px; margin-bottom: 4px;">
+              <span style="color: #eab308;">★</span>
+              <span style="font-size: 11px; font-weight: 600; color: #eab308; background: rgba(234,179,8,0.15); padding: 1px 6px; border-radius: 3px;">agent2.1</span>
+              <span style="font-size: 11px; color: var(--text-muted);">submitted</span>
+            </div>
+            <p style="font-size: 12px; color: var(--text-secondary); display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; line-height: 1.4;">
+              I have created a lyrical poem about love, focusing on simple rhythmic structure...
+            </p>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Plan — docked right strip -->
+    <div style="width: 160px; border-left: 1px solid var(--border); background: var(--surface); padding: 8px; flex-shrink: 0;">
+      <div style="font-size: 10px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.5px; color: var(--text-muted); margin-bottom: 6px;">Plan 7/7</div>
+      <div style="height: 2px; background: var(--border-subtle); border-radius: 1px; margin-bottom: 8px; overflow: hidden;">
+        <div style="width: 100%; height: 100%; background: var(--online);"></div>
+      </div>
+      <div style="font-size: 10px; line-height: 1.8;">
+        <div style="color: var(--text-muted); text-decoration: line-through;">1. Check memories</div>
+        <div style="color: var(--text-muted); text-decoration: line-through;">2. Research poems</div>
+        <div style="color: var(--text-muted); text-decoration: line-through;">3. Synthesize</div>
+        <div style="color: var(--text-muted); text-decoration: line-through;">4. Create deliverables</div>
+        <div style="color: var(--text-muted); text-decoration: line-through;">5. Verify</div>
+        <div style="color: var(--text-muted); text-decoration: line-through;">6. Document</div>
+        <div style="color: var(--text-muted); text-decoration: line-through;">7. Write verification</div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="note">
+  <strong>B — Clean Cards + Docked Plan</strong><br>
+  • Plan is <strong>docked as a narrow right strip</strong> inside the channel — never overlaps content<br>
+  • Tool cards are <strong>slimmer</strong> (less padding, smaller border-radius)<br>
+  • Consecutive reasoning blocks are <strong>auto-merged</strong> into "Reasoning ×4 blocks" — one collapsible line<br>
+  • Collapsed batch (mcp ×5) has no expanded rows — stays as one line
+</div>
+
+<!-- ================================================================ -->
+<!-- OPTION C: HYBRID — NO CARDS, SECTION GROUPS                     -->
+<!-- ================================================================ -->
+
+<h2>Option C — "Grouped Sections"</h2>
+<p class="sub" style="margin-bottom:12px;">
+  No cards, no floating plan. Messages are grouped into visual sections by type. Tool calls + reasoning between content blocks are treated as a single collapsible "activity group".
+</p>
+
+<span class="label c">C</span>
+<div class="channel">
+  <div class="ch-header">
+    <div class="badge">2</div>
+    <span style="font-weight:500;">agent b</span>
+    <span class="model">gemini-3-flash</span>
+    <span style="font-size:11px; color:var(--text-muted);">• Done</span>
+    <div style="flex:1;"></div>
+    <!-- Plan badge in header -->
+    <span style="font-size: 10px; font-weight: 600; color: var(--online); background: rgba(35,165,89,0.1); padding: 2px 8px; border-radius: 4px; border: 1px solid rgba(35,165,89,0.2);">Plan 7/7 ✓</span>
+  </div>
+  <div class="msgs">
+    <div class="divider"><div class="line"></div><span class="lbl">Round 1</span><div class="line"></div></div>
+
+    <!-- Activity group — collapsible block containing reasoning + tools -->
+    <div style="padding: 2px 14px;">
+      <div style="background: rgba(43,45,49,0.5); border-radius: 6px; padding: 2px 0; border: 1px solid var(--border-subtle);">
+        <!-- Group header -->
+        <div style="display: flex; align-items: center; gap: 6px; padding: 4px 10px; cursor: pointer;">
+          <svg width="10" height="10" viewBox="0 0 12 12" fill="none" stroke="var(--text-muted)" stroke-width="1.5" style="transform:rotate(90deg);"><path d="M4 2l4 4-4 4" stroke-linecap="round"/></svg>
+          <span style="font-size: 11px; color: var(--text-muted);">4 reasoning + 7 tool calls</span>
+          <div style="flex:1;"></div>
+          <span class="elapsed">131ms</span>
+        </div>
+
+        <!-- Expanded items inside group — flat list -->
+        <div style="padding: 0 10px 4px 26px; font-size: 11px;">
+          <!-- Reasoning item -->
+          <div style="display: flex; align-items: center; gap: 5px; padding: 2px 0; color: rgba(139,92,246,0.6);">
+            <span style="font-size: 9px;">◆</span>
+            <span style="font-style: italic; color: var(--text-muted);">Considering Poetic Forms</span>
+          </div>
+          <!-- Tool items -->
+          <div style="display: flex; align-items: center; gap: 5px; padding: 2px 0;">
+            <div class="dot ok"></div>
+            <span class="mono" style="color: var(--text-secondary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1;">mcp_filesystem → .massgen_scratch/verification</span>
+            <span class="elapsed">6ms</span>
+          </div>
+          <div style="display: flex; align-items: center; gap: 5px; padding: 2px 0;">
+            <div class="dot ok"></div>
+            <span class="mono" style="color: var(--text-secondary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1;">mcp_filesystem → verify.py</span>
+            <span class="elapsed">7ms</span>
+          </div>
+          <!-- Another reasoning -->
+          <div style="display: flex; align-items: center; gap: 5px; padding: 2px 0; color: rgba(139,92,246,0.6);">
+            <span style="font-size: 9px;">◆</span>
+            <span style="font-style: italic; color: var(--text-muted);">Evaluating Answer Completeness</span>
+          </div>
+          <!-- More tools -->
+          <div style="display: flex; align-items: center; gap: 5px; padding: 2px 0;">
+            <div class="dot ok"></div>
+            <span class="mono" style="color: var(--text-secondary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1;">mcp_filesystem → tasks</span>
+            <span class="elapsed">9ms</span>
+          </div>
+          <div style="display: flex; align-items: center; gap: 5px; padding: 2px 0;">
+            <div class="dot ok"></div>
+            <span class="mono" style="color: var(--text-secondary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1;">mcp_filesystem → CONTEXT.md</span>
+            <span class="elapsed">15ms</span>
+          </div>
+          <div style="display: flex; align-items: center; gap: 5px; padding: 2px 0; color: var(--text-muted);">
+            <span style="font-size: 9px;">⋯</span>
+            <span>+3 more items</span>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Answer -->
+    <div style="padding: 6px 14px;">
+      <div style="border-left: 3px solid rgba(234,179,8,0.5); padding: 8px 12px; border-radius: 0 6px 6px 0; background: rgba(234,179,8,0.04); cursor: pointer;">
+        <div style="display: flex; align-items: center; gap: 6px; margin-bottom: 4px;">
+          <span style="color: #eab308;">★</span>
+          <span style="font-size: 11px; font-weight: 600; color: #eab308; background: rgba(234,179,8,0.15); padding: 1px 6px; border-radius: 3px;">agent2.1</span>
+          <span style="font-size: 11px; color: var(--text-muted);">submitted</span>
+        </div>
+        <p style="font-size: 12px; color: var(--text-secondary); display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; line-height: 1.4;">
+          I have created a lyrical poem about love, focusing on simple rhythmic structure...
+        </p>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="note">
+  <strong>C — Grouped Sections</strong><br>
+  • Plan is just a <strong>badge in the channel header</strong> — "Plan 7/7 ✓". Click to see details.<br>
+  • All reasoning + tool calls between content/answer messages are <strong>grouped into a single collapsible "activity" block</strong><br>
+  • Inside the group: reasoning shows as purple diamond items, tools as green dot items — flat list, no nesting<br>
+  • Tool name shown inline: <code>mcp_filesystem → path</code> instead of badge + separate arg<br>
+  • Extreme density — the whole agent b flow fits in one screenful
+</div>
+
+<h2 style="color: var(--text);">Summary</h2>
+<div class="note" style="font-size: 13px; line-height: 1.7;">
+  <strong>A</strong> — Lightest touch. No cards for tools, inline plan bar. Each element is its own row.<br>
+  <strong>B</strong> — Keeps cards but slimmer. Plan docked in a sidebar strip. Reasoning auto-merged.<br>
+  <strong>C</strong> — Most radical. Groups all "work" (reasoning + tools) into a single collapsible block between content. Plan is just a header badge.
+</div>
+
+</body>
+</html>

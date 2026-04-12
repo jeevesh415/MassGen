@@ -31,7 +31,7 @@ class TestDefaultCriteriaEPrefix:
         criteria = get_default_criteria(has_changedoc=True)
         for c in criteria:
             assert c.id.startswith("E")
-        assert criteria[-1].id == "E5"
+        assert criteria[-1].id == "E4"
 
 
 class TestItemCategoriesInState:
@@ -55,7 +55,7 @@ class TestItemCategoriesInState:
 
         assert state["item_prefix"] == "E"
         assert "E1" in state["item_categories"]
-        assert state["item_categories"]["E1"] == "must"
+        assert state["item_categories"]["E1"] == "standard"
 
     def test_item_categories_match_default_criteria(self):
         """Default categories must match get_default_criteria() output."""
@@ -67,12 +67,13 @@ class TestItemCategoriesInState:
             assert _CHECKLIST_ITEM_CATEGORIES[c.id] == c.category
 
     def test_changedoc_categories_have_4_items(self):
-        """Changedoc categories must have 4 items, all 'must'."""
+        """Changedoc categories must have 4 items with E3 as primary."""
         from massgen.system_prompt_sections import _CHECKLIST_ITEM_CATEGORIES_CHANGEDOC
 
         assert len(_CHECKLIST_ITEM_CATEGORIES_CHANGEDOC) == 4
-        must_count = sum(1 for v in _CHECKLIST_ITEM_CATEGORIES_CHANGEDOC.values() if v == "must")
-        assert must_count == 4
+        assert _CHECKLIST_ITEM_CATEGORIES_CHANGEDOC["E3"] == "primary"
+        standard_count = sum(1 for v in _CHECKLIST_ITEM_CATEGORIES_CHANGEDOC.values() if v == "standard")
+        assert standard_count == 3
 
 
 class TestDynamicCriteriaInToolSchema:
@@ -157,7 +158,7 @@ class TestCustomItemsInSystemMessage:
 
         content = section.build_content()
         # Should contain default GEPA items
-        assert "directly achieves what was asked for" in content or "requirements are met" in content
+        assert "requirements fidelity" in content.lower() or "requirements" in content.lower()
 
 
 class TestCriteriaCountValidation:
@@ -172,8 +173,8 @@ class TestCriteriaCountValidation:
                 "criteria": [{"text": "Only one", "category": "core"}],
             },
         )
-        result = _parse_criteria_response(response, min_criteria=4, max_criteria=10)
-        assert result is None
+        criteria, aspiration = _parse_criteria_response(response, min_criteria=4, max_criteria=10)
+        assert criteria is None
 
     def test_too_many_criteria_returns_none(self):
         """Parsing more than max_criteria should fail."""
@@ -184,8 +185,8 @@ class TestCriteriaCountValidation:
                 "criteria": [{"text": f"C{i}", "category": "core"} for i in range(15)],
             },
         )
-        result = _parse_criteria_response(response, min_criteria=4, max_criteria=10)
-        assert result is None
+        criteria, aspiration = _parse_criteria_response(response, min_criteria=4, max_criteria=10)
+        assert criteria is None
 
     def test_exactly_min_criteria_works(self):
         """Exactly min_criteria items should parse successfully."""
@@ -199,9 +200,9 @@ class TestCriteriaCountValidation:
                 ],
             },
         )
-        result = _parse_criteria_response(response, min_criteria=4, max_criteria=10)
-        assert result is not None
-        assert len(result) == 4
+        criteria, aspiration = _parse_criteria_response(response, min_criteria=4, max_criteria=10)
+        assert criteria is not None
+        assert len(criteria) == 4
 
     def test_exactly_max_criteria_works(self):
         """Exactly max_criteria items should parse successfully."""
@@ -215,9 +216,9 @@ class TestCriteriaCountValidation:
                 ],
             },
         )
-        result = _parse_criteria_response(response, min_criteria=4, max_criteria=10)
-        assert result is not None
-        assert len(result) == 10
+        criteria, aspiration = _parse_criteria_response(response, min_criteria=4, max_criteria=10)
+        assert criteria is not None
+        assert len(criteria) == 10
 
 
 class TestAnalysisDynamicCriteriaLabels:
@@ -240,7 +241,7 @@ class TestAnalysisDynamicCriteriaLabels:
         from massgen.system_prompt_sections import _build_checklist_analysis
 
         analysis = _build_checklist_analysis()
-        assert "goal alignment" in analysis
+        assert "requirements fidelity" in analysis
         assert "correctness" in analysis
 
     def test_changedoc_analysis_uses_custom_items(self):
@@ -259,7 +260,7 @@ class TestAnalysisDynamicCriteriaLabels:
         from massgen.system_prompt_sections import _build_changedoc_checklist_analysis
 
         analysis = _build_changedoc_checklist_analysis()
-        assert "goal alignment" in analysis
+        assert "spec fidelity" in analysis
         assert "changedoc quality" not in analysis
 
     def test_evaluation_section_threads_custom_items_to_analysis(self):

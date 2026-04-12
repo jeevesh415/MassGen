@@ -60,15 +60,17 @@ function Router() {
     );
   }
 
-  // Redirect to setup if first-time user
+  // Redirect to setup if first-time user (skip for v2 — AppShell handles it)
   if (needsSetup) {
-    // Use window.location for a hard redirect
-    window.location.href = '/setup';
-    return (
-      <div className="min-h-screen bg-gray-900 flex items-center justify-center">
-        <div className="text-gray-400">Redirecting to setup...</div>
-      </div>
-    );
+    const urlParams = new URLSearchParams(window.location.search);
+    if (urlParams.get('v') !== '2') {
+      window.location.href = '/setup';
+      return (
+        <div className="min-h-screen bg-gray-900 flex items-center justify-center">
+          <div className="text-gray-400">Redirecting to setup...</div>
+        </div>
+      );
+    }
   }
 
   // Default to main app

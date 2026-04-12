@@ -89,6 +89,11 @@ class StreamChunk:
     hook_info: dict[str, Any] | None = None  # Hook execution details for display
     tool_call_id: str | None = None  # ID of tool call this hook is attached to
 
+    # Checkpoint event fields (for "checkpoint_activated" / "checkpoint_completed" type chunks)
+    checkpoint_participants: dict[str, Any] | None = None  # display_id -> {real_agent_id, model}
+    checkpoint_number: int | None = None  # Sequential checkpoint number
+    main_agent_id: str | None = None  # The delegating agent's real ID
+
     # Display flag - reserved for future use (not yet consumed by any handler)
     display: bool = True
 
@@ -348,7 +353,7 @@ class LLMBackend(ABC):
             "enable_novelty_on_iteration",  # Coordination-only novelty task injection toggle
             "enable_execution_trace_analyzer",  # Coordination-only execution trace analysis toggle
             "novelty_injection",  # Novelty pressure level (none/gentle/moderate/aggressive)
-            "improvements",  # propose_improvements gate settings (orchestrator/checklist only)
+            "improvements",  # draft_approach gate settings (orchestrator/checklist only)
             "learning_capture_mode",  # Learning capture timing (round/verification_and_final_only/final_only)
             "disable_final_only_round_capture_fallback",  # Coordination-only fallback control for final_only+skip_final_presentation
             # Multimodal tools configuration (handled by CustomToolAndMCPBackend)
@@ -385,6 +390,12 @@ class LLMBackend(ABC):
             "allow_midstream_peer_updates_before_checklist_submit",
             "max_checklist_calls_per_round",
             "checklist_first_answer",
+            # Checkpoint coordination (handled by orchestrator, not passed to API)
+            "main_agent",
+            "checkpoint_enabled",
+            "checkpoint_mode",
+            "checkpoint_guidance",
+            "checkpoint_gated_patterns",
         }
 
     @abstractmethod
@@ -523,16 +534,16 @@ class LLMBackend(ABC):
         if hasattr(self, "_tool_execution_metrics"):
             tool_calls = len(self._tool_execution_metrics) - self._round_start_tool_count
 
-        # Calculate context window usage percentage
+        # Calculate context window usage percentage using this round's input tokens
         context_window_size = 0
         context_usage_pct = 0.0
+        round_input_tokens = self.token_usage.input_tokens - self._round_start_snapshot["input_tokens"]
         model = self.config.get("model", "")
         pricing = self.token_calculator.get_model_pricing(self.get_provider_name(), model)
         if pricing and pricing.context_window:
             context_window_size = pricing.context_window
-            current_input = self.token_usage.input_tokens
             if context_window_size > 0:
-                context_usage_pct = (current_input / context_window_size) * 100
+                context_usage_pct = (round_input_tokens / context_window_size) * 100
 
         # Determine token source: "api" if we got real data, "estimated" if we used fallback
         token_source = "estimated" if self._round_used_fallback_estimation else "api"
@@ -1092,8 +1103,18 @@ def extract_structured_response(text: str) -> dict[str, Any] | None:
         return None
 
 
-def parse_workflow_tool_calls(text: str) -> list[dict[str, Any]]:
+def parse_workflow_tool_calls(
+    text: str,
+    allowed_tool_names: set[str] | None = None,
+) -> list[dict[str, Any]]:
     """Parse workflow tool calls from accumulated text output.
+
+    Args:
+        text: Accumulated text from the agent response.
+        allowed_tool_names: If provided, only tool calls whose name is in this
+            set are returned.  Calls for tools not in the set are silently
+            dropped.  When ``None`` (default), all parsed calls are returned
+            for backwards compatibility.
 
     Returns a list of tool-call dicts in the standard format expected by
     the orchestrator::
@@ -1107,6 +1128,8 @@ def parse_workflow_tool_calls(text: str) -> list[dict[str, Any]]:
         tool_name = structured.get("tool_name")
         arguments = structured.get("arguments", {})
         if tool_name and isinstance(arguments, dict):
+            if allowed_tool_names is not None and tool_name not in allowed_tool_names:
+                return []
             return [
                 {
                     "id": f"call_{uuid.uuid4().hex[:8]}",
@@ -1125,6 +1148,8 @@ def parse_workflow_tool_calls(text: str) -> list[dict[str, Any]]:
     for pattern in patterns:
         for match in re.finditer(pattern, text, re.IGNORECASE):
             tool_name = match.group(1)
+            if allowed_tool_names is not None and tool_name not in allowed_tool_names:
+                continue
             try:
                 arguments = json.loads(match.group(2))
                 sig = (tool_name, json.dumps(arguments, sort_keys=True))
@@ -1198,6 +1223,16 @@ def build_workflow_instructions(tools: list[dict[str, Any]]) -> str:
             )
             parts.append(
                 '    IMPORTANT: When user says "call ask_others" or "ask others", you MUST execute this tool call.',
+            )
+        elif name == "checkpoint":
+            parts.append(
+                '    Usage: {"tool_name": "checkpoint", '
+                '"arguments": {"task": "What agents should accomplish", '
+                '"eval_criteria": ["criterion 1", "criterion 2", "...more as needed"], '
+                '"context": "Background info"}}',
+            )
+            parts.append(
+                "    eval_criteria is REQUIRED: provide 3-7 specific, measurable quality criteria " "the team will evaluate against.",
             )
 
     parts.append("\n--- MassGen Coordination Instructions ---")

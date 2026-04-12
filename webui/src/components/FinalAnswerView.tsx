@@ -16,6 +16,10 @@ import { ComparisonView } from './ComparisonView';
 import { ResizableSplitPane } from './ResizableSplitPane';
 import { canPreviewFile } from '../utils/artifactTypes';
 import { clearFileCache } from '../hooks/useFileContent';
+import {
+  getAgentWorkspaceLabel,
+  getAnswerWorkspaceLabel,
+} from '../utils/workspaceBrowser';
 
 // Types for workspace API responses
 interface WorkspaceInfo {
@@ -775,13 +779,13 @@ export function FinalAnswerView({ onBackToAgents, onFollowUp, onNewSession, isCo
                             }
                             setSelectedFilePath('');
                           }}
-                          className={`px-3 py-1 text-sm rounded transition-colors flex items-center gap-1 ${
-                            isSelected
-                              ? 'bg-blue-600 text-white'
-                              : 'bg-gray-200 dark:bg-gray-700 text-gray-700 dark:text-gray-300 hover:bg-gray-300 dark:hover:bg-gray-600'
-                          }`}
-                        >
-                          {agentId}
+                        className={`px-3 py-1 text-sm rounded transition-colors flex items-center gap-1 ${
+                          isSelected
+                            ? 'bg-blue-600 text-white'
+                            : 'bg-gray-200 dark:bg-gray-700 text-gray-700 dark:text-gray-300 hover:bg-gray-300 dark:hover:bg-gray-600'
+                        }`}
+                      >
+                          {getAgentWorkspaceLabel(agentId, agentOrder)}
                           {isWinner && <Trophy className="w-3 h-3 text-yellow-400" />}
                         </button>
                       );
@@ -808,9 +812,12 @@ export function FinalAnswerView({ onBackToAgents, onFollowUp, onNewSession, isCo
                                    focus:outline-none focus:ring-2 focus:ring-blue-500"
                       >
                         {hasFinalWorkspace && <option value="current">Final</option>}
-                        {agentHistoricalWorkspaces.map((ws) => (
+                        {agentHistoricalWorkspaces
+                          .slice()
+                          .sort((left, right) => (right.answerNumber || 0) - (left.answerNumber || 0))
+                          .map((ws) => (
                           <option key={ws.answerId} value={ws.answerLabel}>
-                            {ws.answerLabel}
+                            {getAnswerWorkspaceLabel(ws.answerNumber)}
                           </option>
                         ))}
                       </select>
@@ -888,6 +895,7 @@ export function FinalAnswerView({ onBackToAgents, onFollowUp, onNewSession, isCo
                         workspacePath={activeWorkspace.path}
                         onClose={handleInlinePreviewClose}
                         onFullscreen={() => setIsPreviewFullscreen(true)}
+                        onFileNotFound={handleInlinePreviewClose}
                       />
                     ) : (
                       <div className="flex flex-col items-center justify-center h-full text-gray-500 bg-gray-100 dark:bg-gray-800/30 rounded-lg border border-gray-200 dark:border-gray-700">
@@ -947,6 +955,7 @@ export function FinalAnswerView({ onBackToAgents, onFollowUp, onNewSession, isCo
                             workspacePath={activeWorkspace.path}
                             onClose={handleInlinePreviewClose}
                             onFullscreen={() => setIsPreviewFullscreen(true)}
+                            onFileNotFound={handleInlinePreviewClose}
                           />
                         ) : (
                           <div className="flex flex-col items-center justify-center h-full text-gray-500 bg-gray-100 dark:bg-gray-800/30 rounded-lg border border-gray-200 dark:border-gray-700">
@@ -1001,6 +1010,10 @@ export function FinalAnswerView({ onBackToAgents, onFollowUp, onNewSession, isCo
                     filePath={selectedFilePath}
                     workspacePath={activeWorkspace.path}
                     onClose={() => setIsPreviewFullscreen(false)}
+                    onFileNotFound={() => {
+                      setSelectedFilePath('')
+                      setIsPreviewFullscreen(false)
+                    }}
                   />
                 </div>
               </motion.div>

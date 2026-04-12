@@ -314,6 +314,7 @@ FRAMEWORK_MCPS = frozenset(
         "massgen_quality_tools",  # Standalone quality tools MCP (massgen-refinery plugin)
         "massgen_workflow_tools",  # Standalone workflow tools MCP (massgen-refinery plugin)
         "massgen_media_tools",  # Standalone media tools MCP (massgen-refinery plugin)
+        "massgen_checkpoint",  # Checkpoint coordination tool (main agent delegates to team)
     },
 )
 

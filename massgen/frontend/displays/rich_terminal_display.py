@@ -2152,9 +2152,14 @@ class RichTerminalDisplay(TerminalDisplay):
             self.console.print(table)
 
             # Show context window usage warning if high
+            # NOTE: context_usage_pct = total input tokens billed in a round
+            # divided by context window size.  For multi-tool-call backends
+            # (e.g. Codex) this can exceed 100% because each tool call
+            # re-sends the accumulated conversation — it is a cost/throughput
+            # metric, not the peak context fill level.
             if max_context_pct > 50:
                 self.console.print(
-                    f"\n[yellow]⚠️  Peak context window usage: {max_context_pct:.1f}%[/yellow]",
+                    f"\n[yellow]⚠️  Peak round input vs context window: {max_context_pct:.1f}%[/yellow]",
                 )
 
         except Exception:

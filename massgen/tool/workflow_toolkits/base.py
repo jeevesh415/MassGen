@@ -26,6 +26,7 @@ WORKFLOW_TOOL_NAMES = [
     "respond_to_broadcast",
     "check_broadcast_status",
     "get_broadcast_responses",
+    "checkpoint",
 ]
 
 

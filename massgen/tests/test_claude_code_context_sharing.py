@@ -272,3 +272,117 @@ async def test_non_claude_code_agents_ignored(test_workspace):
 
     workspace_path = await orchestrator._copy_all_snapshots_to_temp_workspace("regular_agent")
     assert workspace_path is None
+
+
+@pytest.mark.asyncio
+async def test_workspace_restoration_fully_anonymized(test_workspace, mock_agents):
+    """After copy, no real agent IDs should appear in temp workspace files.
+
+    Creates snapshots containing all known leak vectors:
+    - .massgen/ framework config files with agent IDs
+    - .codex/ backend-identifying directories
+    - verification_latest__agent_id.md files
+    - memory/ files mentioning agent IDs in content
+    - tasks/ files mentioning agent IDs in content
+    Then verifies the temp workspace has none of these leaks.
+    """
+    orchestrator = Orchestrator(
+        agents=mock_agents,
+        snapshot_storage=test_workspace["snapshot_storage"],
+        agent_temporary_workspace=test_workspace["temp_workspace"],
+    )
+
+    agent_ids = list(mock_agents.keys())
+
+    for agent_id, agent in mock_agents.items():
+        workspace = Path(agent.backend._cwd)
+        workspace.mkdir(parents=True, exist_ok=True)
+
+        # Deliverable (should survive untouched)
+        (workspace / f"answer_{agent_id}.md").write_text(f"Answer from {agent_id}")
+
+        # Framework dirs that should be excluded (Layer 1)
+        massgen_dir = workspace / ".massgen"
+        massgen_dir.mkdir(exist_ok=True)
+        (massgen_dir / f"{agent_id}_coordination_config.json").write_text("{}")
+        (massgen_dir / f"{agent_id}_agent_configs.json").write_text("{}")
+
+        codex_dir = workspace / ".codex"
+        codex_dir.mkdir(exist_ok=True)
+        (codex_dir / "config.toml").write_text(f"# Config for {agent_id}")
+
+        # Verification memory with agent ID in filename (Layer 3)
+        mem_dir = workspace / "memory" / "short_term"
+        mem_dir.mkdir(parents=True, exist_ok=True)
+        (mem_dir / f"verification_latest__{agent_id}.md").write_text(
+            f"Verification for {agent_id}: all checks pass",
+        )
+
+        # tasks/ with agent ID in content (Layer 3)
+        tasks_dir = workspace / "tasks"
+        tasks_dir.mkdir(exist_ok=True)
+        (tasks_dir / "plan.json").write_text(
+            f'{{"assigned_to": "{agent_id}", "status": "done"}}',
+        )
+
+        await orchestrator._save_agent_snapshot(
+            agent_id,
+            answer_content=f"answer from {agent_id}",
+        )
+
+    # Copy snapshots to temp workspace for one agent
+    workspace_path = await orchestrator._copy_all_snapshots_to_temp_workspace(
+        agent_ids[0],
+    )
+    assert workspace_path is not None
+
+    # Walk all files in temp workspace and check no real agent IDs leak
+    # in framework metadata (tasks/, memory/, .massgen_scratch/, .tool_results/,
+    # execution_trace.md). Deliverable files (root-level files created by agents)
+    # are excluded — agents name their own output files.
+    temp_root = Path(workspace_path)
+    framework_dirs = {"tasks", "memory", ".massgen_scratch", ".tool_results"}
+
+    for file_path in temp_root.rglob("*"):
+        if not file_path.is_file():
+            continue
+
+        # Determine if this file is in a framework metadata location
+        rel = file_path.relative_to(temp_root)
+        parts = rel.parts
+        # Skip the first part (anon agent dir like "agent1"), then check
+        # if the next part is a framework dir or if it's execution_trace.md
+        inner_parts = parts[1:] if len(parts) > 1 else parts
+        is_framework = (inner_parts and inner_parts[0] in framework_dirs) or (len(inner_parts) == 1 and inner_parts[0] == "execution_trace.md")
+
+        if not is_framework:
+            continue
+
+        # Check filename doesn't contain real agent IDs
+        for aid in agent_ids:
+            assert aid not in file_path.name, f"Real agent ID '{aid}' leaked in filename: {rel}"
+
+        # Check file content for text files
+        if file_path.suffix in (".md", ".json", ".txt", ".toml", ".yaml"):
+            try:
+                content = file_path.read_text(encoding="utf-8")
+            except UnicodeDecodeError:
+                continue
+            for aid in agent_ids:
+                assert aid not in content, f"Real agent ID '{aid}' leaked in content of: {rel}"
+
+    # Verify framework dirs that should be excluded are absent
+    for anon_dir in temp_root.iterdir():
+        if not anon_dir.is_dir():
+            continue
+        assert not (anon_dir / ".massgen").exists(), ".massgen/ leaked into temp workspace"
+        assert not (anon_dir / ".codex").exists(), ".codex/ leaked into temp workspace"
+        assert not (anon_dir / ".gemini").exists(), ".gemini/ leaked into temp workspace"
+
+    # Verify deliverables survived the copy
+    for anon_dir in temp_root.iterdir():
+        if not anon_dir.is_dir():
+            continue
+        # Each agent snapshot has a timestamped subdir with deliverables
+        answer_files = list(anon_dir.rglob("answer_*.md"))
+        assert answer_files, f"Deliverable files missing from {anon_dir.name}"

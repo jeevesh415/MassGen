@@ -200,17 +200,17 @@ Key Features
 Recent Releases
 ---------------
 
-**v0.1.65 (March 18, 2026)** - MassGen Refinery Plugin
+**v0.1.75 (April 10, 2026)** - Codex Hooks & Checkpoint WebUI
 
-Standalone MCP servers (quality, workflow, media) bring MassGen's checklist-based evaluation and multi-round refinement to Claude Code through the massgen-refinery plugin. Single-agent refinement working; multi-agent experimental.
+Hybrid hook system for Codex backend combining native and MCP capabilities. Checkpoint workflows auto-launch the WebUI for visual monitoring. Standalone checkpoint MCP server documentation and safety policy integration.
 
-**v0.1.64 (March 16, 2026)** - Gemini CLI Backend
+**v0.1.74 (April 8, 2026)** - Checkpoint Improvements & Tool Call Fixes
 
-Gemini CLI as a first-class backend with session persistence, MCP tools, and Docker support. WebSocket streaming for OpenAI Response API. Execution trace analyzer subagent. Copilot Docker mode.
+Major improvements to standalone checkpoint MCP server. Fix for duplicate tool calls in ChatCompletions (including for MiniMax on OpenRouter) and Response API backends. Pre-collab evaluation criteria refinements.
 
-**v0.1.63 (March 13, 2026)** - Ensemble & Contracts
+**v0.1.73 (April 6, 2026)** - Eval Criteria Evolver & Checkpoint Objectives
 
-Subagent ensemble pattern with ``disable_injection`` and ``defer_voting_until_all_answered`` as defaults. Round evaluator transformation pressure and success contracts. Lighter refinement for subagents. Killed agent handling.
+New eval criteria evolver subagent that evolves criteria across rounds. Initial draft of checkpoint objective mode for safety planning of irreversible actions. Improved visibility of evaluation criteria.
 
 :doc:`Full changelog → <changelog>`
 

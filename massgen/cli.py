@@ -323,6 +323,18 @@ def _quickstart_filename_from_config_arg(config_path_arg: str | None) -> str | N
     return normalize_quickstart_config_filename(value)
 
 
+def _headless_quickstart_output_path_from_config_arg(config_path_arg: str | None) -> str | None:
+    """Extract an exact output path for headless quickstart from --config."""
+    if not config_path_arg:
+        return None
+
+    value = config_path_arg.strip()
+    if not value:
+        return None
+
+    return str(Path(value).expanduser())
+
+
 def _parse_quickstart_agent_specs(values: list[str] | None) -> list[dict[str, str | None]]:
     """Parse repeated --quickstart-agent values into explicit agent specs."""
     specs: list[dict[str, str | None]] = []
@@ -1916,6 +1928,27 @@ def _substitute_variables(obj: Any, variables: dict[str, str]) -> Any:
         return obj
 
 
+_MASSGEN_WORKSPACES_PREFIX = ".massgen/workspaces/"
+
+
+def _route_workspace_path(cwd: str) -> str:
+    """Route relative workspace paths under .massgen/workspaces/.
+
+    Absolute paths are returned unchanged. Paths already under
+    .massgen/workspaces/ are not double-prefixed.
+    """
+    from pathlib import PurePath
+
+    p = PurePath(cwd)
+    if p.is_absolute():
+        return cwd
+    # Don't double-prefix
+    normalized = str(p).replace("\\", "/")
+    if normalized.startswith(_MASSGEN_WORKSPACES_PREFIX) or normalized.startswith(".massgen/workspaces"):
+        return cwd
+    return f"{_MASSGEN_WORKSPACES_PREFIX}{cwd}"
+
+
 def resolve_config_path(config_arg: str | None) -> Path | None:
     """Resolve config file with flexible syntax.
 
@@ -2586,6 +2619,9 @@ def create_agents_from_config(
         if "cwd" in backend_config:
             variables = {"cwd": backend_config["cwd"]}
             backend_config = _substitute_variables(backend_config, variables)
+
+            # Route relative workspace paths under .massgen/workspaces/
+            backend_config["cwd"] = _route_workspace_path(backend_config["cwd"])
 
             # Apply unique suffix to workspace paths to prevent filesystem conflicts
             # and identity leakage between agents. Each agent gets a unique suffix.
@@ -3327,9 +3363,9 @@ def validate_mode_flag_combinations(args: argparse.Namespace) -> list[str]:
             errors.append(
                 "--quickstart-agent requires --quickstart --headless.",
             )
-        if getattr(args, "config_backend", None) or getattr(args, "config_model", None) or getattr(args, "config_agents", None) is not None:
+        if getattr(args, "config_backend", None) or getattr(args, "config_model", None) or getattr(args, "config_agent_id", None) or getattr(args, "config_agents", None) is not None:
             errors.append(
-                "--quickstart-agent cannot be combined with --config-backend, --config-model, or --config-agents.",
+                "--quickstart-agent cannot be combined with --config-backend, --config-model, --config-agent-id, or --config-agents.",
             )
 
     return errors
@@ -3457,13 +3493,33 @@ def build_cli_mode_defaults(args: argparse.Namespace) -> dict[str, Any]:
     return defaults
 
 
+def _build_cli_overrides_dict(args: argparse.Namespace) -> dict[str, Any]:
+    """Build a dict of CLI overrides for forwarding to the WebUI server.
+
+    Extracts config-affecting CLI flags that would otherwise be lost when
+    ``--web`` bypasses ``main()``.  Returns an empty dict when no flags apply.
+    """
+    overrides: dict[str, Any] = {}
+    if getattr(args, "eval_criteria", None):
+        overrides["eval_criteria"] = args.eval_criteria
+    if getattr(args, "checklist_criteria_preset", None):
+        overrides["checklist_criteria_preset"] = args.checklist_criteria_preset
+    if getattr(args, "orchestrator_timeout", None) is not None:
+        overrides["orchestrator_timeout"] = args.orchestrator_timeout
+    if getattr(args, "cwd_context", None):
+        overrides["cwd_context"] = args.cwd_context
+    if getattr(args, "web_review", False):
+        overrides["web_review"] = True
+    return overrides
+
+
 def _parse_coordination_config(coord_cfg: dict[str, Any]) -> "CoordinationConfig":
     """Parse a coordination config dict into a CoordinationConfig object.
 
     Centralizes the parsing logic used by run_question_with_history,
     run_single_question, and run_textual_interactive_mode.
     """
-    from .agent_config import CoordinationConfig
+    from .agent_config import CoordinationConfig, PromptImproverConfig
     from .evaluation_criteria_generator import EvaluationCriteriaGeneratorConfig
     from .persona_generator import PersonaGeneratorConfig
     from .subagent.models import SubagentOrchestratorConfig
@@ -3490,6 +3546,15 @@ def _parse_coordination_config(coord_cfg: dict[str, Any]) -> "CoordinationConfig
             persist_across_turns=ec_cfg.get("persist_across_turns", False),
             min_criteria=ec_cfg.get("min_criteria", 4),
             max_criteria=ec_cfg.get("max_criteria", 10),
+        )
+
+    # Parse prompt_improver config if present
+    prompt_improver_config = PromptImproverConfig()
+    if "prompt_improver" in coord_cfg:
+        pi_cfg = coord_cfg["prompt_improver"]
+        prompt_improver_config = PromptImproverConfig(
+            enabled=pi_cfg.get("enabled", False),
+            persist_across_turns=pi_cfg.get("persist_across_turns", False),
         )
 
     # Parse task_decomposer config if present
@@ -3537,6 +3602,7 @@ def _parse_coordination_config(coord_cfg: dict[str, Any]) -> "CoordinationConfig
         load_previous_session_skills=coord_cfg.get("load_previous_session_skills", False),
         persona_generator=persona_generator_config,
         evaluation_criteria_generator=eval_criteria_config,
+        prompt_improver=prompt_improver_config,
         pre_collab_voting_threshold=coord_cfg.get("pre_collab_voting_threshold"),
         enable_subagents=coord_cfg.get("enable_subagents", False),
         subagent_default_timeout=coord_cfg.get("subagent_default_timeout", 300),
@@ -3559,6 +3625,13 @@ def _parse_coordination_config(coord_cfg: dict[str, Any]) -> "CoordinationConfig
         round_evaluator_refine=coord_cfg.get("round_evaluator_refine", False),
         round_evaluator_transformation_pressure=coord_cfg.get("round_evaluator_transformation_pressure", "balanced"),
         enable_execution_trace_analyzer=coord_cfg.get("enable_execution_trace_analyzer", False),
+        auto_trace_analysis=coord_cfg.get("auto_trace_analysis", False),
+        evolving_criteria=coord_cfg.get("evolving_criteria", False),
+        evolving_criteria_score_threshold=coord_cfg.get("evolving_criteria_score_threshold", 8),
+        evolving_criteria_max_evolutions=coord_cfg.get("evolving_criteria_max_evolutions", 2),
+        evolving_criteria_min_high_score_count=coord_cfg.get("evolving_criteria_min_high_score_count", 2),
+        evolving_criteria_timeout=coord_cfg.get("evolving_criteria_timeout", 300),
+        enable_evaluator_personas=coord_cfg.get("enable_evaluator_personas", False),
         enable_quality_rethink_on_iteration=coord_cfg.get("enable_quality_rethink_on_iteration", False),
         enable_novelty_on_iteration=coord_cfg.get("enable_novelty_on_iteration", False),
         novelty_injection=coord_cfg.get("novelty_injection", "none"),
@@ -3566,6 +3639,12 @@ def _parse_coordination_config(coord_cfg: dict[str, Any]) -> "CoordinationConfig
         checklist_criteria_preset=coord_cfg.get("checklist_criteria_preset"),
         checklist_criteria_inline=coord_cfg.get("checklist_criteria_inline"),
         resume_from_log=coord_cfg.get("resume_from_log"),
+        checkpoint_enabled=coord_cfg.get("checkpoint_enabled", False),
+        checkpoint_mode=coord_cfg.get("checkpoint_mode", "conversation"),
+        checkpoint_guidance=coord_cfg.get("checkpoint_guidance", ""),
+        checkpoint_gated_patterns=coord_cfg.get("checkpoint_gated_patterns", []),
+        web_review=coord_cfg.get("web_review", False),
+        fast_iteration_mode=coord_cfg.get("fast_iteration_mode", False),
     )
 
 
@@ -3912,7 +3991,15 @@ async def run_question_with_history(
         if raw_criteria:
             from .evaluation_criteria_generator import GeneratedCriterion
 
-            generated_evaluation_criteria = [GeneratedCriterion(id=c["id"], text=c["text"], category=c["category"]) for c in raw_criteria]
+            generated_evaluation_criteria = [
+                GeneratedCriterion(
+                    id=c.get("id", f"E{i + 1}"),
+                    text=c.get("text") or c.get("description") or c.get("name", ""),
+                    category=c.get("category", "standard"),
+                )
+                for i, c in enumerate(raw_criteria)
+                if c.get("text") or c.get("description") or c.get("name")
+            ]
             logger.info("[CLI] Reusing persisted evaluation criteria from previous turn")
 
     orchestrator = Orchestrator(
@@ -3929,12 +4016,36 @@ async def run_question_with_history(
         nlip_config=orchestrator_nlip_config,
         generated_personas=generated_personas,  # Only if persist_across_turns=True
         generated_evaluation_criteria=generated_evaluation_criteria,
+        raw_config=kwargs.get("raw_config"),
     )
 
     # Apply pre-populated workspaces from incomplete turns (passed from interactive mode)
     pre_populated_workspaces = kwargs.pop("pre_populated_workspaces", None)
     if pre_populated_workspaces:
         orchestrator._pre_populated_workspaces = pre_populated_workspaces
+
+    # Detect main_agent for checkpoint coordination mode
+    # MCP injection is handled by orchestrator._init_checkpoint_tool() in __init__
+    _ckpt_main_agent_id = None
+    raw_agents_for_checkpoint = kwargs.get("agents_config", [])
+    if isinstance(raw_agents_for_checkpoint, list):
+        for agent_data in raw_agents_for_checkpoint:
+            if isinstance(agent_data, dict) and agent_data.get("main_agent") is True:
+                _ckpt_main_agent_id = agent_data.get("id")
+                break
+
+    # Fallback: if checkpoint is enabled but no main_agent is set,
+    # default to the first agent
+    if not _ckpt_main_agent_id:
+        if getattr(orchestrator_config, "coordination_config", None) and getattr(
+            orchestrator_config.coordination_config,
+            "checkpoint_enabled",
+            False,
+        ):
+            _ckpt_main_agent_id = sorted(agents.keys())[0] if agents else None
+
+    if _ckpt_main_agent_id and _ckpt_main_agent_id in agents:
+        orchestrator.set_main_agent(_ckpt_main_agent_id)
 
     # Parse per-agent subtask assignments for decomposition mode
     if orchestrator_config.coordination_mode == "decomposition":
@@ -4363,6 +4474,7 @@ async def run_single_question(
             enable_rate_limit=kwargs.get("enable_rate_limit", False),
             enable_nlip=orchestrator_enable_nlip,
             nlip_config=orchestrator_nlip_config,
+            raw_config=kwargs.get("raw_config"),
         )
 
         # Parse per-agent subtask assignments for decomposition mode
@@ -4491,6 +4603,34 @@ async def run_single_question(
                 )
         except Exception as e:
             logger.warning(f"Failed to copy final results to turn root: {e}")
+
+        # Print ANSWER: path in automation mode for easy result discovery
+        if ui_config.get("automation_mode"):
+            try:
+                from massgen.logger_config import get_log_session_dir as _get_lsd
+                from massgen.logger_config import (
+                    get_log_session_dir_base as _get_lsd_base,
+                )
+
+                _answer_final_dir = _get_lsd_base() / "final"
+                # Also check attempt-level if turn-level doesn't exist
+                if not _answer_final_dir.exists():
+                    _answer_final_dir = _get_lsd() / "final"
+                winning_agent = getattr(orchestrator, "_selected_agent", None)
+                if winning_agent and _answer_final_dir.exists():
+                    answer_file = _answer_final_dir / winning_agent / "answer.txt"
+                    if answer_file.exists():
+                        _automation_print(f"ANSWER: {answer_file.resolve()}")
+                    else:
+                        # Fallback: find any answer.txt in the final dir
+                        for agent_dir in sorted(_answer_final_dir.iterdir()):
+                            if agent_dir.is_dir():
+                                fallback = agent_dir / "answer.txt"
+                                if fallback.exists():
+                                    _automation_print(f"ANSWER: {fallback.resolve()}")
+                                    break
+            except Exception:
+                pass  # Graceful: don't fail the run if answer path can't be determined
 
         # Handle session persistence for single-question runs
         if session_id:
@@ -7170,7 +7310,15 @@ async def run_textual_interactive_mode(
                 if raw_criteria:
                     from .evaluation_criteria_generator import GeneratedCriterion
 
-                    generated_evaluation_criteria = [GeneratedCriterion(id=c["id"], text=c["text"], category=c["category"]) for c in raw_criteria]
+                    generated_evaluation_criteria = [
+                        GeneratedCriterion(
+                            id=c.get("id", f"E{i + 1}"),
+                            text=c.get("text") or c.get("description") or c.get("name", ""),
+                            category=c.get("category", "standard"),
+                        )
+                        for i, c in enumerate(raw_criteria)
+                        if c.get("text") or c.get("description") or c.get("name")
+                    ]
                     logger.info("[Textual] Reusing persisted evaluation criteria from previous turn")
 
             # Create orchestrator with multi-turn state
@@ -7198,6 +7346,7 @@ async def run_textual_interactive_mode(
                 generated_personas=generated_personas,
                 generated_evaluation_criteria=generated_evaluation_criteria,
                 plan_session_id=plan_session_id,
+                raw_config=original_config or kwargs.get("raw_config"),
             )
 
             # Parse per-agent subtask assignments for decomposition mode
@@ -9909,6 +10058,9 @@ async def main(args):
         elif "agent" in config:
             kwargs["agents_config"] = [config["agent"]]
 
+        # Pass raw config dict for checkpoint subprocess config generation
+        kwargs["raw_config"] = config
+
         # Add rate limit flag to kwargs for interactive mode
         kwargs["enable_rate_limit"] = enable_rate_limit
         kwargs["parse_at_references"] = getattr(args, "parse_at_references", True)
@@ -9943,6 +10095,130 @@ async def main(args):
                 config_content=raw_config_for_metadata,
                 cli_args=vars(args),
             )
+
+        # Handle step mode: run one agent for one step, then exit
+        if getattr(args, "step", False):
+            from .agent_config import StepModeConfig
+            from .step_mode import (
+                save_step_mode_output,
+                validate_step_mode_args,
+                validate_step_mode_config,
+            )
+
+            try:
+                validate_step_mode_args(args)
+                validate_step_mode_config(config)
+            except ValueError as e:
+                print(f"❌ Step mode validation error: {e}")
+                sys.exit(1)
+
+            # Step mode implies automation
+            args.automation = True
+            ui_config["display_type"] = "silent"
+            ui_config["logging_enabled"] = True
+            ui_config["automation_mode"] = True
+
+            step_config = StepModeConfig(enabled=True, session_dir=args.session_dir)
+
+            if not args.question:
+                print("❌ --step requires a question/task")
+                sys.exit(1)
+
+            _automation_print(f"SESSION_DIR: {Path(args.session_dir).resolve()}")
+
+            # Create agents (same as normal single-question mode)
+            orchestrator_cfg = config.get("orchestrator", {})
+            agents = create_agents_from_config(
+                config,
+                orchestrator_cfg,
+                memory_session_id=memory_session_id,
+            )
+
+            # Build orchestrator config (mirrors the normal path)
+            orchestrator_config = AgentConfig()
+            timeout_settings = config.get("timeout_settings", {})
+            if timeout_settings:
+                orchestrator_config.timeout_config = TimeoutConfig(**timeout_settings)
+            _apply_orchestrator_runtime_params(orchestrator_config, orchestrator_cfg)
+            if "coordination" in orchestrator_cfg:
+                orchestrator_config.coordination_config = _parse_coordination_config(
+                    orchestrator_cfg["coordination"],
+                )
+
+            snapshot_storage = _scope_snapshot_storage(orchestrator_cfg.get("snapshot_storage"))
+            agent_temporary_workspace = _scope_agent_temporary_workspace(
+                orchestrator_cfg.get("agent_temporary_workspace"),
+            )
+
+            # Create orchestrator with step mode
+            orchestrator = Orchestrator(
+                agents=agents,
+                config=orchestrator_config,
+                session_id=memory_session_id,
+                snapshot_storage=snapshot_storage,
+                agent_temporary_workspace=agent_temporary_workspace,
+                step_mode=step_config,
+                raw_config=kwargs.get("raw_config"),
+            )
+
+            # Build UI and run question
+            ui = _build_coordination_ui(ui_config)
+            orchestrator.coordination_ui = ui
+
+            import time as _time
+
+            _step_start = _time.monotonic()
+
+            async for chunk in orchestrator.chat(
+                [{"role": "user", "content": args.question}],
+            ):
+                pass  # Stream through silently in automation mode
+
+            _step_duration = _time.monotonic() - _step_start
+
+            # Save step output
+            if orchestrator._step_action_data:
+                action_data = orchestrator._step_action_data
+                real_agent_id = list(agents.keys())[0]
+
+                # Get seen_steps for votes
+                seen_steps = None
+                if action_data["action"] == "vote":
+                    from .step_mode import load_session_dir_inputs
+
+                    inputs = load_session_dir_inputs(args.session_dir)
+                    seen_steps = {}
+                    for va_id, va_state in inputs.virtual_agents.items():
+                        if va_state.latest_answer_step is not None:
+                            seen_steps[va_id] = va_state.latest_answer_step
+
+                save_step_mode_output(
+                    session_dir=args.session_dir,
+                    agent_id=real_agent_id,
+                    action=action_data["action"],
+                    answer_text=action_data.get("answer_text"),
+                    vote_target=action_data.get("vote_target"),
+                    vote_reason=action_data.get("vote_reason"),
+                    seen_steps=seen_steps,
+                    duration_seconds=_step_duration,
+                    workspace_source=action_data.get("workspace_path"),
+                    stale_workspace_paths=action_data.get("stale_workspace_paths"),
+                )
+
+                # Save post-coordination artifacts (final/, coordination_events.json, etc.)
+                from massgen.logger_config import get_log_session_dir
+
+                log_session_dir = get_log_session_dir()
+                if log_session_dir:
+                    orchestrator.finalize_step_mode(log_session_dir)
+
+                _automation_print(f"ACTION: {action_data['action']}")
+                _automation_print(f"STATUS: {Path(args.session_dir).resolve() / 'agents' / real_agent_id / 'last_action.json'}")
+            else:
+                print("❌ Step mode: agent did not produce an answer or vote", file=sys.stderr)
+                sys.exit(2)
+
+            sys.exit(0)
 
         # Handle plan-and-execute mode
         if getattr(args, "plan_and_execute", False):
@@ -10605,6 +10881,8 @@ def main_parser() -> argparse.ArgumentParser:
 
     Extracted so tests can parse arguments without running cli_main().
     """
+    from massgen.backend.capabilities import get_all_backend_types
+
     parser = argparse.ArgumentParser(
         description="MassGen - Multi-Agent Coordination CLI",
         formatter_class=argparse.RawDescriptionHelpFormatter,
@@ -10668,7 +10946,12 @@ Environment Variables:
     config_group.add_argument(
         "--config",
         type=str,
-        help="Path to YAML/JSON configuration file or @examples/NAME. With --quickstart, this is used as the output filename under .massgen/",
+        help=(
+            "Path to YAML/JSON configuration file or @examples/NAME. With "
+            "interactive --quickstart, this is used as the output filename under "
+            ".massgen/. With --quickstart --headless, this is used as the exact "
+            "output config path."
+        ),
     )
     config_group.add_argument(
         "--select",
@@ -10678,21 +10961,7 @@ Environment Variables:
     config_group.add_argument(
         "--backend",
         type=str,
-        choices=[
-            "chatcompletion",
-            "claude",
-            "gemini",
-            "gemini_cli",
-            "grok",
-            "openai",
-            "azure_openai",
-            "copilot",
-            "claude_code",
-            "zai",
-            "lmstudio",
-            "vllm",
-            "sglang",
-        ],
+        choices=sorted(get_all_backend_types()),
         help="Backend type for quick setup",
     )
 
@@ -10782,10 +11051,28 @@ Environment Variables:
         help="Don't auto-open browser when using --web with a question",
     )
     parser.add_argument(
+        "--web-review",
+        action="store_true",
+        default=False,
+        help="Enable change review modal in WebUI for approving/rejecting git diffs (requires --web)",
+    )
+    parser.add_argument(
         "--automation",
         action="store_true",
         help="Enable automation mode: silent output (~10 lines), status.json tracking, meaningful exit codes. "
         "REQUIRED for LLM agents and background execution. Automatically isolates workspaces for parallel runs.",
+    )
+    parser.add_argument(
+        "--step",
+        action="store_true",
+        default=False,
+        help="Step mode: run one agent for one step (new_answer or vote), then exit. " "Config must define exactly one agent. Prior answers loaded from --session-dir.",
+    )
+    parser.add_argument(
+        "--session-dir",
+        type=str,
+        default=None,
+        help="Session directory for step mode. Contains agents/{id}/{step}/answer.json inputs " "and receives step outputs. Used with --step.",
     )
     parser.add_argument(
         "--stream-events",
@@ -10878,7 +11165,10 @@ Environment Variables:
         "--eval-criteria",
         type=str,
         metavar="FILE",
-        help="Path to JSON file with evaluation criteria. " "Each entry: {text, category (must/should/could), verify_by?}. " "Injected as checklist_criteria_inline in coordination config.",
+        help="Path to JSON file with evaluation criteria. "
+        "Each entry: {text, category (primary/standard/stretch), anti_patterns?, verify_by?}. "
+        "Also accepts 'description' or 'name' as aliases for 'text'. "
+        "Injected as checklist_criteria_inline in coordination config.",
     )
     parser.add_argument(
         "--checklist-criteria-preset",
@@ -10924,7 +11214,7 @@ Environment Variables:
         "--config-agents",
         type=int,
         default=None,
-        help="Number of agents for --generate-config (default: 2)",
+        help="Number of agents for --generate-config or --quickstart --headless (default: 1)",
     )
     parser.add_argument(
         "--config-backend",
@@ -10935,6 +11225,11 @@ Environment Variables:
         "--config-model",
         type=str,
         help="Model name for --generate-config (e.g., 'gpt-5', 'claude-sonnet-4', 'gemini-2.5-pro')",
+    )
+    parser.add_argument(
+        "--config-agent-id",
+        type=str,
+        help="Explicit agent id for single-agent --generate-config or --quickstart --headless runs",
     )
     parser.add_argument(
         "--config-docker",
@@ -10950,7 +11245,7 @@ Environment Variables:
         "--quickstart-agent",
         action="append",
         dest="quickstart_agents",
-        help="Explicit headless quickstart agent spec. Repeat for mixed providers, e.g. " "--quickstart-agent backend=claude,model=claude-opus-4-6",
+        help="Explicit headless quickstart agent spec. Repeat for mixed providers, e.g. " "--quickstart-agent id=agent_a,backend=claude,model=claude-opus-4-6",
     )
     parser.add_argument(
         "--setup",
@@ -11091,9 +11386,28 @@ def _load_eval_criteria(file_path: str) -> list[dict]:
     except json.JSONDecodeError as e:
         print(f"{BRIGHT_RED}Error: --eval-criteria file is not valid JSON: {e}{RESET}")
         sys.exit(EXIT_CONFIG_ERROR)
+    # Accept both bare array [...] and wrapped {"criteria": [...]} format
+    # (the latter is what MassGen's quality tools produce)
+    if isinstance(criteria_data, dict) and "criteria" in criteria_data:
+        criteria_data = criteria_data["criteria"]
     if not isinstance(criteria_data, list):
-        print(f"{BRIGHT_RED}Error: --eval-criteria must be a JSON array{RESET}")
+        print(f'{BRIGHT_RED}Error: --eval-criteria must be a JSON array or {{"criteria": [...]}}{RESET}')
         sys.exit(EXIT_CONFIG_ERROR)
+
+    # Validate each criterion has a text field (or common alias)
+    for i, item in enumerate(criteria_data):
+        if not isinstance(item, dict):
+            print(f"{BRIGHT_RED}Error: --eval-criteria item {i + 1} must be a JSON object, got {type(item).__name__}{RESET}")
+            sys.exit(EXIT_CONFIG_ERROR)
+        has_text = item.get("text") or item.get("description") or item.get("name")
+        if not has_text:
+            print(
+                f"{BRIGHT_RED}Error: --eval-criteria item {i + 1} missing 'text' field.\n"
+                f'  Expected: {{"text": "...", "category": "primary|standard|stretch"}}\n'
+                f"  Got keys: {list(item.keys())}{RESET}",
+            )
+            sys.exit(EXIT_CONFIG_ERROR)
+
     return criteria_data
 
 
@@ -11248,6 +11562,7 @@ def _cli_main_continued(args):
         logger.debug(f"Command line arguments: {vars(args)}")
 
     quickstart_config_filename = _quickstart_filename_from_config_arg(args.config) if args.quickstart else None
+    headless_quickstart_output_path = _headless_quickstart_output_path_from_config_arg(args.config) if args.quickstart else None
 
     def _run_quickstart_wizard_tui(config_filename: str | None = None):
         """Launch quickstart wizard TUI. Returns result dict or None."""
@@ -11331,7 +11646,7 @@ def _cli_main_continued(args):
 
                 print(f"{BRIGHT_YELLOW}   Press Ctrl+C to stop{RESET}\n")
 
-                browser_url = auto_url if auto_url else f"http://{args.web_host}:{args.web_port}"
+                browser_url = auto_url if auto_url else f"http://{args.web_host}:{args.web_port}/"
 
                 def open_browser():
                     import time
@@ -11493,7 +11808,7 @@ def _cli_main_continued(args):
 
             print(f"{BRIGHT_CYAN}🌐 Starting MassGen Web Quickstart...{RESET}")
             print(
-                f"{BRIGHT_GREEN}   Server: http://{args.web_host}:{args.web_port}/setup?temporary=1{RESET}",
+                f"{BRIGHT_GREEN}   Server: http://{args.web_host}:{args.web_port}/?temporary=1&wizard=open{RESET}",
             )
             print(
                 f"{BRIGHT_YELLOW}   This temporary setup session will close automatically when complete{RESET}\n",
@@ -11530,6 +11845,12 @@ def _cli_main_continued(args):
             question = getattr(args, "question", None)
             automation_mode = getattr(args, "automation", False)
 
+            # Auto-resolve default config (same as main() does)
+            if not config_path and automation_mode and question:
+                resolved_default = resolve_config_path(None)
+                if resolved_default:
+                    config_path = str(resolved_default)
+
             print(f"{BRIGHT_CYAN}🌐 Starting MassGen Web UI...{RESET}")
             print(
                 f"{BRIGHT_GREEN}   Server: http://{args.web_host}:{args.web_port}{RESET}",
@@ -11541,7 +11862,9 @@ def _cli_main_continued(args):
                     f"{BRIGHT_YELLOW}   No config specified - use --config or select in UI{RESET}",
                 )
 
-            # Build auto-launch URL with question and/or config if provided
+            # Build auto-launch URL. V2 is the default UI (no param needed).
+            # The frontend auto-starts coordination when both prompt= and config=
+            # are in the URL (see App.tsx useEffect at line ~226).
             import urllib.parse
 
             base_url = f"http://{args.web_host}:{args.web_port}/"
@@ -11551,19 +11874,21 @@ def _cli_main_continued(args):
             if config_path:
                 url_params.append(f"config={urllib.parse.quote(config_path)}")
             auto_url = f"{base_url}?{'&'.join(url_params)}" if url_params else base_url
-            if url_params:
-                print(f"{BRIGHT_GREEN}   Auto-launch URL: {auto_url}{RESET}")
+            # Print a short URL for the terminal (no giant prompt)
+            short_url_params = []
+            if config_path:
+                short_url_params.append(f"config={urllib.parse.quote(config_path)}")
+            short_url = f"{base_url}?{'&'.join(short_url_params)}" if short_url_params else base_url
+            print(f"{BRIGHT_GREEN}   UI: {short_url}{RESET}")
 
             if automation_mode:
-                print(
-                    f"{BRIGHT_YELLOW}   Automation mode enabled - progress visible in web UI{RESET}",
-                )
-                print(
-                    f"{BRIGHT_CYAN}   Status files: .massgen/massgen_logs/log_<timestamp>/turn_N/attempt_N/status.json{RESET}",
-                )
-                if not question:
+                if question:
                     print(
-                        f"{BRIGHT_YELLOW}   (no question provided - use web UI to start coordination){RESET}",
+                        f"{BRIGHT_YELLOW}   Run starting immediately — open browser anytime to monitor{RESET}",
+                    )
+                else:
+                    print(
+                        f"{BRIGHT_YELLOW}   No question provided — open the URL above to start a run{RESET}",
                     )
 
             print(f"{BRIGHT_YELLOW}   Press Ctrl+C to stop{RESET}\n")
@@ -11571,16 +11896,12 @@ def _cli_main_continued(args):
             # Auto-open browser (unless --no-browser or automation mode)
             no_browser = getattr(args, "no_browser", False)
             if not no_browser and not automation_mode:
-                # Use auto_url if available, otherwise just open the base URL
-                browser_url = auto_url if auto_url else f"http://{args.web_host}:{args.web_port}"
-                # Remove trailing slash to avoid double slashes
-                browser_url = browser_url.rstrip("/")
-
-                # Check for --setup or --quickstart flags to open specific pages
+                browser_url = auto_url
+                separator = "&" if "?" in browser_url else "?"
                 if getattr(args, "setup", False):
-                    browser_url += "/setup"
+                    browser_url += f"{separator}setup=open"
                 elif getattr(args, "quickstart", False):
-                    browser_url += "/?wizard=open"
+                    browser_url += f"{separator}wizard=open"
 
                 def open_browser():
                     import time
@@ -11589,11 +11910,14 @@ def _cli_main_continued(args):
                     webbrowser.open(browser_url)
 
                 threading.Thread(target=open_browser, daemon=True).start()
+            cli_overrides = _build_cli_overrides_dict(args)
             run_server(
                 host=args.web_host,
                 port=args.web_port,
                 config_path=config_path,
                 automation_mode=automation_mode,
+                cli_overrides=cli_overrides or None,
+                question=question if question else None,
             )
         except ImportError as e:
             print(f"{BRIGHT_RED}❌ Web UI dependencies not installed.{RESET}")
@@ -11628,11 +11952,12 @@ def _cli_main_continued(args):
             builder = ConfigBuilder()
             success = builder.generate_config_programmatic(
                 output_path=args.generate_config,
-                num_agents=args.config_agents or 2,
+                num_agents=args.config_agents if args.config_agents is not None else 1,
                 backend_type=args.config_backend,
                 model=args.config_model,
                 use_docker=args.config_docker,
                 context_path=args.config_context_path,
+                agent_id=args.config_agent_id,
             )
             if success:
                 print(
@@ -11658,20 +11983,20 @@ def _cli_main_continued(args):
         # Headless quickstart: auto-detect keys, generate config, no user interaction.
         # Also triggers when stdin is not a TTY (e.g., piped from an AI agent).
         if args.headless or not sys.stdin.isatty():
-            from massgen.config_builder import ConfigBuilder
-
             builder = ConfigBuilder()
             quickstart_agent_specs = _parse_quickstart_agent_specs(
                 getattr(args, "quickstart_agents", None),
             )
             headless_result = builder.run_quickstart_headless(
                 output_dir=".massgen",
-                num_agents=args.config_agents or 3,
+                output_path=headless_quickstart_output_path,
+                num_agents=args.config_agents if args.config_agents is not None else 1,
                 backend_override=args.config_backend,
                 model_override=args.config_model,
                 use_docker=args.config_docker if args.config_docker else None,
                 context_path=args.config_context_path,
                 agent_specs=quickstart_agent_specs or None,
+                agent_id=args.config_agent_id,
             )
 
             # Docker pull if available and headless
@@ -11733,7 +12058,7 @@ def _cli_main_continued(args):
 
                         print(f"{BRIGHT_YELLOW}   Press Ctrl+C to stop{RESET}\n")
 
-                        browser_url = auto_url if auto_url else f"http://{args.web_host}:{args.web_port}"
+                        browser_url = auto_url if auto_url else f"http://{args.web_host}:{args.web_port}/"
 
                         def open_browser():
                             import time
@@ -11931,7 +12256,7 @@ def _cli_main_continued(args):
 
                                 print(f"{BRIGHT_YELLOW}   Press Ctrl+C to stop{RESET}\n")
 
-                                browser_url = auto_url if auto_url else f"http://{args.web_host}:{args.web_port}"
+                                browser_url = auto_url if auto_url else f"http://{args.web_host}:{args.web_port}/"
 
                                 def open_browser():
                                     import time

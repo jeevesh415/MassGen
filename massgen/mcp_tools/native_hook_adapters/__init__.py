@@ -10,6 +10,7 @@ Available adapters:
 - ClaudeCodeNativeHookAdapter: Adapter for Claude Code SDK HookMatcher format
 - CopilotNativeHookAdapter: Adapter for Copilot SDK onPreToolUse/onPostToolUse format
 - GeminiCLINativeHookAdapter: Adapter for Gemini CLI settings.json hook format
+- CodexNativeHookAdapter: Adapter for Codex hooks.json command hooks
 
 Example usage:
     from massgen.mcp_tools.native_hook_adapters import ClaudeCodeNativeHookAdapter
@@ -20,11 +21,13 @@ Example usage:
 
 from .base import NativeHookAdapter
 from .claude_code_adapter import ClaudeCodeNativeHookAdapter, is_claude_sdk_available
+from .codex_adapter import CodexNativeHookAdapter
 from .copilot_adapter import CopilotNativeHookAdapter, is_copilot_sdk_available
 from .gemini_cli_adapter import GeminiCLINativeHookAdapter
 
 __all__ = [
     "ClaudeCodeNativeHookAdapter",
+    "CodexNativeHookAdapter",
     "CopilotNativeHookAdapter",
     "GeminiCLINativeHookAdapter",
     "NativeHookAdapter",

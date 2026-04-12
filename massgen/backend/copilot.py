@@ -767,8 +767,30 @@ class CopilotBackend(NativeToolBackendMixin, StreamingBufferMixin, LLMBackend):
 
             def _make_handler(name: str, q: asyncio.Queue):
                 async def handler(invocation):
-                    args = invocation.get("arguments", {})
-                    call_id = invocation.get("tool_call_id", f"call-{uuid.uuid4()}")
+                    # SDK passes a ToolInvocation dataclass (.arguments, .tool_call_id).
+                    # Fallback to dict/string for forward compatibility.
+                    if hasattr(invocation, "arguments"):
+                        args = invocation.arguments or {}
+                        call_id = getattr(invocation, "tool_call_id", None) or f"call-{uuid.uuid4()}"
+                    elif isinstance(invocation, dict):
+                        args = invocation.get("arguments", {})
+                        call_id = invocation.get("tool_call_id", f"call-{uuid.uuid4()}")
+                    elif isinstance(invocation, str):
+                        try:
+                            invocation = json.loads(invocation)
+                        except (json.JSONDecodeError, TypeError):
+                            invocation = {}
+                        args = invocation.get("arguments", {}) if isinstance(invocation, dict) else {}
+                        call_id = invocation.get("tool_call_id", f"call-{uuid.uuid4()}") if isinstance(invocation, dict) else f"call-{uuid.uuid4()}"
+                    else:
+                        args = {}
+                        call_id = f"call-{uuid.uuid4()}"
+                    # Args may arrive as JSON string
+                    if isinstance(args, str):
+                        try:
+                            args = json.loads(args)
+                        except (json.JSONDecodeError, TypeError):
+                            args = {}
                     q.put_nowait(("workflow_tool", name, args, call_id))
                     return {
                         "textResultForLlm": f"Tool {name} executed successfully",

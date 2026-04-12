@@ -379,6 +379,106 @@ def test_normalize_next_tasks_payload_requires_thesis_shift_task_when_strategy_d
 
 
 # ---------------------------------------------------------------------------
+# Evolved prompt tests
+# ---------------------------------------------------------------------------
+
+
+def test_normalize_next_tasks_with_evolved_prompt():
+    """evolved_prompt is extracted when present and well-formed."""
+    from massgen.subagent.models import RoundEvaluatorResult
+
+    payload = _make_valid_next_tasks_payload()
+    payload["evolved_prompt"] = {
+        "prompt": "Write a poem about the ocean that explores depth and pressure.",
+        "evolution_rationale": "Prior attempts stayed at surface level.",
+    }
+
+    result = RoundEvaluatorResult.normalize_next_tasks_payload(payload)
+    assert result is not None
+    assert result["evolved_prompt"]["prompt"] == payload["evolved_prompt"]["prompt"]
+    assert result["evolved_prompt"]["evolution_rationale"] == payload["evolved_prompt"]["evolution_rationale"]
+
+
+def test_normalize_next_tasks_without_evolved_prompt():
+    """Payload without evolved_prompt still validates successfully."""
+    from massgen.subagent.models import RoundEvaluatorResult
+
+    payload = _make_valid_next_tasks_payload()
+    assert "evolved_prompt" not in payload
+
+    result = RoundEvaluatorResult.normalize_next_tasks_payload(payload)
+    assert result is not None
+
+
+def test_normalize_next_tasks_malformed_evolved_prompt():
+    """Malformed evolved_prompt is ignored — payload still validates."""
+    from massgen.subagent.models import RoundEvaluatorResult
+
+    payload = _make_valid_next_tasks_payload()
+    # String instead of dict
+    payload["evolved_prompt"] = "just a string"
+
+    result = RoundEvaluatorResult.normalize_next_tasks_payload(payload)
+    assert result is not None
+    # Malformed evolved_prompt should be removed from the normalized result
+    assert result.get("evolved_prompt") is None
+
+
+def test_normalize_next_tasks_evolved_prompt_empty_string():
+    """evolved_prompt with empty prompt string is ignored."""
+    from massgen.subagent.models import RoundEvaluatorResult
+
+    payload = _make_valid_next_tasks_payload()
+    payload["evolved_prompt"] = {"prompt": "", "evolution_rationale": "reasons"}
+
+    result = RoundEvaluatorResult.normalize_next_tasks_payload(payload)
+    assert result is not None
+    assert result.get("evolved_prompt") is None
+
+
+def test_extract_strategy_includes_evolved_prompt():
+    """extract_next_tasks_strategy returns evolved_prompt fields."""
+    from massgen.subagent.models import RoundEvaluatorResult
+
+    payload = _make_valid_next_tasks_payload()
+    payload["evolved_prompt"] = {
+        "prompt": "Improved task text.",
+        "evolution_rationale": "Clarity improvements.",
+    }
+
+    strategy = RoundEvaluatorResult.extract_next_tasks_strategy(payload)
+    assert strategy["evolved_prompt"] == "Improved task text."
+    assert strategy["evolved_prompt_rationale"] == "Clarity improvements."
+
+
+def test_extract_strategy_without_evolved_prompt():
+    """extract_next_tasks_strategy returns None for missing evolved_prompt."""
+    from massgen.subagent.models import RoundEvaluatorResult
+
+    payload = _make_valid_next_tasks_payload()
+    strategy = RoundEvaluatorResult.extract_next_tasks_strategy(payload)
+    assert strategy["evolved_prompt"] is None
+    assert strategy["evolved_prompt_rationale"] is None
+
+
+def test_round_evaluator_result_serialization_roundtrip_with_evolved_prompt():
+    """Serialization roundtrip preserves evolved_prompt fields."""
+    from massgen.subagent.models import RoundEvaluatorResult
+
+    original = RoundEvaluatorResult(
+        packet_text="critique",
+        status="success",
+        subagent_id="eval_1",
+        evolved_prompt="Evolved task text.",
+        evolved_prompt_rationale="Pushed for more depth.",
+    )
+    restored = RoundEvaluatorResult.from_dict(original.to_dict())
+
+    assert restored.evolved_prompt == "Evolved task text."
+    assert restored.evolved_prompt_rationale == "Pushed for more depth."
+
+
+# ---------------------------------------------------------------------------
 # Packet-only checklist instruction tests
 # ---------------------------------------------------------------------------
 
@@ -462,7 +562,7 @@ def test_auto_injected_evaluator_result_block_includes_summary():
     assert "Key findings: E1=4, E3=7" in block
     assert "<evaluator_summary" in block
     assert "submit_checklist" in block and "do not call" in block.lower()
-    assert "propose_improvements" in block and "do not call" in block.lower()
+    assert "draft_approach" in block and "do not call" in block.lower()
     assert "diagnostic report" in block.lower()
     assert "pure text artifact" in block.lower()
     assert "implementation_guidance" in block
@@ -630,8 +730,9 @@ def test_example_round_evaluator_config_exists_and_validates():
     assert config["orchestrator"]["image_generation_backend"] == "openai"
     assert config["orchestrator"]["video_generation_backend"] == "openai"
     assert config["orchestrator"]["coordination"]["round_evaluator_transformation_pressure"] in ("balanced", "aggressive", "gentle")
-    assert "round_evaluator_refine:" not in raw_text
-    assert "round_evaluator_skip_synthesis:" not in raw_text
+    # These keys should not be active in the example config (commented out is fine)
+    assert "round_evaluator_refine" not in config["orchestrator"]["coordination"]
+    assert "round_evaluator_skip_synthesis" not in config["orchestrator"]["coordination"]
     child_agents = config["orchestrator"]["coordination"]["subagent_orchestrator"]["agents"]
     assert len(child_agents) == 3
 
@@ -658,3 +759,85 @@ def test_yaml_schema_docs_list_round_evaluator_transformation_pressure():
     assert "gentle" in content
     assert "balanced" in content
     assert "aggressive" in content
+
+
+# ---------------------------------------------------------------------------
+# Evolved prompt — orchestrator-level integration tests
+# ---------------------------------------------------------------------------
+
+
+def test_evolved_prompt_replaces_task_in_original_message():
+    """When an evolved prompt exists, it should appear inside <ORIGINAL MESSAGE> tags."""
+    from massgen.message_templates import MessageTemplates
+
+    templates = MessageTemplates()
+    original_task = "Write a poem about the ocean."
+    evolved_task = "Write a visceral poem about the ocean that explores pressure, bioluminescence, and the terror of depth."
+
+    # Simulate: effective_task = self._evolved_prompts.get(agent_id, task)
+    effective_task = evolved_task  # evolved prompt exists
+
+    user_msg = templates.format_original_message(task=effective_task)
+
+    assert "<ORIGINAL MESSAGE>" in user_msg
+    assert evolved_task in user_msg
+    assert original_task not in user_msg
+    assert "<END OF ORIGINAL MESSAGE>" in user_msg
+
+
+def test_stale_answer_note_injected_when_evolved_and_answers_exist():
+    """Stale answer note appears between <END OF ORIGINAL MESSAGE> and peer answers."""
+    from massgen.message_templates import MessageTemplates
+
+    templates = MessageTemplates()
+    evolved_task = "Evolved task text."
+    user_msg = templates.build_initial_conversation(
+        task=evolved_task,
+        agent_summaries={"agent_b": "Prior answer under old prompt."},
+        valid_agent_ids=["agent_b"],
+        base_system_message="You are helpful.",
+    )["user_message"]
+
+    # Simulate stale note injection (mirrors orchestrator logic at line 13593-13601)
+    stale_answer_note = "Note: The answers below were produced for an earlier " "version of this task and may not fully satisfy the " "evolved requirements above."
+    from massgen.orchestrator import Orchestrator
+
+    result = Orchestrator._insert_runtime_context_blocks_after_original_message(
+        None,  # self — not used for data, method only reads args
+        user_msg,
+        [stale_answer_note],
+    )
+
+    assert stale_answer_note in result
+    # Note should be between end-of-original and answers
+    end_idx = result.index("<END OF ORIGINAL MESSAGE>")
+    note_idx = result.index("Note: The answers below")
+    answers_idx = result.index("CURRENT ANSWERS")
+    assert end_idx < note_idx < answers_idx
+
+
+def test_no_stale_note_without_evolved_prompt():
+    """No stale note when using the original task (no evolved prompt)."""
+    # Simulate: agent_id NOT in self._evolved_prompts and normalized_answers exist
+    evolved_prompts: dict[str, str] = {}
+    agent_id = "agent_a"
+    normalized_answers = {"agent_b": "Some answer."}
+
+    stale_answer_note = None
+    if agent_id in evolved_prompts and normalized_answers:
+        stale_answer_note = "Note: The answers below were produced for an earlier version..."
+
+    assert stale_answer_note is None
+
+
+def test_no_stale_note_without_answers():
+    """No stale note when evolved prompt is active but no peer answers exist."""
+    evolved_prompts = {"agent_a": "Evolved task."}
+    agent_id = "agent_a"
+    normalized_answers: dict[str, str] = {}
+
+    stale_answer_note = None
+    if agent_id in evolved_prompts and normalized_answers:
+        stale_answer_note = "Note: The answers below were produced for an earlier version..."
+
+    assert stale_answer_note is None

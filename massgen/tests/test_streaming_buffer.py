@@ -637,5 +637,90 @@ class TestBufferEdgeCases:
         assert "[Tool: my_tool]" in obj._streaming_buffer
 
 
+class TestInjectedContextInTrace:
+    """Tests for INJECTED_CONTEXT entries added from memory/short_term/ at round start."""
+
+    def _make_backend_with_fs(self, tmpdir):
+        """Create a StreamingBufferMixin-based object with a fake filesystem_manager."""
+        from pathlib import Path
+
+        class FakeFilesystemManager:
+            def __init__(self, cwd):
+                self.cwd = Path(cwd)
+
+        class TestBackend(StreamingBufferMixin):
+            def __init__(self, cwd):
+                super().__init__()
+                self.agent_id = "agent_a"
+                self.config = {"model": "claude-sonnet"}
+                self.filesystem_manager = FakeFilesystemManager(cwd)
+
+        return TestBackend(tmpdir)
+
+    def test_clear_streaming_buffer_injects_short_term_memories(self, tmp_path):
+        """_clear_streaming_buffer loads memory/short_term/*.md as INJECTED_CONTEXT entries."""
+        mem_dir = tmp_path / "memory" / "short_term"
+        mem_dir.mkdir(parents=True)
+        (mem_dir / "trace_analysis_round_2.md").write_text("### DO\n- Use one verification pass")
+
+        backend = self._make_backend_with_fs(tmp_path)
+        backend._clear_streaming_buffer()
+
+        assert backend._execution_trace is not None
+        trace_md = backend._execution_trace.to_markdown()
+        assert "trace_analysis_round_2" in trace_md
+        assert "Use one verification pass" in trace_md
+
+    def test_clear_streaming_buffer_no_memory_dir_is_ok(self, tmp_path):
+        """_clear_streaming_buffer does not crash when memory/short_term/ is absent."""
+        backend = self._make_backend_with_fs(tmp_path)
+        backend._clear_streaming_buffer()  # Should not raise
+
+        assert backend._execution_trace is not None
+
+    def test_clear_streaming_buffer_multiple_memory_files(self, tmp_path):
+        """All .md files in memory/short_term/ are injected as INJECTED_CONTEXT entries."""
+        mem_dir = tmp_path / "memory" / "short_term"
+        mem_dir.mkdir(parents=True)
+        (mem_dir / "trace_analysis_round_1.md").write_text("round 1 learnings")
+        (mem_dir / "trace_analysis_round_2.md").write_text("round 2 learnings")
+
+        backend = self._make_backend_with_fs(tmp_path)
+        backend._clear_streaming_buffer()
+
+        trace_md = backend._execution_trace.to_markdown()
+        assert "trace_analysis_round_1" in trace_md
+        assert "round 1 learnings" in trace_md
+        assert "trace_analysis_round_2" in trace_md
+        assert "round 2 learnings" in trace_md
+
+    def test_clear_streaming_buffer_no_filesystem_manager_is_ok(self):
+        """_clear_streaming_buffer works when no filesystem_manager attribute exists."""
+
+        class TestBackend(StreamingBufferMixin):
+            def __init__(self):
+                super().__init__()
+                self.agent_id = "agent_a"
+                self.config = {"model": "claude-sonnet"}
+
+        backend = TestBackend()
+        backend._clear_streaming_buffer()  # Should not raise
+
+    def test_injected_context_not_added_on_compression_retry(self, tmp_path):
+        """Memory files are NOT injected when _compression_retry=True."""
+        mem_dir = tmp_path / "memory" / "short_term"
+        mem_dir.mkdir(parents=True)
+        (mem_dir / "trace_analysis_round_2.md").write_text("some analysis")
+
+        backend = self._make_backend_with_fs(tmp_path)
+        # First call sets up the trace
+        backend._clear_streaming_buffer()
+        first_trace = backend._execution_trace
+
+        # Compression retry should NOT reinitialize the trace or reinject
+        backend._clear_streaming_buffer(_compression_retry=True)
+        assert backend._execution_trace is first_trace  # Same object, not replaced
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

@@ -33,6 +33,8 @@ from typing import TYPE_CHECKING, Any, Optional
 import yaml
 from loguru import logger
 
+from massgen.utils.sanitize_console_text import sanitize_console_text_for_encoding
+
 if TYPE_CHECKING:
     from .events import EventEmitter
 
@@ -195,6 +197,25 @@ def session_logger():
     if session is not None:
         return logger.bind(session_id=session.session_id)
     return logger
+
+
+class _ConsoleSafeSink:
+    """File-like sink wrapper that protects console writes on non-UTF-8 terminals."""
+
+    def __init__(self, stream: Any) -> None:
+        self._stream = stream
+
+    def write(self, message: Any) -> None:
+        text = sanitize_console_text_for_encoding(
+            str(message),
+            getattr(self._stream, "encoding", None),
+        )
+        self._stream.write(text)
+
+    def flush(self) -> None:
+        flush = getattr(self._stream, "flush", None)
+        if callable(flush):
+            flush()
 
 
 def _get_log_base_dir() -> Path:
@@ -674,7 +695,7 @@ def setup_logging(
             )
 
         console_hid = logger.add(
-            sys.stderr,
+            _ConsoleSafeSink(sys.stderr),
             format=custom_format,
             level="DEBUG",
             colorize=True,
@@ -712,7 +733,7 @@ def setup_logging(
         console_format = "<green>{time:HH:mm:ss}</green> | <level>{level: <8}</level> | <level>{message}</level>"
 
         console_hid = logger.add(
-            sys.stderr,
+            _ConsoleSafeSink(sys.stderr),
             format=console_format,
             level="WARNING",  # Only show WARNING and above on console in non-debug mode
             colorize=True,
@@ -845,7 +866,7 @@ def restore_console_logging():
             )
 
         _CONSOLE_HANDLER_ID = logger.add(
-            sys.stderr,
+            _ConsoleSafeSink(sys.stderr),
             format=custom_format,
             level="DEBUG",
             colorize=True,
@@ -855,7 +876,7 @@ def restore_console_logging():
     else:
         console_format = "<green>{time:HH:mm:ss}</green> | <level>{level: <8}</level> | <level>{message}</level>"
         _CONSOLE_HANDLER_ID = logger.add(
-            sys.stderr,
+            _ConsoleSafeSink(sys.stderr),
             format=console_format,
             level="WARNING",
             colorize=True,

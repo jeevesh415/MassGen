@@ -471,10 +471,17 @@ export function ArtifactPreviewModal({
               )}
 
               {error && (
-                <div className="flex flex-col items-center justify-center h-64 text-red-400">
-                  <span className="font-medium">Failed to load file</span>
-                  <span className="text-sm text-gray-500 mt-1">{error}</span>
-                </div>
+                (error.toLowerCase().includes('not found') || error.includes('404')) ? (
+                  <div className="flex flex-col items-center justify-center h-64 text-gray-400">
+                    <span className="font-medium">File moved or removed</span>
+                    <span className="text-sm text-gray-500 mt-1">Select another file to continue browsing</span>
+                  </div>
+                ) : (
+                  <div className="flex flex-col items-center justify-center h-64 text-red-400">
+                    <span className="font-medium">Failed to load file</span>
+                    <span className="text-sm text-gray-500 mt-1">{error}</span>
+                  </div>
+                )
               )}
 
               {!isLoading && !error && content && (

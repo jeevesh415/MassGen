@@ -678,3 +678,28 @@ class TestClearWorkspacePreservesMassgen:
 
         # Regular files should be cleared
         assert not regular_file.exists(), "clear_workspace should still clear regular files"
+
+    def test_clear_workspace_preserves_memory_directory(self, tmp_path):
+        """memory/ must survive clear_workspace so trace analysis accumulates."""
+        workspace = tmp_path / "workspace"
+        workspace.mkdir()
+        temp_parent = tmp_path / "temp_workspaces"
+        temp_parent.mkdir()
+
+        manager = FilesystemManager(
+            cwd=str(workspace),
+            agent_temporary_workspace_parent=str(temp_parent),
+        )
+
+        # Simulate trace analysis and agent-written memories
+        memory_dir = workspace / "memory" / "short_term"
+        memory_dir.mkdir(parents=True)
+        trace_file = memory_dir / "trace_analysis_round_2.md"
+        trace_file.write_text("---\nname: trace\n---\nDO: something")
+        learning_file = memory_dir / "some_learning.md"
+        learning_file.write_text("learned something")
+
+        manager.clear_workspace()
+
+        assert trace_file.exists(), "clear_workspace deleted memory/short_term/ files"
+        assert learning_file.exists(), "clear_workspace deleted memory/short_term/ files"

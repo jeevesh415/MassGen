@@ -443,10 +443,8 @@ Generate personas now:"""
     ) -> dict[str, GeneratedPersona] | None:
         """Search for personas.json in the subagent logs.
 
-        Searches multiple locations where personas.json might exist:
-        1. full_logs/final/agent_*/workspace/ - where manager copies completed workspaces
-        2. full_logs/agent_*/<timestamp>/workspace/ - timestamped run directories
-        3. workspace/snapshots/agent_*/ - snapshot locations
+        Delegates file discovery to :func:`massgen.precollab_utils.find_precollab_artifact`,
+        then parses the JSON and validates that all expected agent IDs are present.
 
         Args:
             log_directory: Path to the main run's log directory
@@ -455,85 +453,46 @@ Generate personas now:"""
         Returns:
             Dictionary mapping agent_id to GeneratedPersona, or None if not found/invalid
         """
-        from pathlib import Path
+        from massgen.precollab_utils import find_precollab_artifact
 
-        log_dir = Path(log_directory)
-        persona_generation_dir = log_dir / "subagents" / "persona_generation"
-
-        if not persona_generation_dir.exists():
-            logger.debug(f"Persona generation dir not found at: {persona_generation_dir}")
+        personas_file = find_precollab_artifact(
+            log_directory,
+            "persona_generation",
+            "personas.json",
+        )
+        if personas_file is None:
             return None
 
-        # Define search patterns in order of preference (relative to persona_generation_dir)
-        search_patterns = [
-            # 1. Final completed workspace (most reliable if exists)
-            "full_logs/final/agent_*/workspace/personas.json",
-            # 2. Timestamped run directories (for partial/cancelled runs)
-            "full_logs/agent_*/*/*/personas.json",
-            # 3. Snapshot locations
-            "workspace/snapshots/agent_*/personas.json",
-            # 4. Direct workspace directories
-            "workspace/agent_*/personas.json",
-            # 5. Temp directories from nested agents
-            "workspace/temp/agent_*/agent*/personas.json",
-        ]
+        try:
+            data = json.loads(personas_file.read_text())
 
-        # Collect all personas.json files found, sorted by modification time (most recent first)
-        found_files: list[Path] = []
-        for pattern in search_patterns:
-            found_files.extend(persona_generation_dir.glob(pattern))
+            if "personas" not in data:
+                logger.debug("personas.json missing 'personas' key")
+                return None
 
-        if not found_files:
-            logger.debug(f"No personas.json files found in {persona_generation_dir}")
-            return None
-
-        # Sort by modification time, most recent first (race-safe)
-        def _safe_mtime(p: Path) -> float:
-            try:
-                return p.stat().st_mtime
-            except (FileNotFoundError, OSError):
-                return 0
-
-        found_files = sorted(found_files, key=_safe_mtime, reverse=True)
-
-        # Try each file until we find one with all required agents
-        for personas_file in found_files:
-            if not personas_file.exists():
-                continue
-
-            logger.debug(f"Checking personas.json at: {personas_file}")
-            try:
-                data = json.loads(personas_file.read_text())
-
-                if "personas" not in data:
-                    logger.debug("personas.json missing 'personas' key")
-                    continue
-
-                personas = {}
-                for agent_id in agent_ids:
-                    if agent_id in data["personas"]:
-                        persona_data = data["personas"][agent_id]
-                        personas[agent_id] = GeneratedPersona(
-                            agent_id=agent_id,
-                            persona_text=persona_data.get(
-                                "persona_text",
-                                "Approach this task thoughtfully.",
-                            ),
-                            attributes=persona_data.get("attributes", {}),
-                        )
-
-                # Return if we got all agents
-                if len(personas) == len(agent_ids):
-                    logger.debug(f"Found complete personas at: {personas_file}")
-                    return personas
-                else:
-                    logger.debug(
-                        f"Incomplete personas at {personas_file}: " f"found {len(personas)}/{len(agent_ids)} agents",
+            personas = {}
+            for agent_id in agent_ids:
+                if agent_id in data["personas"]:
+                    persona_data = data["personas"][agent_id]
+                    personas[agent_id] = GeneratedPersona(
+                        agent_id=agent_id,
+                        persona_text=persona_data.get(
+                            "persona_text",
+                            "Approach this task thoughtfully.",
+                        ),
+                        attributes=persona_data.get("attributes", {}),
                     )
 
-            except (json.JSONDecodeError, KeyError, TypeError) as e:
-                logger.debug(f"Failed to parse {personas_file}: {e}")
-                continue
+            if len(personas) == len(agent_ids):
+                logger.debug(f"Found complete personas at: {personas_file}")
+                return personas
+            else:
+                logger.debug(
+                    f"Incomplete personas at {personas_file}: " f"found {len(personas)}/{len(agent_ids)} agents",
+                )
+
+        except (json.JSONDecodeError, KeyError, TypeError) as e:
+            logger.debug(f"Failed to parse {personas_file}: {e}")
 
         return None
 
@@ -652,6 +611,7 @@ Generate personas now:"""
         voting_sensitivity: str | None = None,
         voting_threshold: int | None = None,
         has_planning_spec_context: bool = False,
+        fast_iteration_mode: bool = False,
     ) -> dict[str, GeneratedPersona]:
         """Generate all personas via a single subagent call.
 
@@ -676,6 +636,8 @@ Generate personas now:"""
                 the pre-collaboration subagent coordination config.
             has_planning_spec_context: Whether planning/spec context is mounted
                 and should be explicitly referenced by prompt guidance.
+            fast_iteration_mode: Whether to enable fast iteration mode for
+                the pre-collaboration subagent coordination.
 
         Returns:
             Dictionary mapping agent_id to GeneratedPersona
@@ -717,15 +679,19 @@ Generate personas now:"""
                 coordination["voting_sensitivity"] = voting_sensitivity
             if voting_threshold is not None:
                 coordination["voting_threshold"] = voting_threshold
+            if fast_iteration_mode:
+                coordination["fast_iteration_mode"] = True
 
             subagent_orch_config = SubagentOrchestratorConfig(
                 enabled=True,
                 agents=simplified_configs,
                 coordination=coordination,
             )
-            parent_context_paths = self._build_subagent_parent_context_paths(
+            from massgen.precollab_utils import build_subagent_parent_context_paths
+
+            parent_context_paths = build_subagent_parent_context_paths(
                 parent_workspace=base_workspace,
-                parent_agent_configs=parent_agent_configs,
+                agent_configs=parent_agent_configs,
             )
 
             manager = SubagentManager(
@@ -810,51 +776,6 @@ Generate personas now:"""
             logger.info("Using fallback personas")
             self.last_generation_source = "fallback"
             return self._generate_fallback_personas(agent_ids)
-
-    @staticmethod
-    def _build_subagent_parent_context_paths(
-        parent_workspace: str,
-        parent_agent_configs: list[dict[str, Any]],
-    ) -> list[dict[str, str]]:
-        """Build read-only context paths for pre-collab persona subagents."""
-        base_workspace = Path(parent_workspace).resolve()
-        context_paths: list[dict[str, str]] = []
-        seen: set[str] = set()
-
-        def _add_path(raw_path: str | None) -> None:
-            if not raw_path:
-                return
-            try:
-                path_obj = Path(raw_path)
-                resolved = path_obj.resolve() if path_obj.is_absolute() else (base_workspace / path_obj).resolve()
-            except Exception:
-                return
-
-            path_str = str(resolved)
-            if path_str in seen:
-                return
-            seen.add(path_str)
-            context_paths.append({"path": path_str, "permission": "read"})
-
-        _add_path(str(base_workspace))
-
-        for config in parent_agent_configs:
-            if not isinstance(config, dict):
-                continue
-            backend = config.get("backend", {})
-            if not isinstance(backend, dict):
-                continue
-            inherited_paths = backend.get("context_paths", [])
-            if not isinstance(inherited_paths, list):
-                continue
-            for entry in inherited_paths:
-                if isinstance(entry, str):
-                    _add_path(entry)
-                elif isinstance(entry, dict):
-                    raw_path = entry.get("path")
-                    _add_path(str(raw_path).strip() if raw_path else None)
-
-        return context_paths
 
     def _create_simplified_agent_configs(
         self,

@@ -68,55 +68,23 @@ class TestRationalePreservation:
 class TestE4StretchDefinition:
     """Tests for E4 stretch checklist item covering polish/craft."""
 
-    def test_e4_covers_care_beyond_correctness(self):
-        """E4 item must address quality beyond mere correctness."""
+    def test_e4_covers_intentional_craft(self):
+        """E4 item must address intentional craft beyond correctness."""
         e4_item = _CHECKLIST_ITEMS_CHANGEDOC[3]
-        assert "beyond correctness" in e4_item.lower() or "care" in e4_item.lower()
+        assert "craft" in e4_item.lower() or "deliberate" in e4_item.lower()
 
-    def test_e4_mentions_creative_elements(self):
-        """E4 item must mention creative or distinguishing elements."""
+    def test_e4_mentions_quality_recognition(self):
+        """E4 item must mention recognizable quality."""
         e4_item = _CHECKLIST_ITEMS_CHANGEDOC[3]
-        assert "creative" in e4_item.lower() or "distinguish" in e4_item.lower()
+        assert "quality" in e4_item.lower() or "knowledgeable" in e4_item.lower()
 
     def test_changedoc_checklist_has_4_items(self):
         """Changedoc checklist must have exactly 4 items."""
         assert len(_CHECKLIST_ITEMS_CHANGEDOC) == 4
 
-    def test_e4_is_must_category(self):
-        """E4 is tagged as must — no tier deprioritization."""
-        assert _CHECKLIST_ITEM_CATEGORIES_CHANGEDOC["E4"] == "must"
-
-
-# ---------------------------------------------------------------------------
-# Substantiveness Test in Changedoc Analysis
-# ---------------------------------------------------------------------------
-
-
-class TestChangedocAnalysisSubstantiveness:
-    """Tests for substantiveness test in changedoc-anchored analysis."""
-
-    def test_changedoc_analysis_has_substantiveness(self):
-        """Changedoc analysis must include substantiveness test section."""
-        analysis = _build_changedoc_checklist_analysis()
-        assert "Substantiveness Test" in analysis
-
-    def test_changedoc_analysis_has_classification_categories(self):
-        """Changedoc analysis must reference the three classification categories."""
-        analysis = _build_changedoc_checklist_analysis()
-        assert "TRANSFORMATIVE" in analysis
-        assert "STRUCTURAL" in analysis
-        assert "INCREMENTAL" in analysis
-
-    def test_changedoc_analysis_has_approach_challenge(self):
-        """Changedoc analysis must include the Approach Challenge section."""
-        analysis = _build_changedoc_checklist_analysis()
-        assert "Approach Challenge" in analysis
-
-    def test_changedoc_analysis_classifies_changedoc_only_as_incremental(self):
-        """Changedoc analysis must classify changedoc-only changes as INCREMENTAL."""
-        analysis = _build_changedoc_checklist_analysis()
-        lower = analysis.lower()
-        assert "changedoc decisions without corresponding" in lower
+    def test_e4_is_standard_category(self):
+        """E4 is tagged as standard — must-pass criterion."""
+        assert _CHECKLIST_ITEM_CATEGORIES_CHANGEDOC["E4"] == "standard"
 
 
 # ---------------------------------------------------------------------------
@@ -126,15 +94,6 @@ class TestChangedocAnalysisSubstantiveness:
 
 class TestFreshApproach:
     """Tests for fresh approach enhancements."""
-
-    def test_checklist_gated_has_approach_challenge(self):
-        """Checklist gated evaluation should include approach challenge."""
-        section = EvaluationSection(
-            voting_sensitivity="checklist_gated",
-            has_changedoc=True,
-        )
-        content = section.build_content()
-        assert "Approach Challenge" in content
 
     def test_sequential_r2_has_variation_guidance(self):
         """Sequential sensitivity Round 2 (CONVERGENCE phase) should mention variation."""
@@ -218,7 +177,7 @@ class TestScoreCalibration:
         """Gated decision must include analysis-vs-score consistency check."""
         decision = _build_checklist_gated_decision(_CHECKLIST_ITEMS_CHANGEDOC)
         lower = decision.lower()
-        assert "diagnostic analysis" in lower
+        assert "diagnostic report" in lower
         assert "scores are inflated" in lower
 
     def test_gated_decision_prioritizes_output_over_changedoc(self):
@@ -285,99 +244,6 @@ class TestRecalibration:
         """Changedoc analysis must have recalibration text in goal alignment."""
         analysis = _build_changedoc_checklist_analysis()
         assert "distance in mind" in analysis
-
-    def test_generic_recalibration_ordering(self):
-        """Recalibration must appear in Goal Alignment, before Approach Challenge."""
-        analysis = _build_checklist_analysis()
-        goal_pos = analysis.index("Goal Alignment")
-        recal_pos = analysis.index("score for that criterion must be low")
-        challenge_pos = analysis.index("Approach Challenge")
-        assert goal_pos < recal_pos < challenge_pos
-
-    def test_changedoc_recalibration_ordering(self):
-        """Changedoc recalibration must appear in Goal Alignment, before Substantiveness."""
-        analysis = _build_changedoc_checklist_analysis()
-        goal_pos = analysis.index("Goal Alignment")
-        recal_pos = analysis.index("distance in mind")
-        subst_pos = analysis.index("Substantiveness")
-        assert goal_pos < recal_pos < subst_pos
-
-
-# ---------------------------------------------------------------------------
-# Anti-Glazing / Score Calibration
-# ---------------------------------------------------------------------------
-
-
-class TestAntiGlazing:
-    """Tests for anti-glazing calibration language in scoring prompts."""
-
-    def test_scored_decision_has_calibrated_anchors(self):
-        """Scored decision must use the recalibrated anchors."""
-        decision = _build_checklist_scored_decision(
-            threshold=5,
-            remaining=3,
-            total=5,
-            checklist_items=_CHECKLIST_ITEMS_CHANGEDOC,
-        )
-        assert "publish this as-is" in decision
-        assert "Most first drafts belong here" in decision
-
-    def test_gated_decision_has_calibrated_anchors(self):
-        """Gated decision must use the recalibrated anchors."""
-        decision = _build_checklist_gated_decision(_CHECKLIST_ITEMS_CHANGEDOC)
-        assert "publish this as-is" in decision
-        assert "Most first drafts belong here" in decision
-
-    def test_checklist_analysis_has_too_generous_warning(self):
-        """Non-changedoc checklist analysis must include 'too generous' warning."""
-        analysis = _build_checklist_analysis()
-        assert "too generous" in analysis
-
-    def test_changedoc_analysis_has_too_generous_warning(self):
-        """Changedoc analysis must still include 'too generous' warning."""
-        analysis = _build_changedoc_checklist_analysis()
-        assert "too generous" in analysis
-
-    def test_checklist_analysis_has_pre_score_audit(self):
-        """Non-changedoc analysis must include Pre-Score Audit section."""
-        analysis = _build_checklist_analysis()
-        assert "Pre-Score Audit (MANDATORY)" in analysis
-        assert "contradicts your own Failure Patterns" in analysis
-
-    def test_changedoc_analysis_has_pre_score_audit(self):
-        """Changedoc analysis must include Pre-Score Audit section."""
-        analysis = _build_changedoc_checklist_analysis()
-        assert "Pre-Score Audit (MANDATORY)" in analysis
-        assert "contradicts your own Failure Patterns" in analysis
-
-    def test_scored_decision_has_inflated_warning(self):
-        """Scored decision must warn about inflated scores."""
-        decision = _build_checklist_scored_decision(
-            threshold=5,
-            remaining=3,
-            total=5,
-            checklist_items=_CHECKLIST_ITEMS_CHANGEDOC,
-        )
-        assert "scores are inflated" in decision
-
-    def test_gated_decision_has_inflated_warning(self):
-        """Gated decision must warn about inflated scores."""
-        decision = _build_checklist_gated_decision(_CHECKLIST_ITEMS_CHANGEDOC)
-        assert "scores are inflated" in decision
-
-    def test_pre_score_audit_after_approach_challenge(self):
-        """Pre-Score Audit must appear after Approach Challenge in non-changedoc analysis."""
-        analysis = _build_checklist_analysis()
-        challenge_pos = analysis.index("Approach Challenge")
-        audit_pos = analysis.index("Pre-Score Audit")
-        assert challenge_pos < audit_pos
-
-    def test_pre_score_audit_after_approach_challenge_changedoc(self):
-        """Pre-Score Audit must appear after Approach Challenge in changedoc analysis."""
-        analysis = _build_changedoc_checklist_analysis()
-        challenge_pos = analysis.index("Approach Challenge")
-        audit_pos = analysis.index("Pre-Score Audit")
-        assert challenge_pos < audit_pos
 
 
 # ---------------------------------------------------------------------------

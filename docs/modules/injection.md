@@ -94,7 +94,7 @@ Errors are caught and logged but don't abort (fail-open), unless a hook has `fai
 | `HumanInputHook` | `*` | Delivers runtime human input from TUI/WebUI broadcast to agents mid-stream. |
 | `RoundTimeoutPostHook` | `*` | Soft timeout: injects a time-limit warning once, then starts a grace period. |
 
-Mid-stream answer injection messages include explicit answer-label transitions (for example `agent2.1 -> agent2.2`) so checklist scoring can target newest labels. In checklist-gated mode, injected guidance routes agents through `submit_checklist` re-evaluation first, then `propose_improvements` only after accepted iterate results.
+Mid-stream answer injection messages include explicit answer-label transitions (for example `agent2.1 -> agent2.2`) so checklist scoring can target newest labels. In checklist-gated mode, injected guidance routes agents through `submit_checklist` re-evaluation first, then `draft_approach` only after accepted iterate results.
 
 Peer-answer delivery can be configured independently from other runtime payloads. When `defer_peer_updates_until_restart: true`, peer answer updates are queued until the next safe restart instead of being injected mid-stream. Human input, background subagent completions, and background tool completions still use their normal delivery paths. In checklist-gated runs, `allow_midstream_peer_updates_before_checklist_submit` can keep peer updates mid-stream until the first accepted `submit_checklist` for the current answer.
 
@@ -149,14 +149,19 @@ Claude Code SDK has native `PreToolUse` and `PostToolUse` hook support via `Hook
 
 The SDK fires these hooks natively on each tool call — no file IPC or polling needed.
 
-### Path 3: Codex Backend (File-based IPC)
+### Path 3: Codex Backend (Hybrid Native Hooks + File IPC)
 
 **Backend**: `codex.py`
+**Adapter**: `massgen/mcp_tools/native_hook_adapters/codex_adapter.py`
+**Native hook script**: `massgen/mcp_tools/native_hook_adapters/codex_hook_script.py`
 **Middleware**: `massgen/mcp_tools/hook_middleware.py`
 
-Codex runs as an external CLI process. It doesn't support in-process hook callbacks. Instead, injection uses a file-based IPC channel through the MCP server:
+Codex runs as an external CLI process. It doesn't support in-process hook callbacks, so MassGen uses a hybrid model:
 
-1. **Orchestrator side**: Writes `hook_post_tool_use.json` to a shared hook directory via `codex.py:write_hook_injection()`:
+1. **Native Bash hooks**: `.codex/hooks.json` enables Codex's experimental native hook surface for Bash-only events:
+   - `PreToolUse`: a standalone hook script reads `permission_manifest.json` and can deny simple Bash commands that would write outside writable paths
+   - `PostToolUse`: the same hook script can consume the shared `hook_post_tool_use.json` file after a Bash call and append its content as extra developer context
+2. **Orchestrator side**: Writes `hook_post_tool_use.json` to a shared hook directory via `codex.py:write_post_tool_use_hook()`:
    ```json
    {
      "inject": {"content": "...", "strategy": "tool_result"},
@@ -165,34 +170,34 @@ Codex runs as an external CLI process. It doesn't support in-process hook callba
      "sequence": 42
    }
    ```
-2. **MCP server side**: `MassGenHookMiddleware` (a FastMCP `Middleware` subclass) intercepts every `call_tool()`:
+3. **MCP server side**: `MassGenHookMiddleware` (a FastMCP `Middleware` subclass) intercepts every `call_tool()`:
    - Executes the actual tool first
    - Reads `hook_post_tool_use.json`
    - Validates: glob matcher against tool name, expiry timestamp, monotonically increasing sequence number (dedup)
    - If valid and matching: consumes (deletes) the file, appends content as `TextContent` to the tool result
    - If not matching: leaves the file for a later tool call
-3. **Unconsumed content**: After a round ends, `read_unconsumed_hook_content()` checks if the file still exists (middleware never matched). If so, the orchestrator carries the content forward.
+4. **Unconsumed content**: After a round ends, `read_unconsumed_hook_content()` checks if the file still exists (neither Bash nor MCP consumed it). If so, the orchestrator carries the content forward.
 
 Atomic writes (write to `.tmp`, then `rename`) prevent partial reads.
 
-**Limitation: MCP tools only.** The middleware is attached to MassGen's own MCP servers (subagent, checklist, custom tools). It can only intercept tool calls that route through these servers. Codex's **provider-native tools** (file read/write, shell execution, etc.) are handled directly by the Codex CLI and never pass through any MCP server — so the middleware cannot inject into those tool results. In practice this is acceptable because:
+**Current limitation: Bash only for native hooks.** Codex's documented `PreToolUse` and `PostToolUse` events currently only fire for `Bash`. They do not currently intercept MCP, Write, WebSearch, or other non-shell tool calls. In practice the hybrid design works well because:
 
+- Bash calls can consume pending payloads directly through the native hook script.
 - Custom tools are loaded as MCP tools, so they are covered.
 - MassGen framework tools (subagent, checklist, planning, memory) are all MCP-based.
-- If Codex happens to call only provider-native tools between injection writes (no MCP tool calls to intercept), the content goes unconsumed. The orchestrator detects this via `read_unconsumed_hook_content()` and carries the payload forward to the next turn via the hookless fallback path.
+- If Codex happens to call only non-hooked provider-native tools between injection writes (for example `Write` or `WebSearch` with no Bash or MCP call), the content goes unconsumed. The orchestrator detects this via `read_unconsumed_hook_content()` and carries the payload forward to the next turn via the hookless fallback path.
 
-This means Codex injection is **best-effort mid-stream**: content is delivered on the next MCP tool call, or failing that, between turns. Unlike Claude Code (which intercepts all tools via SDK hooks), Codex has no mechanism to inject into provider-native tool results.
+This means Codex injection is **best-effort mid-stream**: content is delivered on the next Bash or MCP tool call, or failing that, between turns. Unlike Claude Code (which intercepts all tools via SDK hooks), Codex still has no mechanism to inject into most provider-native non-Bash tool results.
 
-**Limitation: file IPC is injection-only (not full hook execution).**
-`hook_post_tool_use.json` carries only injection payloads for middleware append.
-It does not provide a full request/response hook RPC channel for:
-- pre-tool decisions (`allow`/`deny`)
-- argument mutation (`modified_args`)
-- arbitrary post-tool side effects with callback state
+**Responsibility split.** Codex native hooks and MCP/file IPC do different jobs:
+- Native Codex hooks own Bash-only permission checks and Bash post-tool payload consumption.
+- The shared `hook_post_tool_use.json` file remains the single source of truth for MassGen runtime payloads.
+- MCP middleware still owns MCP tool interception and append behavior.
+- End-of-turn carry-forward remains the fallback when neither Bash nor MCP consumed the payload.
 
-Implication: non-injection hooks (for example, provenance/ledger writers) must run in the actual tool execution path for that backend/runtime.
-For Codex custom tools, this means running those side-effect hooks in `custom_tools_server.py` (where tool name, args, output, and workspace context are available), not in the IPC middleware.
-For new backends that are neither standard-hook nor native-hook compatible, add an equivalent execution-path integration point for any non-injection hooks.
+Implication: non-injection hooks that need full callback semantics still must run in the actual tool execution path for that backend/runtime.
+For Codex custom tools, this means running side-effect hooks in `custom_tools_server.py` (where tool name, args, output, and workspace context are available), not in the IPC middleware.
+For new backends that are neither standard-hook nor fully native-hook compatible, add an equivalent execution-path integration point for any non-injection hooks.
 
 ### Path 4: Hookless Fallback
 
@@ -221,7 +226,7 @@ This is less timely (content arrives between turns, not mid-stream) but works un
 4. Hands the manager to the backend:
    - API backends: `backend.set_general_hook_manager(manager)` → hooks run inline
    - Claude Code: `build_native_hooks_config()` → hooks converted to SDK `HookMatcher` format
-   - Codex: orchestrator writes IPC files, MCP middleware reads them
+   - Codex: native Bash hooks are configured from `.codex/hooks.json`, while runtime payloads still flow through the shared IPC file and MCP middleware
 
 ## Background Subagent Completion Flow
 
@@ -261,9 +266,11 @@ Per-agent hooks in YAML use the `backend.hooks` key and can set `override: true`
 | `massgen/mcp_tools/hook_middleware.py` | FastMCP middleware for Codex file-based IPC |
 | `massgen/mcp_tools/native_hook_adapters/base.py` | Abstract adapter interface for SDK-native hooks |
 | `massgen/mcp_tools/native_hook_adapters/claude_code_adapter.py` | Claude Code SDK adapter (HookMatcher conversion) |
+| `massgen/mcp_tools/native_hook_adapters/codex_adapter.py` | Codex hooks.json adapter (Bash bridge generation) |
+| `massgen/mcp_tools/native_hook_adapters/codex_hook_script.py` | Standalone Codex hook command (permission checks + Bash payload consumption) |
 | `massgen/backend/base_with_custom_tool_and_mcp.py` | Standard backend hook execution (inline `execute_hooks()`) |
 | `massgen/backend/claude_code.py` | Claude Code hook wiring (`_get_execution_trace_hooks`, options assembly) |
-| `massgen/backend/codex.py` | Codex IPC (`write_hook_injection`, `read_unconsumed_hook_content`) |
+| `massgen/backend/codex.py` | Codex hybrid hook wiring (`hooks.json`, permission manifest, payload IPC) |
 | `massgen/mcp_tools/custom_tools_server.py` | Codex custom-tools execution path; runs non-injection side-effect hooks (for example media ledger capture) |
 | `massgen/orchestrator.py` | Hook setup (`_setup_hook_manager_for_agent`), hookless fallback |
 
@@ -276,6 +283,8 @@ Hook tests are split across several files:
 | `test_hook_framework.py` | Core hook types, manager, aggregation, pattern matching |
 | `test_mcp_hook_middleware.py` | File-based IPC middleware (sequence, expiry, glob matching) |
 | `test_codex_hook_ipc.py` | Codex-specific write/read/clear cycle |
+| `test_codex_hook_script.py` | Standalone Codex native hook script behavior |
+| `test_codex_native_hook_adapter.py` | Codex native hook adapter + workspace hooks.json writing |
 | `test_custom_tools_server_background.py` | Codex custom-tools background execution path, including media ledger side-effect coverage |
 | `test_orchestrator_hooks_broadcast_subagents.py` | End-to-end orchestrator hook wiring with subagent completion |
 | `test_claude_code_background_tools.py` | Claude Code background tool + hook integration |

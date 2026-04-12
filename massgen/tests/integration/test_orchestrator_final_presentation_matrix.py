@@ -414,6 +414,68 @@ async def test_review_isolated_changes_applies_uncommitted_presenter_changes(moc
 
 
 @pytest.mark.asyncio
+async def test_review_isolated_changes_syncs_applied_shadow_files_into_final_snapshot(
+    mock_orchestrator,
+    tmp_path,
+    monkeypatch,
+):
+    orchestrator = mock_orchestrator(num_agents=1)
+    agent_id = "agent_a"
+    agent = orchestrator.agents[agent_id]
+
+    context_path = tmp_path / "context"
+    context_path.mkdir()
+    (context_path / "tasks").mkdir()
+    (context_path / "tasks" / "changedoc.md").write_text("# Context changes\n")
+
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+
+    log_dir = tmp_path / "logs"
+    final_workspace = log_dir / "final" / agent_id / "workspace"
+    (final_workspace / ".codex").mkdir(parents=True)
+    (final_workspace / ".codex" / "config.toml").write_text("[model]\nprovider='openai'\n")
+    (final_workspace / "tasks").mkdir(parents=True, exist_ok=True)
+    (final_workspace / "tasks" / "changedoc.md").write_text("# Existing changedoc\n")
+
+    snapshot_storage = tmp_path / "snapshots" / agent_id
+    (snapshot_storage / "tasks").mkdir(parents=True)
+    (snapshot_storage / "tasks" / "changedoc.md").write_text("# Existing changedoc\n")
+
+    class DummyFilesystemManager:
+        def __init__(self):
+            self.cwd = str(workspace)
+            self.snapshot_storage = snapshot_storage
+
+    agent.backend.filesystem_manager = DummyFilesystemManager()
+
+    monkeypatch.setattr("massgen.orchestrator.get_log_session_dir", lambda: log_dir)
+
+    isolation_manager = IsolationContextManager(
+        session_id="test-review-shadow-final-sync",
+        write_mode="isolated",
+        workspace_path=str(workspace),
+    )
+    isolated_path = isolation_manager.initialize_context(str(context_path), agent_id=agent_id)
+    (Path(isolated_path) / "cherry-blossoms.svg").write_text("<svg>shadow</svg>\n")
+
+    chunks = await _collect_chunks(
+        orchestrator._review_isolated_changes(
+            agent=agent,
+            isolation_manager=isolation_manager,
+            selected_agent_id=agent_id,
+        ),
+    )
+
+    assert (context_path / "cherry-blossoms.svg").read_text() == "<svg>shadow</svg>\n"
+    assert (final_workspace / ".codex" / "config.toml").exists()
+    assert (final_workspace / "tasks" / "changedoc.md").read_text() == "# Existing changedoc\n"
+    assert (final_workspace / "cherry-blossoms.svg").read_text() == "<svg>shadow</svg>\n"
+    assert (snapshot_storage / "cherry-blossoms.svg").read_text() == "<svg>shadow</svg>\n"
+    assert any("Applied 1 file change(s)" in (getattr(chunk, "content", "") or "") for chunk in chunks)
+
+
+@pytest.mark.asyncio
 async def test_review_isolated_changes_applies_committed_presenter_changes(mock_orchestrator, tmp_path):
     orchestrator = mock_orchestrator(num_agents=1)
     agent_id = "agent_a"

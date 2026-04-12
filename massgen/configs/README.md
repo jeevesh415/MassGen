@@ -227,19 +227,101 @@ Most configurations use environment variables for API keys:so
 
 ## Release History & Examples
 
-### v0.1.65 - Latest
-**New Features:** MassGen Refinery Plugin
+### v0.1.75 - Latest
+**New Features:** Codex Hooks & Checkpoint WebUI
 
 **Key Features:**
-- **Quality Server**: Standalone `massgen_quality_tools` MCP server with session-based checklist evaluation, scoring thresholds, and improvement proposals
-- **Workflow Server**: Standalone `massgen_workflow_tools` MCP server with multi-round answer submission and deliverable snapshots
-- **Media Server**: Standalone `massgen_media_tools` MCP server with image/video/audio generation and media analysis
+- **Codex Native Hooks**: Hybrid hook system for Codex backend combining native and MCP capabilities
+- **Checkpoint WebUI Auto-Launch**: Checkpoint workflows auto-launch WebUI for visual monitoring
+- **Standalone MCP Server Docs**: Guide for `massgen-checkpoint-mcp` with safety policy integration
 
 **Try It:**
 ```bash
-pip install massgen==0.1.65
-# The standalone MCP servers are available for the massgen-refinery Claude Code plugin
+pip install massgen==0.1.75
+uv run massgen --config @examples/features/fast_iteration.yaml "Create an svg of an AI agent coding."
 ```
+
+### v0.1.74
+**New Features:** Checkpoint Improvements & Tool Call Fixes
+
+**Key Features:**
+- **Checkpoint MCP Improvements**: Major enhancements to the standalone checkpoint MCP server
+- **Duplicate Tool Call Fix**: Resolved duplicate tool call issues in ChatCompletions and Response API backends
+
+### v0.1.73
+**New Features:** Eval Criteria Evolver & Checkpoint Objectives
+
+**Key Features:**
+- **Eval Criteria Evolver Subagent**: New subagent type that evolves evaluation criteria across rounds
+- **Checkpoint Objective Mode (Initial Draft)**: Initial draft of checkpoint MCP with `objective` mode for safety planning of irreversible actions
+
+### v0.1.72
+**New Features:** Grok Backend Update & Circuit Breaker Phase 2
+
+**Key Features:**
+- **Grok Backend Update**: Updated Grok backend with latest improvements
+- **Circuit Breaker Phase 2**: LLM API circuit breaker extended to ChatCompletions, Response API, and Gemini backends (was Claude-only)
+
+### v0.1.71
+**New Features:** Trace Memory & Evaluation Polish
+
+**Key Features:**
+- **Trace Analyzer Subagents**: Background trace analysis after each round — writes insights from execution traces into memory
+- **Better Evaluation Criteria**: Improved criteria generation for higher-quality, more opinionated output
+
+### v0.1.70
+**New Features:** Evaluation Criteria Redesign
+
+**Key Features:**
+- **Evaluation Criteria Redesign**: Three-tier categorization (`primary`, `standard`, `stretch`) with anti-pattern definitions and aspiration statements
+- **Improved Checklist-Gated Evaluation**: Tighter iterative submission cycles with improved scoring and improvement proposals
+- **Fast Iteration Mode**: Streamlined multi-round submission phases via `fast_iteration.yaml`
+
+### v0.1.69
+**New Features:** WebUI Automation & Improved Skill
+
+**Key Features:**
+- **WebUI Automation Auto-Start**: Automation runs begin immediately — open the URL at any point to monitor progress mid-run
+- **MassGen Skill Redesign**: Increased usability and integration with the WebUI; skill now launches the WebUI for live session tracking
+- **Quickstart Wizard Rework**: New Welcome, Skills, API Key, Docker, and Setup Mode steps for smoother onboarding
+
+### v0.1.68
+**New Features:** Checkpoint Mode
+
+**Key Features:**
+- **Checkpoint Coordination Mode**: Delegator pattern — main agent plans solo then delegates to team via `checkpoint()` tool
+- **WebUI Checkpoint Support**: Checkpoint mode display in the modernized WebUI
+- **LiteLLM Supply Chain Fix**: Pinned litellm<=1.82.6 and committed uv.lock
+
+**Try It:**
+```bash
+pip install massgen==0.1.68
+# Try checkpoint mode -- click 'COORD' in the mode bar above the input then the checkpoint box
+uv run massgen --web
+```
+
+### v0.1.67
+**New Features:** Modernized WebUI
+
+**Key Features:**
+- **Modernized WebUI**: Complete UI redesign with inline final answers and keyboard shortcuts
+- **RoundBudgetGuardHook**: Per-round cost enforcement with configurable warning thresholds
+- **Unified Pre-Collab**: Personas, evaluation criteria, and prompt improvement run in parallel
+
+### v0.1.66
+**New Features:** Step Mode
+
+**Key Features:**
+- **Step Mode**: New `--step` CLI flag runs one agent for one iteration then exits
+- **massgen-refinery Step Mode**: Claude Code plugin now supports step mode
+
+### v0.1.65
+**New Features:** MassGen Refinery Plugin
+
+**Key Features:**
+- **Quality Server**: Standalone `massgen_quality_tools` MCP server with session-based checklist evaluation
+- **Workflow Server**: Multi-round answer submission with deliverable snapshots
+- **Media Server**: Image/video/audio generation and media analysis
 
 ### v0.1.64
 **New Features:** Gemini CLI Backend

@@ -31,7 +31,12 @@ export type WSEventType =
   | 'preparation_status'
   | 'keepalive'
   | 'timeout_status'
-  | 'hook_execution';
+  | 'hook_execution'
+  | 'checkpoint_started'
+  | 'checkpoint_completed'
+  | 'checkpoint_action_executed'
+  | 'review_request'
+  | 'review_resolved';
 
 // Base WebSocket message
 export interface WSMessage {
@@ -120,6 +125,9 @@ export interface NewAnswerEvent extends WSMessage {
   answer_id: string;
   answer_number: number;
   content: string;
+  answer_label?: string;
+  workspace_path?: string;
+  submission_round?: number;
 }
 
 export interface FileChangeEvent extends WSMessage {
@@ -194,6 +202,7 @@ export interface HookExecutionInfo {
   reason?: string;
   execution_time_ms?: number;
   injection_preview?: string;
+  injection_content?: string;
 }
 
 export interface HookExecutionEvent extends WSMessage {
@@ -201,6 +210,32 @@ export interface HookExecutionEvent extends WSMessage {
   agent_id: string;
   tool_call_id?: string;
   hook_info: HookExecutionInfo;
+}
+
+// Checkpoint coordination events
+export interface CheckpointStartedEvent extends WSMessage {
+  type: 'checkpoint_started';
+  checkpoint_number: number;
+  task: string;
+  context?: string;
+  expected_actions?: { tool: string; description: string }[];
+}
+
+export interface CheckpointCompletedEvent extends WSMessage {
+  type: 'checkpoint_completed';
+  checkpoint_number: number;
+  consensus: string;
+  workspace_changes: { file: string; change: string }[];
+  action_results: { tool: string; executed: boolean; result?: unknown }[];
+}
+
+export interface CheckpointActionExecutedEvent extends WSMessage {
+  type: 'checkpoint_action_executed';
+  checkpoint_number: number;
+  tool: string;
+  success: boolean;
+  result?: unknown;
+  error?: string;
 }
 
 // Vote results structure
@@ -372,6 +407,38 @@ export type WSEvent =
   | HookExecutionEvent
   | WSMessage;
 
+// Review modal types (WebUI git diff review)
+export interface ReviewFileChange {
+  status: 'M' | 'A' | 'D';
+  path: string;
+}
+
+export interface ReviewChangeContext {
+  original_path: string;
+  isolated_path: string;
+  repo_root?: string;
+  base_ref?: string;
+  context_prefix?: string;
+  changes: ReviewFileChange[];
+  diff: string;
+}
+
+export interface ReviewRequestEvent extends WSMessage {
+  type: 'review_request';
+  changes: ReviewChangeContext[];
+  answer_content: string;
+  vote_results: Record<string, unknown>;
+  agent_id: string;
+  model_name: string;
+  context_paths?: Record<string, string[]>;
+}
+
+export interface ReviewResolvedEvent extends WSMessage {
+  type: 'review_resolved';
+  approved: boolean;
+  resolved_by: string;
+}
+
 // Config file info from API
 export interface ConfigInfo {
   name: string;
@@ -389,6 +456,11 @@ export interface SessionInfo {
   question?: string;
   status?: 'active' | 'completed';
   completed_at?: number;
+  config?: string;
+  config_path?: string;
+  models?: string[];
+  start_time?: string;
+  log_dir?: string;
 }
 
 // ============================================================================
@@ -465,6 +537,7 @@ export interface WorkspaceConnectedEvent extends WorkspaceWSMessage {
   watched_paths: string[];
   /** Initial file lists keyed by workspace path - sent on connect for instant display */
   initial_files?: Record<string, WorkspaceFileInfo[]>;
+  workspace_metadata?: Record<string, { agent_id?: string }>;
 }
 
 /**
@@ -483,6 +556,7 @@ export interface WorkspaceRefreshEvent extends WorkspaceWSMessage {
   type: 'workspace_refresh';
   workspace_path: string;
   files: WorkspaceFileInfo[];
+  agent_id?: string;
 }
 
 /**

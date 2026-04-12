@@ -35,6 +35,7 @@ class SessionInfoClicked(Message):
         question: str,
         subtask: str | None = None,
         assignment_kind: str = "Subtask",
+        improved_prompt: str | None = None,
     ) -> None:
         """Initialize the message.
 
@@ -43,11 +44,13 @@ class SessionInfoClicked(Message):
             question: Full question text.
             subtask: Optional subtask for the active agent.
             assignment_kind: Label for the assignment (e.g., "Subtask", "Persona").
+            improved_prompt: The improved/evolved prompt agents actually see, if any.
         """
         self.turn = turn
         self.question = question
         self.subtask = subtask
         self.assignment_kind = assignment_kind
+        self.improved_prompt = improved_prompt
         super().__init__()
 
 
@@ -76,6 +79,7 @@ class SessionInfoWidget(Static):
         self._question = question
         self._assignment: str | None = None
         self._assignment_kind: str = "Subtask"
+        self._improved_prompt: str | None = None
 
     def render(self) -> Text:
         """Render the session info."""
@@ -89,6 +93,8 @@ class SessionInfoWidget(Static):
             text.append(st, style="bold #d2a8ff")
             text.append("  ", style="")
 
+        if self._improved_prompt:
+            text.append("✦ ", style="bold #a371f7")
         text.append("◈ ", style="#58a6ff")
         text.append(f"Turn {self._turn}", style="#58a6ff")
 
@@ -118,6 +124,11 @@ class SessionInfoWidget(Static):
         self._assignment_kind = kind
         self.refresh()
 
+    def update_improved_prompt(self, improved_prompt: str | None) -> None:
+        """Update the improved/evolved prompt that agents see."""
+        self._improved_prompt = improved_prompt
+        self.refresh()
+
     async def on_click(self) -> None:
         """Handle click to show full prompt."""
         self.post_message(
@@ -126,6 +137,7 @@ class SessionInfoWidget(Static):
                 self._question,
                 self._assignment,
                 assignment_kind=self._assignment_kind,
+                improved_prompt=self._improved_prompt,
             ),
         )
 
@@ -420,6 +432,11 @@ class AgentTabBar(Widget):
         """Refresh the session info widget."""
         if self._session_info_widget:
             self._session_info_widget.update_info(self._turn, self._question)
+
+    def update_improved_prompt(self, improved_prompt: str | None) -> None:
+        """Update the improved/evolved prompt shown in the session info modal."""
+        if self._session_info_widget:
+            self._session_info_widget.update_improved_prompt(improved_prompt)
 
     def on_mount(self) -> None:
         """Set initial active agent after mounting."""

@@ -1033,7 +1033,8 @@ class ConfigurableAgent(SingleAgent):
                 "config": self.config.to_dict(),
                 "capabilities": {
                     "web_search": self.config.backend_params.get("enable_web_search", False),
-                    "code_execution": self.config.backend_params.get("enable_code_interpreter", False),
+                    "x_search": self.config.backend_params.get("enable_x_search", False),
+                    "code_execution": (self.config.backend_params.get("enable_code_execution", False) or self.config.backend_params.get("enable_code_interpreter", False)),
                 },
             },
         )

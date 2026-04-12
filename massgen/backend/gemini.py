@@ -51,6 +51,11 @@ from .gemini_utils import (
     PostEvaluationResponse,
     VoteOnlyCoordinationResponse,
 )
+from .llm_circuit_breaker import (
+    CircuitBreakerOpenError,
+    LLMCircuitBreaker,
+    LLMCircuitBreakerConfig,
+)
 from .rate_limiter import GlobalRateLimiter
 
 
@@ -247,6 +252,9 @@ class GeminiBackend(StreamingBufferMixin, CustomToolAndMCPBackend):
         # Store Gemini-specific API key before calling parent init
         gemini_api_key = api_key or os.getenv("GOOGLE_API_KEY") or os.getenv("GEMINI_API_KEY")
 
+        # Extract circuit breaker config before other kwargs processing
+        cb_config = self._build_circuit_breaker_config(kwargs)
+
         # Extract and remove enable_rate_limit and backoff config
         enable_rate_limit = kwargs.pop("enable_rate_limit", False)
         model_name = kwargs.get("model", "")
@@ -293,6 +301,12 @@ class GeminiBackend(StreamingBufferMixin, CustomToolAndMCPBackend):
         self.backoff_retry_count = 0
         self.backoff_total_delay = 0.0
 
+        # LLM circuit breaker (opt-in, default disabled)
+        self.circuit_breaker = LLMCircuitBreaker(
+            config=cb_config,
+            backend_name="gemini",
+        )
+
         # Initialize multi-dimensional rate limiter for Gemini API
         # Supports RPM (Requests Per Minute), TPM (Tokens Per Minute), RPD (Requests Per Day)
         # Configuration loaded from massgen/config/rate_limits.yaml
@@ -334,6 +348,23 @@ class GeminiBackend(StreamingBufferMixin, CustomToolAndMCPBackend):
             # No rate limiting - use a pass-through limiter
             self.rate_limiter = None
             logger.info(f"[Gemini] Rate limiting disabled for '{model_name}'")
+
+    @staticmethod
+    def _build_circuit_breaker_config(
+        kwargs: dict[str, Any],
+    ) -> LLMCircuitBreakerConfig:
+        """Extract circuit breaker settings from kwargs and build config."""
+        cb_kwargs: dict[str, Any] = {}
+        prefix = "llm_circuit_breaker_"
+        keys_to_pop: list[str] = []
+        for key in kwargs:
+            if key.startswith(prefix):
+                param = key[len(prefix) :]
+                cb_kwargs[param] = kwargs[key]
+                keys_to_pop.append(key)
+        for key in keys_to_pop:
+            kwargs.pop(key)
+        return LLMCircuitBreakerConfig(**cb_kwargs)
 
     def _normalize_and_resolve_tool_name(self, tool_name: str) -> str:
         """Normalize Gemini tool names and resolve MCP aliases.
@@ -777,6 +808,11 @@ class GeminiBackend(StreamingBufferMixin, CustomToolAndMCPBackend):
             last_response_with_candidates = None
 
             cfg = self.backoff_config
+
+            # Circuit breaker gate
+            if self.circuit_breaker.should_block():
+                raise CircuitBreakerOpenError("Circuit breaker is open for gemini")
+
             first_token_recorded = False
             for stream_attempt in range(1, cfg.max_attempts + 1):
                 try:
@@ -863,6 +899,7 @@ class GeminiBackend(StreamingBufferMixin, CustomToolAndMCPBackend):
 
                     # End API call timing on successful completion
                     self.end_api_call_timing(success=True)
+                    self.circuit_breaker.record_success()
                     break
 
                 except Exception as stream_exc:
@@ -873,6 +910,10 @@ class GeminiBackend(StreamingBufferMixin, CustomToolAndMCPBackend):
 
                     if not is_retryable or stream_attempt >= cfg.max_attempts:
                         if is_retryable:
+                            self.circuit_breaker.record_failure(
+                                error_type=f"exhausted_{status_code or 'unknown'}",
+                                error_message=f"Max retries exhausted: {error_msg[:200]}",
+                            )
                             yield StreamChunk(
                                 type="error",
                                 error=f"⚠️ Rate limit exceeded after {cfg.max_attempts} retries. Please try again later.",
@@ -1443,6 +1484,10 @@ class GeminiBackend(StreamingBufferMixin, CustomToolAndMCPBackend):
                     cont_first_token_recorded = False
 
                     # Retry for continuation with backoff
+                    # Circuit breaker gate
+                    if self.circuit_breaker.should_block():
+                        raise CircuitBreakerOpenError("Circuit breaker is open for gemini")
+
                     for cont_attempt in range(1, cfg.max_attempts + 1):
                         try:
                             # Start API call timing for continuation
@@ -1519,16 +1564,21 @@ class GeminiBackend(StreamingBufferMixin, CustomToolAndMCPBackend):
 
                             # End API call timing on successful completion
                             self.end_api_call_timing(success=True)
+                            self.circuit_breaker.record_success()
                             break
 
                         except Exception as cont_exc:
                             # End API call timing with failure
                             self.end_api_call_timing(success=False, error=str(cont_exc))
-                            is_retryable, status_code, _ = _is_retryable_gemini_error(cont_exc, cfg.retry_statuses)
+                            is_retryable, status_code, error_msg = _is_retryable_gemini_error(cont_exc, cfg.retry_statuses)
 
                             if not is_retryable or cont_attempt >= cfg.max_attempts:
                                 # Yield user-friendly error before raising
                                 if is_retryable:
+                                    self.circuit_breaker.record_failure(
+                                        error_type=f"exhausted_{status_code or 'unknown'}",
+                                        error_message=f"Max retries exhausted: {error_msg[:200]}",
+                                    )
                                     yield StreamChunk(
                                         type="error",
                                         error=f"⚠️ Rate limit exceeded after {cfg.max_attempts} retries. Please try again later.",

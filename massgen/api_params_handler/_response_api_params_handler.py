@@ -19,6 +19,8 @@ class ResponseAPIParamsHandler(APIParamsHandlerBase):
         return self.get_base_excluded_params().union(
             {
                 "enable_web_search",
+                "enable_x_search",
+                "enable_code_execution",
                 "enable_code_interpreter",
                 "allowed_tools",
                 "exclude_tools",
@@ -38,11 +40,15 @@ class ResponseAPIParamsHandler(APIParamsHandlerBase):
     def get_provider_tools(self, all_params: dict[str, Any]) -> list[dict[str, Any]]:
         """Get provider tools for Response API format."""
         provider_tools = []
+        provider_name = self.backend.get_provider_name()
 
         if all_params.get("enable_web_search", False):
             provider_tools.append({"type": "web_search"})
 
-        if all_params.get("enable_code_interpreter", False):
+        if provider_name == "Grok" and all_params.get("enable_x_search", False):
+            provider_tools.append({"type": "x_search"})
+
+        if all_params.get("enable_code_interpreter", False) or all_params.get("enable_code_execution", False):
             provider_tools.append(
                 {
                     "type": "code_interpreter",
@@ -116,12 +122,18 @@ class ResponseAPIParamsHandler(APIParamsHandlerBase):
             logger.debug(f"Using previous_response_id for reasoning continuity: {previous_response_id}")
 
         # Handle parallel_tool_calls with built-in tools constraint
-        builtin_flags = ("enable_web_search", "enable_code_interpreter", "_has_file_search_files")
+        builtin_flags = (
+            "enable_web_search",
+            "enable_x_search",
+            "enable_code_execution",
+            "enable_code_interpreter",
+            "_has_file_search_files",
+        )
         if any(all_params.get(f, False) for f in builtin_flags):
             # Built-in tools present - MUST disable parallel calling
             if all_params.get("parallel_tool_calls") is True:
                 logger.warning(
-                    "parallel_tool_calls=true is not supported with built-in tools " "(web_search, code_interpreter, file_search). " "Setting parallel_tool_calls=false.",
+                    "parallel_tool_calls=true is not supported with built-in tools " "(web_search, x_search, code_interpreter, file_search). " "Setting parallel_tool_calls=false.",
                 )
             api_params["parallel_tool_calls"] = False
         elif "parallel_tool_calls" in all_params:

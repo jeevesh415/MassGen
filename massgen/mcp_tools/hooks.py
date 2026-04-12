@@ -2350,6 +2350,52 @@ class HumanInputHook(PatternHook):
         return HookResult.allow()
 
 
+class CheckpointGatedHook:
+    """PRE_TOOL_USE hook that blocks tools matching gated_patterns.
+
+    Used to enforce that certain tools (e.g., deploy, delete) can only
+    be called through checkpoint proposed_actions, not directly.
+
+    Agents are instructed to include the tool as a proposed_action
+    in their new_answer instead.
+    """
+
+    def __init__(self, gated_patterns: list[str]):
+        """
+        Args:
+            gated_patterns: List of fnmatch patterns for tools requiring approval.
+        """
+        self.gated_patterns = gated_patterns or []
+
+    def __call__(self, event: HookEvent) -> HookResult:
+        """Check if the tool call matches any gated pattern.
+
+        Args:
+            event: The hook event with tool_name.
+
+        Returns:
+            HookResult with deny if tool matches a gated pattern.
+        """
+        if not self.gated_patterns:
+            return HookResult.allow()
+
+        tool_name = event.tool_name
+        for pattern in self.gated_patterns:
+            if fnmatch.fnmatch(tool_name, pattern):
+                return HookResult(
+                    allowed=False,
+                    decision="deny",
+                    reason=(
+                        f"Tool '{tool_name}' matches gated pattern '{pattern}'. "
+                        "This tool requires team approval via checkpoint. "
+                        "Include it as a proposed_action in your new_answer "
+                        "instead of calling it directly."
+                    ),
+                )
+
+        return HookResult.allow()
+
+
 __all__ = [
     # Core types
     "HookType",
@@ -2373,6 +2419,8 @@ __all__ = [
     # Per-round timeout hooks
     "RoundTimeoutPostHook",
     "RoundTimeoutPreHook",
+    # Checkpoint hooks
+    "CheckpointGatedHook",
     # Session-based hooks
     "PermissionClientSession",
     "convert_sessions_to_permission_sessions",

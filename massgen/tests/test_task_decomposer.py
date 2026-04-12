@@ -69,11 +69,11 @@ def test_parse_subtask_specs_from_object_json_text_preserves_per_agent_criteria(
 
     assert parsed["agent_a"]["subtask"] == "Own the API contract and persistence layer."
     assert parsed["agent_a"]["criteria"] == [
-        {"text": "API contract is complete", "category": "must"},
-        {"text": "Peer UI integration is preserved", "category": "should"},
+        {"text": "API contract is complete", "category": "standard"},
+        {"text": "Peer UI integration is preserved", "category": "standard"},
     ]
     assert parsed["agent_b"]["criteria"] == [
-        {"text": "UI is polished", "category": "must"},
+        {"text": "UI is polished", "category": "standard"},
     ]
 
 
@@ -133,7 +133,7 @@ def test_parse_subtask_specs_from_workspace_recovers_snapshot_decomposition_plan
 
     assert parsed["agent_a"]["subtask"] == "Own the data model and persistence layer."
     assert parsed["agent_a"]["criteria"] == [
-        {"text": "Storage contract is correct", "category": "must"},
+        {"text": "Storage contract is correct", "category": "standard"},
     ]
     assert parsed["agent_b"]["subtask"] == "Own the UI shell and wire it to the stored data."
 

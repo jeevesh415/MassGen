@@ -485,6 +485,56 @@ Rules for `next_tasks.json`:
 - the final preserve/regression verification must confirm both preserved
   strengths and that earlier correctness fixes still hold after later changes
 
+### `evolved_prompt` (in `next_tasks.json`)
+
+When `verdict` is `"iterate"`, also include an `evolved_prompt` object in
+`next_tasks.json`. This is a rewrite of the ORIGINAL user task prompt that
+encapsulates learnings from this evaluation round and pushes for more ambitious
+output in the next round.
+
+```json
+{
+  "evolved_prompt": {
+    "prompt": "The rewritten task prompt text...",
+    "evolution_rationale": "Brief explanation of what changed and why..."
+  }
+}
+```
+
+**Always rewrite from the ORIGINAL task prompt** (the `ORIGINAL TASK` section
+in your task brief), not from a previous evolution. The original prompt is your
+base; you are producing a refined version that incorporates what you learned
+from evaluating the current work.
+
+The evolved prompt must satisfy these constraints:
+
+1. **Preservation**: preserve every explicit constraint from the original
+   (format, word count, audience, domain, etc.)
+2. **Non-contradiction**: do not contradict or negate anything in the original
+3. **Self-containment**: the evolved prompt must be understandable on its own —
+   a fresh agent seeing only this prompt should know what to do
+4. **Directional clarity**: encode a clear direction for improvement, not just
+   "be better"
+5. **Ambition escalation**: raise the bar beyond what the current best answer
+   achieved
+6. **Dead-end closure**: steer away from approaches that have been tried and
+   plateau'd
+7. **Concreteness**: include concrete, actionable specifics — not vague
+   aspirations
+8. **Proportionality**: modifications proportional to the gap — do not rewrite
+   90% if 10% needs sharpening
+
+The `evolution_rationale` should briefly explain what the key change is and
+which criteria it addresses. This is for observability, not injected into the
+agent's prompt.
+
+When `ceiling_not_reached` and only minor gaps remain, the evolved prompt may
+be very close to the original with targeted additions. When
+`ceiling_approaching` or `ceiling_reached`, the evolved prompt should encode
+the thesis shift and make the new direction the primary framing.
+
+When `verdict` is `"converged"`, do NOT include `evolved_prompt`.
+
 ## Evaluation expectations
 
 - **"Candidate answers" are the deliverables** — the actual work products

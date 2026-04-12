@@ -42,11 +42,11 @@ class TestGetCriteriaForPreset:
         assert ids == expected
 
     @pytest.mark.parametrize("preset_name", list(VALID_CRITERIA_PRESETS))
-    def test_categories_are_must_or_should(self, preset_name: str):
+    def test_categories_are_valid(self, preset_name: str):
         criteria = get_criteria_for_preset(preset_name)
         for c in criteria:
-            assert c.category in ("must", "should"), f"Preset {preset_name}, {c.id}: expected 'must' or 'should', got '{c.category}'"
-        assert any(c.category == "must" for c in criteria), f"Preset {preset_name}: must have at least one 'must' criterion"
+            assert c.category in ("primary", "standard", "stretch"), f"Preset {preset_name}, {c.id}: unexpected category '{c.category}'"
+        assert any(c.category in ("primary", "standard") for c in criteria), f"Preset {preset_name}: must have at least one 'primary' or 'standard' criterion"
 
     @pytest.mark.parametrize("preset_name", list(VALID_CRITERIA_PRESETS))
     def test_texts_are_non_empty(self, preset_name: str):
@@ -55,11 +55,11 @@ class TestGetCriteriaForPreset:
             assert c.text.strip(), f"Preset {preset_name}, {c.id}: empty text"
 
     @pytest.mark.parametrize("preset_name", list(VALID_CRITERIA_PRESETS))
-    def test_all_criteria_are_must_or_should(self, preset_name: str):
-        """Each preset should have only 'must' or 'should' criteria."""
+    def test_all_criteria_have_valid_categories(self, preset_name: str):
+        """Each preset should have only valid category values."""
         criteria = get_criteria_for_preset(preset_name)
         for c in criteria:
-            assert c.category in ("must", "should"), f"Preset {preset_name}, {c.id}: expected 'must' or 'should', got '{c.category}'"
+            assert c.category in ("primary", "standard", "stretch"), f"Preset {preset_name}, {c.id}: unexpected category '{c.category}'"
 
     def test_unknown_preset_raises_value_error(self):
         with pytest.raises(ValueError, match="Unknown criteria preset"):
@@ -208,45 +208,45 @@ class TestPresetContentSanity:
     def test_persona_preset_exists(self):
         criteria = get_criteria_for_preset("persona")
         assert len(criteria) == 5
-        assert all(c.category == "must" for c in criteria)
+        assert all(c.category in ("primary", "standard") for c in criteria)
 
     def test_decomposition_preset_exists(self):
         criteria = get_criteria_for_preset("decomposition")
         assert len(criteria) == 5
-        assert all(c.category == "must" for c in criteria)
+        assert all(c.category in ("primary", "standard") for c in criteria)
 
     def test_evaluation_preset_exists(self):
         criteria = get_criteria_for_preset("evaluation")
         assert len(criteria) == 5
-        assert all(c.category == "must" for c in criteria)
+        assert all(c.category in ("primary", "standard") for c in criteria)
 
     def test_prompt_preset_exists(self):
         criteria = get_criteria_for_preset("prompt")
         assert len(criteria) == 5
-        assert all(c.category == "must" for c in criteria)
+        assert all(c.category in ("primary", "standard") for c in criteria)
 
     def test_analysis_preset_exists(self):
         criteria = get_criteria_for_preset("analysis")
         assert len(criteria) == 5
-        assert all(c.category == "must" for c in criteria)
+        assert all(c.category in ("primary", "standard") for c in criteria)
 
     def test_planning_preset_exists(self):
         criteria = get_criteria_for_preset("planning")
-        assert len(criteria) == 10
-        must_count = sum(1 for c in criteria if c.category == "must")
-        should_count = sum(1 for c in criteria if c.category == "should")
-        assert must_count == 8
-        assert should_count == 2
+        assert len(criteria) == 7
+        standard_count = sum(1 for c in criteria if c.category in ("primary", "standard"))
+        stretch_count = sum(1 for c in criteria if c.category == "stretch")
+        assert standard_count == 7  # all planning criteria are standard or primary
+        assert stretch_count == 0
 
     def test_spec_preset_exists(self):
         criteria = get_criteria_for_preset("spec")
-        assert len(criteria) == 7
-        assert all(c.category == "must" for c in criteria)
+        assert len(criteria) == 6
+        assert all(c.category in ("primary", "standard") for c in criteria)
 
     def test_round_evaluator_preset_exists(self):
         criteria = get_criteria_for_preset("round_evaluator")
         assert len(criteria) == 7
-        assert all(c.category == "must" for c in criteria)
+        assert all(c.category in ("primary", "standard") for c in criteria)
 
 
 # ---------------------------------------------------------------------------
@@ -307,10 +307,10 @@ class TestCriteriaFromInline:
 
         result = criteria_from_inline(_SAMPLE_INLINE)
         assert result[0].text == "Visual design is cohesive and polished"
-        # All categories promoted to "must" regardless of input
-        assert result[0].category == "must"
-        assert result[1].category == "must"
-        assert result[2].category == "must"
+        # Categories mapped from legacy values
+        assert result[0].category in ("primary", "standard", "stretch")
+        assert result[1].category in ("primary", "standard", "stretch")
+        assert result[2].category in ("primary", "standard", "stretch")
 
     def test_empty_list_returns_empty(self):
         from massgen.evaluation_criteria_generator import criteria_from_inline
@@ -478,11 +478,11 @@ class TestGetActiveCriteria:
     def test_inline_criteria_returned(self):
         """Inline criteria should be returned when set."""
         orch = self._make_orch(inline=_SAMPLE_INLINE)
-        items, categories, verify_by = orch._get_active_criteria()
+        items, categories, verify_by, _anti, _anchors = orch._get_active_criteria()
         assert len(items) == 3
         assert items[0] == "Visual design is cohesive and polished"
-        assert categories["E1"] == "must"
-        assert categories["E2"] == "must"
+        assert categories["E1"] in ("primary", "standard")
+        assert categories["E2"] in ("primary", "standard")
 
     def test_inline_beats_generated_in_active_criteria(self):
         """Inline should take priority over generated criteria."""
@@ -490,7 +490,7 @@ class TestGetActiveCriteria:
             GeneratedCriterion(id="E1", text="Generated criterion", category="must"),
         ]
         orch = self._make_orch(inline=_SAMPLE_INLINE, generated=generated)
-        items, _, _vb = orch._get_active_criteria()
+        items, _, _vb, _anti, _anchors = orch._get_active_criteria()
         assert len(items) == 3
         assert "Generated criterion" not in items
 
@@ -500,7 +500,7 @@ class TestGetActiveCriteria:
             GeneratedCriterion(id="E1", text="Generated criterion", category="must"),
         ]
         orch = self._make_orch(generated=generated)
-        items, categories, verify_by = orch._get_active_criteria()
+        items, categories, verify_by, _anti, _anchors = orch._get_active_criteria()
         assert items == ["Generated criterion"]
         assert categories == {"E1": "must"}
         assert verify_by is None  # no verify_by on this criterion
@@ -508,14 +508,14 @@ class TestGetActiveCriteria:
     def test_preset_returned_when_no_inline_or_generated(self):
         """Preset criteria returned when no inline or generated."""
         orch = self._make_orch(preset="persona")
-        items, _, _vb = orch._get_active_criteria()
+        items, _, _vb, _anti, _anchors = orch._get_active_criteria()
         # Persona preset has 5 items
         assert len(items) == 5
 
     def test_none_returned_when_nothing_configured(self):
-        """Returns (None, None, None) when no criteria source is available."""
+        """Returns (None, None, None, None, None) when no criteria source is available."""
         orch = self._make_orch(changedoc=False)
-        items, categories, verify_by = orch._get_active_criteria()
+        items, categories, verify_by, _anti, _anchors = orch._get_active_criteria()
         assert items is None
         assert categories is None
         assert verify_by is None
@@ -582,4 +582,4 @@ class TestChecklistCriteriaDisplayBackfill:
         source = call.kwargs.get("source")
 
         assert source == "generic"
-        assert [c["id"] for c in criteria] == ["E1", "E2", "E3", "E4", "E5"]
+        assert [c["id"] for c in criteria] == ["E1", "E2", "E3", "E4"]

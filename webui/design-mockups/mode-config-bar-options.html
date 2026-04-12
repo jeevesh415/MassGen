@@ -1,0 +1,1003 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>ModeConfigBar — 3 Design Options</title>
+<style>
+  /* ─── Reset & Base ─── */
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+  :root {
+    --sidebar: #1e1f22;
+    --main: #313338;
+    --surface: #2b2d31;
+    --surface-raised: #383a40;
+    --border: #1e1f22;
+    --border-subtle: #3f4147;
+    --text: #f2f3f5;
+    --text-secondary: #b5bac1;
+    --text-muted: #80848e;
+    --accent: #5865f2;
+    --accent-hover: #4752c4;
+    --accent-soft: rgba(88, 101, 242, 0.15);
+    --input-bg: #1e1f22;
+    --online: #23a559;
+    --online-soft: rgba(35, 165, 89, 0.15);
+    --warning: #f0b232;
+    --danger: #ed4245;
+    --channel-hover: rgba(79, 84, 92, 0.32);
+    --radius-sm: 4px;
+    --radius: 6px;
+    --radius-lg: 8px;
+    --radius-xl: 12px;
+  }
+
+  body {
+    font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
+    background: #111;
+    color: var(--text);
+    min-height: 100vh;
+  }
+
+  /* ─── Tab Switcher ─── */
+  .tab-bar {
+    position: fixed; top: 0; left: 0; right: 0; z-index: 100;
+    display: flex; gap: 0; background: #000; border-bottom: 1px solid #333;
+  }
+  .tab-bar button {
+    flex: 1; padding: 14px 20px; border: none; background: transparent;
+    color: var(--text-muted); font-size: 14px; font-weight: 600; cursor: pointer;
+    transition: all 0.2s; border-bottom: 2px solid transparent;
+  }
+  .tab-bar button:hover { color: var(--text-secondary); background: #1a1a1a; }
+  .tab-bar button.active {
+    color: var(--accent); border-bottom-color: var(--accent); background: #0d0d15;
+  }
+
+  .option-panel { display: none; padding-top: 56px; }
+  .option-panel.active { display: block; }
+
+  /* ─── Shared: Fake App Shell ─── */
+  .app-shell {
+    height: calc(100vh - 56px); display: flex; flex-direction: column;
+    background: var(--main); position: relative;
+  }
+  .main-area {
+    flex: 1; display: flex; align-items: center; justify-content: center;
+    flex-direction: column; gap: 8px;
+  }
+  .main-area h1 { color: var(--accent); font-size: 28px; font-weight: 700; }
+  .main-area p { color: var(--text-secondary); font-size: 14px; }
+
+  .input-bar {
+    display: flex; align-items: center; gap: 10px;
+    padding: 10px 16px; border-top: 1px solid var(--border);
+    background: var(--surface);
+  }
+  .input-bar .config-btn {
+    display: flex; align-items: center; gap: 6px;
+    padding: 7px 14px; border-radius: var(--radius);
+    background: var(--surface-raised); border: 1px solid var(--border-subtle);
+    color: var(--text-secondary); font-size: 13px; cursor: pointer;
+    transition: all 0.15s;
+  }
+  .input-bar .config-btn:hover { border-color: var(--accent); color: var(--text); }
+  .input-bar .config-btn svg { width: 14px; height: 14px; }
+  .input-bar .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--online); }
+  .input-bar input[type="text"] {
+    flex: 1; background: transparent; border: none; outline: none;
+    color: var(--text); font-size: 14px; padding: 8px 0;
+  }
+  .input-bar input[type="text"]::placeholder { color: var(--text-muted); }
+  .input-bar .send-btn {
+    padding: 8px 20px; border-radius: var(--radius);
+    background: var(--accent); border: none; color: white;
+    font-size: 13px; font-weight: 600; cursor: pointer;
+    transition: background 0.15s;
+  }
+  .input-bar .send-btn:hover { background: var(--accent-hover); }
+
+  /* ─── Shared: Toggle Pill Group ─── */
+  .pill-group {
+    display: inline-flex; border-radius: var(--radius); background: var(--input-bg);
+    padding: 3px; gap: 2px;
+  }
+  .pill-group button {
+    padding: 5px 12px; border-radius: var(--radius-sm); border: none;
+    font-size: 12px; font-weight: 500; cursor: pointer;
+    background: transparent; color: var(--text-muted);
+    transition: all 0.15s;
+  }
+  .pill-group button:hover { color: var(--text-secondary); }
+  .pill-group button.active {
+    background: var(--accent); color: white;
+    box-shadow: 0 1px 3px rgba(0,0,0,0.3);
+  }
+
+  /* ─── Shared: Agent Chip ─── */
+  .agent-chip {
+    display: inline-flex; align-items: center; gap: 6px;
+    padding: 5px 10px; border-radius: var(--radius);
+    background: var(--surface-raised); border: 1px solid var(--border-subtle);
+    font-size: 12px; color: var(--text-secondary); cursor: pointer;
+    transition: all 0.15s; white-space: nowrap;
+  }
+  .agent-chip:hover { border-color: var(--accent); color: var(--text); }
+  .agent-chip.configured {
+    border-color: var(--online); background: var(--online-soft);
+    color: var(--online);
+  }
+  .agent-chip .letter {
+    width: 20px; height: 20px; border-radius: 50%;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 11px; font-weight: 700;
+    background: var(--accent-soft); color: var(--accent);
+  }
+  .agent-chip.configured .letter {
+    background: var(--online-soft); color: var(--online);
+  }
+
+  /* ─── Shared: Feature Badge ─── */
+  .badge {
+    display: inline-flex; align-items: center; gap: 4px;
+    padding: 2px 8px; border-radius: 10px;
+    font-size: 10px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.3px;
+  }
+  .badge.blue { background: rgba(88, 101, 242, 0.15); color: #8b9cf7; }
+  .badge.green { background: rgba(35, 165, 89, 0.15); color: #57d68d; }
+  .badge.amber { background: rgba(240, 178, 50, 0.15); color: #f0b232; }
+  .badge.purple { background: rgba(167, 99, 255, 0.15); color: #c084fc; }
+
+  /* ─── Shared: Stepper ─── */
+  .stepper {
+    display: inline-flex; align-items: center; border-radius: var(--radius);
+    background: var(--input-bg); border: 1px solid var(--border-subtle);
+    overflow: hidden;
+  }
+  .stepper button {
+    width: 30px; height: 30px; border: none; background: transparent;
+    color: var(--text-muted); font-size: 14px; cursor: pointer;
+    display: flex; align-items: center; justify-content: center;
+    transition: all 0.15s;
+  }
+  .stepper button:hover { background: var(--channel-hover); color: var(--text); }
+  .stepper .value {
+    min-width: 32px; text-align: center; font-size: 13px; font-weight: 600;
+    color: var(--text); padding: 0 2px;
+  }
+
+  /* ─── Shared: Toggle Switch ─── */
+  .toggle-row {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 8px 12px; border-radius: var(--radius);
+    background: var(--input-bg); cursor: pointer;
+    transition: background 0.15s;
+  }
+  .toggle-row:hover { background: var(--surface-raised); }
+  .toggle-row .label-group {
+    display: flex; align-items: center; gap: 8px;
+  }
+  .toggle-row .label-group .icon {
+    width: 28px; height: 28px; border-radius: var(--radius-sm);
+    display: flex; align-items: center; justify-content: center;
+    font-size: 14px;
+  }
+  .toggle-row .label-group .icon.blue { background: var(--accent-soft); }
+  .toggle-row .label-group .icon.green { background: var(--online-soft); }
+  .toggle-row .label-group .icon.amber { background: rgba(240, 178, 50, 0.15); }
+  .toggle-row .toggle-label { font-size: 13px; color: var(--text); }
+  .toggle-row .toggle-desc { font-size: 11px; color: var(--text-muted); }
+  .toggle-switch {
+    width: 36px; height: 20px; border-radius: 10px;
+    background: #4e5058; position: relative; cursor: pointer;
+    transition: background 0.2s;
+  }
+  .toggle-switch.on { background: var(--accent); }
+  .toggle-switch::after {
+    content: ''; position: absolute; top: 2px; left: 2px;
+    width: 16px; height: 16px; border-radius: 50%;
+    background: white; transition: transform 0.2s;
+  }
+  .toggle-switch.on::after { transform: translateX(16px); }
+
+  /* ─── Shared: Select / Dropdown ─── */
+  .select-control {
+    padding: 7px 30px 7px 10px; border-radius: var(--radius);
+    background: var(--input-bg); border: 1px solid var(--border-subtle);
+    color: var(--text); font-size: 12px; cursor: pointer;
+    appearance: none;
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' fill='%2380848e' viewBox='0 0 16 16'%3E%3Cpath d='M4 6l4 4 4-4'/%3E%3C/svg%3E");
+    background-repeat: no-repeat;
+    background-position: right 8px center;
+    transition: border-color 0.15s;
+  }
+  .select-control:hover { border-color: var(--accent); }
+  .select-control:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 2px var(--accent-soft); }
+
+  /* ─── Shared: Provider/Model Pill ─── */
+  .provider-model-pill {
+    display: inline-flex; align-items: center; gap: 0;
+    border-radius: var(--radius); overflow: hidden;
+    border: 1px solid var(--border-subtle); font-size: 12px;
+  }
+  .provider-model-pill .provider-part {
+    padding: 5px 10px; background: var(--accent-soft); color: var(--accent);
+    font-weight: 600; cursor: pointer; transition: background 0.15s;
+  }
+  .provider-model-pill .provider-part:hover { background: rgba(88, 101, 242, 0.25); }
+  .provider-model-pill .model-part {
+    padding: 5px 10px; background: var(--input-bg); color: var(--text-secondary);
+    cursor: pointer; transition: all 0.15s;
+  }
+  .provider-model-pill .model-part:hover { color: var(--text); background: var(--surface-raised); }
+
+  /* ==============================
+     OPTION A: Expandable Panel
+     ============================== */
+  .opt-a .mode-bar {
+    border-top: 1px solid var(--border); background: var(--surface);
+    padding: 8px 16px;
+  }
+  .opt-a .mode-bar .row {
+    display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+  }
+  .opt-a .mode-bar .row + .row { margin-top: 6px; }
+  .opt-a .mode-bar .sep {
+    width: 1px; height: 20px; background: var(--border-subtle);
+  }
+
+  /* Expanded agent config panel */
+  .opt-a .agent-panel {
+    border-top: 1px solid var(--border);
+    background: var(--surface);
+    padding: 0 16px;
+    max-height: 0; overflow: hidden;
+    transition: max-height 0.3s ease, padding 0.3s ease;
+  }
+  .opt-a .agent-panel.open {
+    max-height: 500px; padding: 12px 16px;
+  }
+
+  .opt-a .agent-tabs {
+    display: flex; gap: 4px; margin-bottom: 12px;
+    border-bottom: 1px solid var(--border-subtle); padding-bottom: 8px;
+  }
+  .opt-a .agent-tab {
+    display: flex; align-items: center; gap: 6px;
+    padding: 6px 14px; border-radius: var(--radius); border: none;
+    font-size: 12px; font-weight: 500; cursor: pointer;
+    background: transparent; color: var(--text-muted);
+    transition: all 0.15s;
+  }
+  .opt-a .agent-tab:hover { background: var(--channel-hover); color: var(--text-secondary); }
+  .opt-a .agent-tab.active {
+    background: var(--accent-soft); color: var(--accent); font-weight: 600;
+  }
+  .opt-a .agent-tab .dot {
+    width: 6px; height: 6px; border-radius: 50%; background: var(--text-muted);
+  }
+  .opt-a .agent-tab.configured .dot { background: var(--online); }
+
+  .opt-a .agent-config-grid {
+    display: grid; grid-template-columns: 1fr 1fr; gap: 8px;
+  }
+  .opt-a .config-section {
+    display: flex; flex-direction: column; gap: 6px;
+  }
+  .opt-a .config-section .section-label {
+    font-size: 10px; font-weight: 600; text-transform: uppercase;
+    letter-spacing: 0.5px; color: var(--text-muted);
+  }
+
+  /* ==============================
+     OPTION B: Bottom Sheet / Drawer
+     ============================== */
+  .opt-b .mode-bar {
+    border-top: 1px solid var(--border); background: var(--surface);
+    padding: 8px 16px; display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+  }
+  .opt-b .mode-bar .sep {
+    width: 1px; height: 20px; background: var(--border-subtle);
+  }
+
+  .opt-b .drawer-overlay {
+    position: fixed; inset: 0; background: rgba(0,0,0,0.5);
+    z-index: 50; display: none; align-items: flex-end;
+    animation: fadeIn 0.15s ease;
+  }
+  .opt-b .drawer-overlay.open { display: flex; }
+  @keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
+
+  .opt-b .drawer {
+    width: 100%; max-height: 70vh; background: var(--surface);
+    border-top-left-radius: var(--radius-xl);
+    border-top-right-radius: var(--radius-xl);
+    border-top: 1px solid var(--border-subtle);
+    animation: slideUp 0.25s ease;
+    overflow-y: auto;
+  }
+  @keyframes slideUp { from { transform: translateY(100%); } to { transform: translateY(0); } }
+
+  .opt-b .drawer-handle {
+    display: flex; justify-content: center; padding: 10px;
+  }
+  .opt-b .drawer-handle span {
+    width: 36px; height: 4px; border-radius: 2px; background: var(--border-subtle);
+  }
+  .opt-b .drawer-header {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 0 20px 12px; border-bottom: 1px solid var(--border);
+  }
+  .opt-b .drawer-header h3 {
+    font-size: 15px; font-weight: 600; color: var(--text);
+  }
+  .opt-b .drawer-header .close-btn {
+    width: 28px; height: 28px; border-radius: var(--radius-sm);
+    border: none; background: transparent; color: var(--text-muted);
+    cursor: pointer; font-size: 18px; display: flex; align-items: center;
+    justify-content: center; transition: all 0.15s;
+  }
+  .opt-b .drawer-header .close-btn:hover {
+    background: var(--channel-hover); color: var(--text);
+  }
+
+  .opt-b .drawer-body {
+    padding: 16px 20px;
+  }
+
+  .opt-b .agent-cards-row {
+    display: flex; gap: 12px; overflow-x: auto; padding-bottom: 4px;
+  }
+  .opt-b .agent-card {
+    flex: 0 0 280px; border-radius: var(--radius-lg);
+    border: 1px solid var(--border-subtle); background: var(--main);
+    padding: 14px; display: flex; flex-direction: column; gap: 10px;
+    transition: border-color 0.15s;
+  }
+  .opt-b .agent-card:hover { border-color: var(--accent); }
+
+  .opt-b .agent-card .card-header {
+    display: flex; align-items: center; justify-content: space-between;
+  }
+  .opt-b .agent-card .card-header .agent-name {
+    font-size: 13px; font-weight: 600; color: var(--text);
+    display: flex; align-items: center; gap: 6px;
+  }
+  .opt-b .agent-card .card-header .copy-btn {
+    font-size: 10px; color: var(--accent); cursor: pointer;
+    background: none; border: none; padding: 2px 6px;
+  }
+  .opt-b .agent-card .card-header .copy-btn:hover { text-decoration: underline; }
+  .opt-b .agent-card .card-row {
+    display: flex; flex-direction: column; gap: 4px;
+  }
+  .opt-b .agent-card .card-row label {
+    font-size: 10px; font-weight: 600; text-transform: uppercase;
+    letter-spacing: 0.4px; color: var(--text-muted);
+  }
+  .opt-b .agent-card .mini-toggles {
+    display: flex; gap: 6px;
+  }
+  .opt-b .mini-toggle {
+    display: inline-flex; align-items: center; gap: 4px;
+    padding: 4px 8px; border-radius: var(--radius-sm);
+    font-size: 11px; cursor: pointer; border: 1px solid var(--border-subtle);
+    background: transparent; color: var(--text-muted);
+    transition: all 0.15s;
+  }
+  .opt-b .mini-toggle:hover { border-color: var(--text-muted); color: var(--text-secondary); }
+  .opt-b .mini-toggle.on {
+    border-color: var(--accent); color: var(--accent);
+    background: var(--accent-soft);
+  }
+
+  /* ==============================
+     OPTION C: Compact Inline Row
+     ============================== */
+  .opt-c .mode-bar {
+    border-top: 1px solid var(--border); background: var(--surface);
+    padding: 8px 16px;
+  }
+  .opt-c .mode-bar .top-row {
+    display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+  }
+  .opt-c .mode-bar .sep {
+    width: 1px; height: 20px; background: var(--border-subtle);
+  }
+
+  .opt-c .agent-strip {
+    margin-top: 6px; display: flex; gap: 6px; overflow-x: auto;
+    padding-bottom: 2px;
+  }
+
+  .opt-c .agent-inline-card {
+    flex: 0 0 auto; display: flex; align-items: center; gap: 6px;
+    padding: 5px 6px 5px 8px; border-radius: var(--radius);
+    background: var(--input-bg); border: 1px solid var(--border-subtle);
+    transition: border-color 0.15s;
+  }
+  .opt-c .agent-inline-card:hover { border-color: var(--accent); }
+
+  .opt-c .agent-inline-card .agent-letter {
+    font-size: 11px; font-weight: 700; color: var(--accent);
+    min-width: 16px;
+  }
+
+  .opt-c .inline-select {
+    padding: 3px 22px 3px 6px; border-radius: var(--radius-sm);
+    background: var(--surface-raised); border: 1px solid transparent;
+    color: var(--text-secondary); font-size: 11px; cursor: pointer;
+    appearance: none;
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='10' fill='%2380848e' viewBox='0 0 16 16'%3E%3Cpath d='M4 6l4 4 4-4'/%3E%3C/svg%3E");
+    background-repeat: no-repeat; background-position: right 5px center;
+    transition: border-color 0.15s;
+  }
+  .opt-c .inline-select:hover { border-color: var(--border-subtle); }
+  .opt-c .inline-select:focus { outline: none; border-color: var(--accent); }
+
+  .opt-c .inline-toggle {
+    width: 24px; height: 24px; border-radius: var(--radius-sm);
+    border: 1px solid var(--border-subtle); background: transparent;
+    color: var(--text-muted); font-size: 12px; cursor: pointer;
+    display: flex; align-items: center; justify-content: center;
+    transition: all 0.15s;
+  }
+  .opt-c .inline-toggle:hover { border-color: var(--text-muted); color: var(--text-secondary); }
+  .opt-c .inline-toggle.on {
+    border-color: var(--accent); color: var(--accent);
+    background: var(--accent-soft);
+  }
+  .opt-c .inline-toggle[title]:hover::after {
+    /* tooltip idea — not implemented in pure CSS for brevity */
+  }
+
+  /* Description text */
+  .design-desc {
+    position: absolute; top: 8px; right: 16px;
+    background: var(--surface-raised); border: 1px solid var(--border-subtle);
+    border-radius: var(--radius-lg); padding: 10px 14px;
+    font-size: 12px; color: var(--text-secondary); max-width: 280px;
+    line-height: 1.5; z-index: 10;
+  }
+  .design-desc strong { color: var(--accent); font-weight: 600; }
+</style>
+</head>
+<body>
+
+<!-- Tab Switcher -->
+<div class="tab-bar">
+  <button class="active" onclick="switchTab(0)">Option A — Expandable Panel</button>
+  <button onclick="switchTab(1)">Option B — Bottom Sheet</button>
+  <button onclick="switchTab(2)">Option C — Compact Inline</button>
+</div>
+
+<!-- ═══════════════════════════════════════════════════════════
+     OPTION A: Expandable Panel
+     ═══════════════════════════════════════════════════════════ -->
+<div class="option-panel active" id="panel-0">
+  <div class="app-shell opt-a">
+
+    <div class="design-desc">
+      <strong>Expandable Panel</strong><br>
+      Slim mode bar with toggles + agent chips.
+      Click any chip to expand a panel with full per-agent config:
+      provider, model, reasoning, web search, code exec.
+    </div>
+
+    <div class="main-area">
+      <h1>MassGen</h1>
+      <p>Ready when you are</p>
+    </div>
+
+    <!-- Agent config panel (expands above mode bar) -->
+    <div class="agent-panel open" id="a-panel">
+      <div class="agent-tabs">
+        <button class="agent-tab active configured" onclick="switchAgentTab(this)">
+          <span class="dot"></span> Agent A
+        </button>
+        <button class="agent-tab configured" onclick="switchAgentTab(this)">
+          <span class="dot"></span> Agent B
+        </button>
+        <button class="agent-tab" onclick="switchAgentTab(this)">
+          <span class="dot"></span> Agent C
+        </button>
+      </div>
+
+      <div class="agent-config-grid">
+        <div class="config-section">
+          <span class="section-label">Provider & Model</span>
+          <div class="provider-model-pill">
+            <span class="provider-part">Anthropic</span>
+            <span class="model-part">claude-sonnet-4-5 &nbsp;&#9662;</span>
+          </div>
+        </div>
+
+        <div class="config-section">
+          <span class="section-label">Reasoning Effort</span>
+          <select class="select-control" style="width: fit-content;">
+            <option>low</option>
+            <option>medium</option>
+            <option selected>high</option>
+            <option>xhigh</option>
+            <option>max</option>
+          </select>
+        </div>
+
+        <div class="config-section">
+          <span class="section-label">Capabilities</span>
+          <div style="display: flex; flex-direction: column; gap: 6px;">
+            <div class="toggle-row" onclick="this.querySelector('.toggle-switch').classList.toggle('on')">
+              <div class="label-group">
+                <div class="icon blue">&#128269;</div>
+                <div>
+                  <div class="toggle-label">Web Search</div>
+                  <div class="toggle-desc">Allow agent to search the web</div>
+                </div>
+              </div>
+              <div class="toggle-switch on"></div>
+            </div>
+            <div class="toggle-row" onclick="this.querySelector('.toggle-switch').classList.toggle('on')">
+              <div class="label-group">
+                <div class="icon green">&#128187;</div>
+                <div>
+                  <div class="toggle-label">Code Execution</div>
+                  <div class="toggle-desc">Run code in sandbox</div>
+                </div>
+              </div>
+              <div class="toggle-switch"></div>
+            </div>
+          </div>
+        </div>
+
+        <div class="config-section" style="align-items: flex-start;">
+          <span class="section-label">Summary</span>
+          <div style="display: flex; flex-wrap: wrap; gap: 4px;">
+            <span class="badge blue">Anthropic</span>
+            <span class="badge green">sonnet-4-5</span>
+            <span class="badge amber">High Reasoning</span>
+            <span class="badge purple">Web Search</span>
+          </div>
+          <button style="margin-top: 6px; background: none; border: none; color: var(--accent); font-size: 11px; cursor: pointer;">
+            Apply to all agents &rarr;
+          </button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Mode bar -->
+    <div class="mode-bar">
+      <div class="row">
+        <div class="pill-group">
+          <button class="active">Parallel</button>
+          <button>Decomp</button>
+        </div>
+        <div class="pill-group">
+          <button class="active">Multi</button>
+          <button>Single</button>
+        </div>
+        <div class="pill-group">
+          <button class="active">Refine</button>
+          <button>Quick</button>
+        </div>
+        <div class="sep"></div>
+        <div class="pill-group">
+          <button class="active">No Personas</button>
+          <button>Perspective</button>
+          <button>Implement</button>
+          <button>Method</button>
+        </div>
+      </div>
+      <div class="row">
+        <div class="stepper">
+          <button>−</button>
+          <span class="value">3</span>
+          <button>+</button>
+        </div>
+        <div class="agent-chip configured" onclick="togglePanel('a-panel')">
+          <span class="letter">A</span> claude / sonnet-4-5
+        </div>
+        <div class="agent-chip configured" onclick="togglePanel('a-panel')">
+          <span class="letter">B</span> openai / gpt-4o
+        </div>
+        <div class="agent-chip" onclick="togglePanel('a-panel')">
+          <span class="letter">C</span> default
+        </div>
+        <div class="sep"></div>
+        <div class="agent-chip" onclick="this.classList.toggle('configured')" style="gap: 4px;">
+          &#128051; Docker
+          <span style="width: 6px; height: 6px; border-radius: 50%; background: var(--text-muted);"></span>
+        </div>
+      </div>
+    </div>
+
+    <div class="input-bar">
+      <button class="config-btn">
+        <svg viewBox="0 0 16 16" fill="currentColor"><path d="M4 6l4 4 4-4"/></svg>
+        config
+      </button>
+      <span class="dot"></span>
+      <input type="text" placeholder="Type a question to start...">
+      <button class="send-btn">Start</button>
+    </div>
+  </div>
+</div>
+
+
+<!-- ═══════════════════════════════════════════════════════════
+     OPTION B: Bottom Sheet / Drawer
+     ═══════════════════════════════════════════════════════════ -->
+<div class="option-panel" id="panel-1">
+  <div class="app-shell opt-b">
+
+    <div class="design-desc">
+      <strong>Bottom Sheet</strong><br>
+      Mode toggles inline. Click "Configure Agents" to open a
+      slide-up drawer showing all agent cards side by side
+      with full config: provider, model, reasoning, toggles.
+    </div>
+
+    <div class="main-area">
+      <h1>MassGen</h1>
+      <p>Ready when you are</p>
+    </div>
+
+    <!-- Mode bar -->
+    <div class="mode-bar">
+      <div class="pill-group">
+        <button class="active">Parallel</button>
+        <button>Decomp</button>
+      </div>
+      <div class="pill-group">
+        <button class="active">Multi</button>
+        <button>Single</button>
+      </div>
+      <div class="pill-group">
+        <button class="active">Refine</button>
+        <button>Quick</button>
+      </div>
+      <div class="sep"></div>
+      <div class="pill-group">
+        <button class="active">No Personas</button>
+        <button>Perspective</button>
+        <button>Implement</button>
+        <button>Method</button>
+      </div>
+      <div class="sep"></div>
+      <div class="stepper">
+        <button>−</button>
+        <span class="value">3</span>
+        <button>+</button>
+      </div>
+      <button class="agent-chip" onclick="toggleDrawer()" style="border-color: var(--accent); color: var(--accent);">
+        &#9881; Configure Agents
+      </button>
+      <div class="agent-chip" onclick="this.classList.toggle('configured')" style="margin-left: auto; gap: 4px;">
+        &#128051; Docker
+        <span style="width: 6px; height: 6px; border-radius: 50%; background: var(--text-muted);"></span>
+      </div>
+    </div>
+
+    <div class="input-bar">
+      <button class="config-btn">
+        <svg viewBox="0 0 16 16" fill="currentColor"><path d="M4 6l4 4 4-4"/></svg>
+        config
+      </button>
+      <span class="dot"></span>
+      <input type="text" placeholder="Type a question to start...">
+      <button class="send-btn">Start</button>
+    </div>
+
+    <!-- Drawer overlay -->
+    <div class="drawer-overlay open" id="b-drawer" onclick="if(event.target===this) toggleDrawer()">
+      <div class="drawer">
+        <div class="drawer-handle"><span></span></div>
+        <div class="drawer-header">
+          <h3>Agent Configuration</h3>
+          <button class="close-btn" onclick="toggleDrawer()">&times;</button>
+        </div>
+        <div class="drawer-body">
+          <div class="agent-cards-row">
+            <!-- Agent A -->
+            <div class="agent-card">
+              <div class="card-header">
+                <span class="agent-name">
+                  <span class="letter" style="width: 22px; height: 22px; border-radius: 50%; display: inline-flex; align-items: center; justify-content: center; font-size: 11px; font-weight: 700; background: var(--accent-soft); color: var(--accent);">A</span>
+                  Agent A
+                </span>
+                <button class="copy-btn">Copy to all</button>
+              </div>
+              <div class="card-row">
+                <label>Provider</label>
+                <select class="select-control">
+                  <option selected>Anthropic</option>
+                  <option>OpenAI</option>
+                  <option>Google</option>
+                  <option>xAI</option>
+                </select>
+              </div>
+              <div class="card-row">
+                <label>Model</label>
+                <select class="select-control">
+                  <option selected>claude-sonnet-4-5-20250514</option>
+                  <option>claude-opus-4-0-20250514</option>
+                  <option>claude-haiku-3-5-20241022</option>
+                </select>
+              </div>
+              <div class="card-row">
+                <label>Reasoning</label>
+                <select class="select-control">
+                  <option>low</option>
+                  <option>medium</option>
+                  <option selected>high</option>
+                  <option>xhigh</option>
+                  <option>max</option>
+                </select>
+              </div>
+              <div class="card-row">
+                <label>Features</label>
+                <div class="mini-toggles">
+                  <button class="mini-toggle on" onclick="this.classList.toggle('on')">&#128269; Search</button>
+                  <button class="mini-toggle" onclick="this.classList.toggle('on')">&#128187; Code</button>
+                </div>
+              </div>
+            </div>
+
+            <!-- Agent B -->
+            <div class="agent-card">
+              <div class="card-header">
+                <span class="agent-name">
+                  <span class="letter" style="width: 22px; height: 22px; border-radius: 50%; display: inline-flex; align-items: center; justify-content: center; font-size: 11px; font-weight: 700; background: var(--accent-soft); color: var(--accent);">B</span>
+                  Agent B
+                </span>
+                <button class="copy-btn">Copy to all</button>
+              </div>
+              <div class="card-row">
+                <label>Provider</label>
+                <select class="select-control">
+                  <option>Anthropic</option>
+                  <option selected>OpenAI</option>
+                  <option>Google</option>
+                  <option>xAI</option>
+                </select>
+              </div>
+              <div class="card-row">
+                <label>Model</label>
+                <select class="select-control">
+                  <option selected>gpt-4o</option>
+                  <option>gpt-4o-mini</option>
+                  <option>o3</option>
+                  <option>o4-mini</option>
+                </select>
+              </div>
+              <div class="card-row">
+                <label>Reasoning</label>
+                <select class="select-control">
+                  <option>low</option>
+                  <option selected>medium</option>
+                  <option>high</option>
+                </select>
+              </div>
+              <div class="card-row">
+                <label>Features</label>
+                <div class="mini-toggles">
+                  <button class="mini-toggle" onclick="this.classList.toggle('on')">&#128269; Search</button>
+                  <button class="mini-toggle on" onclick="this.classList.toggle('on')">&#128187; Code</button>
+                </div>
+              </div>
+            </div>
+
+            <!-- Agent C -->
+            <div class="agent-card">
+              <div class="card-header">
+                <span class="agent-name">
+                  <span class="letter" style="width: 22px; height: 22px; border-radius: 50%; display: inline-flex; align-items: center; justify-content: center; font-size: 11px; font-weight: 700; background: var(--accent-soft); color: var(--accent);">C</span>
+                  Agent C
+                </span>
+                <button class="copy-btn">Copy to all</button>
+              </div>
+              <div class="card-row">
+                <label>Provider</label>
+                <select class="select-control">
+                  <option>Anthropic</option>
+                  <option>OpenAI</option>
+                  <option selected>Google</option>
+                  <option>xAI</option>
+                </select>
+              </div>
+              <div class="card-row">
+                <label>Model</label>
+                <select class="select-control">
+                  <option selected>gemini-2.5-pro</option>
+                  <option>gemini-2.5-flash</option>
+                </select>
+              </div>
+              <div class="card-row">
+                <label>Reasoning</label>
+                <select class="select-control">
+                  <option>low</option>
+                  <option>medium</option>
+                  <option selected>high</option>
+                </select>
+              </div>
+              <div class="card-row">
+                <label>Features</label>
+                <div class="mini-toggles">
+                  <button class="mini-toggle on" onclick="this.classList.toggle('on')">&#128269; Search</button>
+                  <button class="mini-toggle on" onclick="this.classList.toggle('on')">&#128187; Code</button>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+
+<!-- ═══════════════════════════════════════════════════════════
+     OPTION C: Compact Inline (all controls in one bar)
+     ═══════════════════════════════════════════════════════════ -->
+<div class="option-panel" id="panel-2">
+  <div class="app-shell opt-c">
+
+    <div class="design-desc">
+      <strong>Compact Inline</strong><br>
+      Everything visible at once in a two-row bar — no popover or drawer needed.
+      Each agent is a compact card with inline dropdowns
+      and icon toggles for search/code/reasoning.
+    </div>
+
+    <div class="main-area">
+      <h1>MassGen</h1>
+      <p>Ready when you are</p>
+    </div>
+
+    <!-- Mode bar -->
+    <div class="mode-bar">
+      <div class="top-row">
+        <div class="pill-group">
+          <button class="active">Parallel</button>
+          <button>Decomp</button>
+        </div>
+        <div class="pill-group">
+          <button class="active">Multi</button>
+          <button>Single</button>
+        </div>
+        <div class="pill-group">
+          <button class="active">Refine</button>
+          <button>Quick</button>
+        </div>
+        <div class="sep"></div>
+        <div class="pill-group">
+          <button class="active">No Personas</button>
+          <button>Perspective</button>
+          <button>Implement</button>
+          <button>Method</button>
+        </div>
+        <div class="sep"></div>
+        <div class="stepper">
+          <button>−</button>
+          <span class="value">3</span>
+          <button>+</button>
+        </div>
+        <div class="agent-chip" onclick="this.classList.toggle('configured')" style="margin-left: auto; gap: 4px;">
+          &#128051; Docker
+          <span style="width: 6px; height: 6px; border-radius: 50%; background: var(--text-muted);"></span>
+        </div>
+      </div>
+
+      <!-- Agent strip: compact inline cards -->
+      <div class="agent-strip">
+        <!-- Agent A -->
+        <div class="agent-inline-card">
+          <span class="agent-letter">A</span>
+          <select class="inline-select" title="Provider">
+            <option selected>Anthropic</option>
+            <option>OpenAI</option>
+            <option>Google</option>
+            <option>xAI</option>
+          </select>
+          <select class="inline-select" title="Model">
+            <option selected>sonnet-4-5</option>
+            <option>opus-4</option>
+            <option>haiku-3-5</option>
+          </select>
+          <select class="inline-select" title="Reasoning" style="width: 52px;">
+            <option>low</option>
+            <option>med</option>
+            <option selected>high</option>
+            <option>xhi</option>
+            <option>max</option>
+          </select>
+          <button class="inline-toggle on" title="Web Search" onclick="this.classList.toggle('on')">&#128269;</button>
+          <button class="inline-toggle" title="Code Exec" onclick="this.classList.toggle('on')">&#128187;</button>
+        </div>
+
+        <!-- Agent B -->
+        <div class="agent-inline-card">
+          <span class="agent-letter">B</span>
+          <select class="inline-select" title="Provider">
+            <option>Anthropic</option>
+            <option selected>OpenAI</option>
+            <option>Google</option>
+            <option>xAI</option>
+          </select>
+          <select class="inline-select" title="Model">
+            <option selected>gpt-4o</option>
+            <option>gpt-4o-mini</option>
+            <option>o3</option>
+          </select>
+          <select class="inline-select" title="Reasoning" style="width: 52px;">
+            <option>low</option>
+            <option selected>med</option>
+            <option>high</option>
+          </select>
+          <button class="inline-toggle" title="Web Search" onclick="this.classList.toggle('on')">&#128269;</button>
+          <button class="inline-toggle on" title="Code Exec" onclick="this.classList.toggle('on')">&#128187;</button>
+        </div>
+
+        <!-- Agent C -->
+        <div class="agent-inline-card">
+          <span class="agent-letter">C</span>
+          <select class="inline-select" title="Provider">
+            <option>Anthropic</option>
+            <option>OpenAI</option>
+            <option selected>Google</option>
+            <option>xAI</option>
+          </select>
+          <select class="inline-select" title="Model">
+            <option selected>gemini-2.5-pro</option>
+            <option>gemini-2.5-flash</option>
+          </select>
+          <select class="inline-select" title="Reasoning" style="width: 52px;">
+            <option>low</option>
+            <option>med</option>
+            <option selected>high</option>
+          </select>
+          <button class="inline-toggle on" title="Web Search" onclick="this.classList.toggle('on')">&#128269;</button>
+          <button class="inline-toggle on" title="Code Exec" onclick="this.classList.toggle('on')">&#128187;</button>
+        </div>
+      </div>
+    </div>
+
+    <div class="input-bar">
+      <button class="config-btn">
+        <svg viewBox="0 0 16 16" fill="currentColor"><path d="M4 6l4 4 4-4"/></svg>
+        config
+      </button>
+      <span class="dot"></span>
+      <input type="text" placeholder="Type a question to start...">
+      <button class="send-btn">Start</button>
+    </div>
+  </div>
+</div>
+
+
+<script>
+function switchTab(idx) {
+  document.querySelectorAll('.tab-bar button').forEach((b, i) => {
+    b.classList.toggle('active', i === idx);
+  });
+  document.querySelectorAll('.option-panel').forEach((p, i) => {
+    p.classList.toggle('active', i === idx);
+  });
+}
+
+function togglePanel(id) {
+  document.getElementById(id).classList.toggle('open');
+}
+
+function toggleDrawer() {
+  document.getElementById('b-drawer').classList.toggle('open');
+}
+
+function switchAgentTab(el) {
+  el.parentElement.querySelectorAll('.agent-tab').forEach(t => t.classList.remove('active'));
+  el.classList.add('active');
+}
+</script>
+
+</body>
+</html>

@@ -7,13 +7,31 @@ using ContentProcessor as the single source of truth for parsing.
 
 from __future__ import annotations
 
+import sys
 from collections.abc import Callable
 from typing import Any
 
 from massgen.events import MassGenEvent
+from massgen.utils.sanitize_console_text import sanitize_console_text_for_encoding
 
 from .content_processor import ContentOutput, ContentProcessor
 from .shared.tui_debug import tui_log
+
+
+def _get_textual_output_encoding() -> str | None:
+    """Return the encoding used by the active Textual/Rich terminal sink."""
+    return getattr(sys.__stdout__, "encoding", None) or getattr(sys.stdout, "encoding", None)
+
+
+def _sanitize_textual_retry_text(text: str) -> str:
+    """Sanitize retry-path text only when the terminal sink is non-UTF-8."""
+    if not isinstance(text, str):
+        text = str(text)
+
+    if not text.lstrip().startswith("Retry ("):
+        return text
+
+    return sanitize_console_text_for_encoding(text, _get_textual_output_encoding())
 
 
 class TimelineEventAdapter:
@@ -132,8 +150,9 @@ class TimelineEventAdapter:
             except Exception as e:
                 tui_log(f"[TimelineEventAdapter] {e}")
         elif output.output_type in ("thinking", "text", "status", "presentation") and output.text_content:
+            render_text = _sanitize_textual_retry_text(output.text_content)
             # Skip "Evaluation complete" status — already shown in FinalPresentationCard header
-            if output.text_class == "status" and "Evaluation complete" in output.text_content:
+            if output.text_class == "status" and "Evaluation complete" in render_text:
                 return
             # Capture text during final presentation as the final answer
             # (only if we haven't received the definitive final_answer event yet)
@@ -142,8 +161,8 @@ class TimelineEventAdapter:
             # since the panel flag may be set before the adapter receives the event
             is_final_presentation = getattr(self, "_pending_final_card_meta", None) or getattr(self._panel, "_is_final_presentation_round", False)
             if output.output_type == "text" and is_final_presentation and not getattr(self, "_final_answer_received", False):
-                tui_log(f"[FINAL_CARD] Capturing text as final_answer: {output.text_content[:50] if output.text_content else None}...")
-                self._final_answer = output.text_content
+                tui_log(f"[FINAL_CARD] Capturing text as final_answer: {render_text[:50] if render_text else None}...")
+                self._final_answer = render_text
                 # Call callback before returning (don't add to timeline - card will show it)
                 if self._on_output_applied:
                     try:
@@ -153,7 +172,7 @@ class TimelineEventAdapter:
                 return
             try:
                 timeline.add_text(
-                    output.text_content,
+                    render_text,
                     style=output.text_style,
                     text_class=output.text_class or "content-inline",
                     round_number=round_number,

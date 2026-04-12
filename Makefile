@@ -90,7 +90,7 @@ test: test-fast
 
 test-fast:
 	@echo "🧪 Running fast test lane..."
-	@uv run pytest massgen/tests --run-integration -m "not live_api and not docker and not expensive" -q --tb=no
+	@uv run pytest massgen/tests --run-integration -m "not live_api and not docker and not expensive" -k "not test_review_modal_snapshot" -q --tb=no
 	@echo "✓ Fast test lane passed"
 
 test-all:

@@ -11,6 +11,7 @@ Usage:
     python -m massgen.cli --build-config
 """
 
+import copy
 import os
 from pathlib import Path
 from typing import Any
@@ -31,6 +32,28 @@ from massgen.backend.capabilities import (
 )
 from massgen.utils.model_catalog import get_model_metadata_for_provider_sync
 from massgen.utils.model_matcher import get_all_models_for_provider
+
+# Shared Docker backend defaults — single source of truth.
+# Imported by frontend/web/server.py and used by _generate_quickstart_config().
+DOCKER_BACKEND_DEFAULTS: dict[str, Any] = {
+    "enable_code_based_tools": True,
+    "exclude_file_operation_mcps": True,
+    "enable_mcp_command_line": True,
+    "command_line_execution_mode": "docker",
+    "command_line_docker_image": "ghcr.io/massgen/mcp-runtime-sudo:latest",
+    "command_line_docker_network_mode": "bridge",
+    "command_line_docker_enable_sudo": True,
+    "command_line_docker_credentials": {
+        "env_file": ".env",
+        "env_vars_from_file": [
+            "OPENAI_API_KEY",
+            "ANTHROPIC_API_KEY",
+            "GOOGLE_API_KEY",
+            "GEMINI_API_KEY",
+        ],
+    },
+    "shared_tools_directory": "shared_tools",
+}
 
 
 def _get_provider_capabilities(provider_id: str) -> dict[str, bool]:
@@ -56,6 +79,7 @@ QUICKSTART_PROVIDER_PRIORITY = (
     "claude_code",
     "codex",
     "copilot",
+    "gemini_cli",
     "gemini",
 )
 
@@ -66,7 +90,7 @@ HEADLESS_BACKEND_PRIORITY = [
     ("claude", "claude-sonnet-4-5-20250514"),
     ("openai", "gpt-5.4"),
     ("gemini", "gemini-3-flash-preview"),
-    ("grok", "grok-4-1-fast-reasoning"),
+    ("grok", "grok-4.20-0309-reasoning"),
 ]
 
 
@@ -155,9 +179,22 @@ def build_quickstart_env_path(
 def resolve_headless_quickstart_project_dir(
     output_dir: str | Path,
     *,
+    output_path: str | Path | None = None,
     cwd: Path | None = None,
 ) -> Path:
     """Resolve the project dir used for local headless quickstart env files."""
+    if output_path is not None:
+        resolved_output_path = Path(output_path).expanduser()
+        parent = resolved_output_path.parent
+        if str(parent) in {"", "."}:
+            return cwd or Path.cwd()
+        if parent.name == ".massgen":
+            project_dir = parent.parent
+            if str(project_dir) in {"", "."}:
+                return cwd or Path.cwd()
+            return project_dir
+        return parent
+
     resolved_output_dir = Path(output_dir)
     if resolved_output_dir.name == ".massgen":
         parent = resolved_output_dir.parent
@@ -769,6 +806,12 @@ class ConfigBuilder:
                         api_keys[provider_id] = True
                         continue
 
+                    # Gemini CLI supports cached login credentials in ~/.gemini/
+                    # in addition to GOOGLE_API_KEY / GEMINI_API_KEY.
+                    if provider_id == "gemini_cli":
+                        api_keys[provider_id] = self._has_gemini_cli_credentials()
+                        continue
+
                     env_var = provider_info.get("env_var")
                     if env_var:
                         api_keys[provider_id] = bool(os.getenv(env_var))
@@ -784,6 +827,14 @@ class ConfigBuilder:
             console.print(f"[error]❌ Error detecting API keys: {e}[/error]")
             # Return empty dict to allow continue with manual input
             return {provider_id: False for provider_id in self.PROVIDERS.keys()}
+
+    def _has_gemini_cli_credentials(self) -> bool:
+        """Return True when Gemini CLI can authenticate via env var or cached login."""
+        if os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY"):
+            return True
+
+        gemini_home = Path.home() / ".gemini"
+        return (gemini_home / "google_accounts.json").exists() or (gemini_home / "oauth_creds.json").exists()
 
     def interactive_api_key_setup(self) -> dict[str, bool]:
         """Interactive API key setup wizard.
@@ -4140,21 +4191,23 @@ class ConfigBuilder:
     def generate_config_programmatic(
         self,
         output_path: str,
-        num_agents: int = 2,
+        num_agents: int = 1,
         backend_type: str = None,
         model: str = None,
         use_docker: bool = False,
         context_path: str | None = None,
+        agent_id: str | None = None,
     ) -> bool:
         """Generate config file programmatically without user interaction.
 
         Args:
             output_path: Where to save the config file
-            num_agents: Number of agents (1-10)
+            num_agents: Number of agents (1-10, default: 1)
             backend_type: Backend provider (must have API key)
             model: Model name
             use_docker: Whether to enable Docker execution
             context_path: Optional path to add as context
+            agent_id: Optional explicit id for single-agent configs
 
         Returns:
             True if successful
@@ -4168,6 +4221,10 @@ class ConfigBuilder:
         # Validate num_agents
         if num_agents < 1 or num_agents > 10:
             raise ValueError("Number of agents must be between 1 and 10")
+
+        resolved_agent_id = (agent_id or "").strip() or None
+        if resolved_agent_id and num_agents != 1:
+            raise ValueError("Explicit agent_id is only supported when num_agents=1")
 
         # Check API key availability
         api_keys = self.detect_api_keys()
@@ -4184,7 +4241,7 @@ class ConfigBuilder:
             chr(ord("a") + i) if i < 26 else str(i)
             agents_config.append(
                 {
-                    "id": f"{backend_type.split('.')[-1]}-{model.split('-')[-1]}{i + 1}",
+                    "id": resolved_agent_id or f"{backend_type.split('.')[-1]}-{model.split('-')[-1]}{i + 1}",
                     "type": provider_info.get("type", backend_type),
                     "model": model,
                 },
@@ -4276,12 +4333,14 @@ class ConfigBuilder:
     def run_quickstart_headless(
         self,
         output_dir: str = ".massgen",
-        num_agents: int = 3,
+        output_path: str | None = None,
+        num_agents: int = 1,
         backend_override: str | None = None,
         model_override: str | None = None,
         use_docker: bool | None = None,
         context_path: str | None = None,
         agent_specs: list[dict[str, str | None]] | None = None,
+        agent_id: str | None = None,
     ) -> dict:
         """Run quickstart non-interactively with auto-detection.
 
@@ -4290,12 +4349,14 @@ class ConfigBuilder:
 
         Args:
             output_dir: Directory for config and .env files
-            num_agents: Number of agents (default 3)
+            output_path: Optional exact config file path (overrides output_dir/config.yaml)
+            num_agents: Number of agents (default 1)
             backend_override: Force specific backend for all agents
             model_override: Force specific model for all agents
             use_docker: True/False to force, None to auto-detect
             context_path: Optional path to add as context
             agent_specs: Optional explicit per-agent backend/model specs
+            agent_id: Optional explicit id for single-agent configs
 
         Returns:
             Dict with keys: success, config_path, env_template_path, backend,
@@ -4318,7 +4379,11 @@ class ConfigBuilder:
             "messages": [],
             "manual_steps": [],
         }
-        project_dir = resolve_headless_quickstart_project_dir(output_dir)
+        resolved_agent_id = (agent_id or "").strip() or None
+        project_dir = resolve_headless_quickstart_project_dir(
+            output_dir,
+            output_path=output_path,
+        )
         env_template_path = build_quickstart_env_path(
             location="project",
             project_dir=project_dir,
@@ -4341,6 +4406,11 @@ class ConfigBuilder:
 
         resolved_agent_specs: list[dict[str, str | None]] = []
         if agent_specs:
+            if resolved_agent_id:
+                result["manual_steps"].append(
+                    "Use id=<agent_id> inside each --quickstart-agent spec instead of --config-agent-id.",
+                )
+                return result
             missing_keys: list[str] = []
             for index, raw_spec in enumerate(agent_specs):
                 backend = str(raw_spec.get("backend") or raw_spec.get("type") or "").strip()
@@ -4453,7 +4523,7 @@ class ConfigBuilder:
             result["docker_available"] = False
 
         # Step 4: Generate config
-        config_path = str(Path(output_dir) / "config.yaml")
+        config_path = output_path or str(Path(output_dir) / "config.yaml")
         try:
             if resolved_agent_specs:
                 config = self._generate_quickstart_config(
@@ -4482,6 +4552,7 @@ class ConfigBuilder:
                     model=result["model"],
                     use_docker=use_docker,
                     context_path=context_path,
+                    agent_id=resolved_agent_id,
                 )
             result["config_path"] = config_path
             result["messages"].append("Config generated successfully")
@@ -5224,42 +5295,14 @@ class ConfigBuilder:
         ) -> dict:
             tools = tools or {}
             if use_docker:
-                # Full Docker mode with code-based tools, command execution, skills
+                # Full Docker mode with code-based tools, command execution
+                # deepcopy prevents yaml.dump from emitting anchors/aliases
+                # when multiple agents share the same nested dict objects
                 backend = {
                     "type": agent_type,
                     "model": model,
                     "cwd": "workspace",
-                    # Code-based tools (CodeAct paradigm)
-                    "enable_code_based_tools": True,
-                    "exclude_file_operation_mcps": True,
-                    "enable_mcp_command_line": True,
-                    # Docker execution
-                    "command_line_execution_mode": "docker",
-                    "command_line_docker_image": "ghcr.io/massgen/mcp-runtime-sudo:latest",
-                    "command_line_docker_network_mode": "bridge",
-                    "command_line_docker_enable_sudo": True,
-                    # Docker credentials for API keys
-                    "command_line_docker_credentials": {
-                        "env_file": ".env",
-                        "env_vars_from_file": [
-                            "OPENAI_API_KEY",
-                            "ANTHROPIC_API_KEY",
-                            "GOOGLE_API_KEY",
-                            "GEMINI_API_KEY",
-                        ],
-                    },
-                    # Shared tools directory
-                    "shared_tools_directory": "shared_tools",
-                    # Auto-discover custom tools
-                    "auto_discover_custom_tools": True,
-                    # Exclude heavy/problematic tools
-                    "exclude_custom_tools": [
-                        "_computer_use",
-                        "_claude_computer_use",
-                        "_gemini_computer_use",
-                        "_browser_automation",
-                    ],
-                    # Note: enable_multimodal_tools is set at orchestrator level
+                    **copy.deepcopy(DOCKER_BACKEND_DEFAULTS),
                 }
             else:
                 # Local mode - file operations only, no command execution
@@ -5319,64 +5362,38 @@ class ConfigBuilder:
             agents.append(agent)
 
         # Build orchestrator config
-        if use_docker:
-            # Full orchestrator config with skills and task planning
-            orchestrator_config = {
-                "snapshot_storage": "snapshots",
-                "agent_temporary_workspace": "temp_workspaces",
-                "voting_sensitivity": "checklist_gated",
-                "voting_threshold": 3,
-                "max_new_answers_per_agent": 5,
-                # Fairness defaults (enabled across all coordination modes)
-                "fairness_enabled": True,
-                "fairness_lead_cap_answers": 2,
-                "max_midstream_injections_per_round": 2,
-                # Multimodal tools enabled for all agents
-                "enable_multimodal_tools": True,
-                # Default generation backends (agents can override)
-                "image_generation_backend": "openai",  # OpenAI responses image gen
-                "video_generation_backend": "openai",  # OpenAI Sora2
-                "audio_generation_backend": "openai",  # OpenAI TTS
-                "coordination": {
-                    "max_orchestration_restarts": 0,  # Disabled pending MAS-268 fix
-                    "learning_capture_mode": "verification_and_final_only",
-                    "use_skills": True,
-                    "skills_directory": ".agent/skills",
-                    "enable_agent_task_planning": True,
-                    "task_planning_filesystem_mode": True,
-                    "enable_memory_filesystem_mode": True,
-                    "write_mode": "auto",
-                },
-            }
-        else:
-            # Local mode still enables built-in skills even without Docker.
-            orchestrator_config = {
-                "snapshot_storage": "snapshots",
-                "agent_temporary_workspace": "temp_workspaces",
-                "voting_sensitivity": "checklist_gated",
-                "voting_threshold": 3,
-                "max_new_answers_per_agent": 5,
-                # Fairness defaults (enabled across all coordination modes)
-                "fairness_enabled": True,
-                "fairness_lead_cap_answers": 2,
-                "max_midstream_injections_per_round": 2,
-                # Multimodal tools enabled for all agents
-                "enable_multimodal_tools": True,
-                # Default generation backends (agents can override)
-                "image_generation_backend": "openai",  # OpenAI image generation
-                "video_generation_backend": "openai",  # OpenAI video generation
-                "audio_generation_backend": "openai",  # OpenAI TTS
-                "coordination": {
-                    "max_orchestration_restarts": 0,  # Disabled pending MAS-268 fix
-                    "learning_capture_mode": "verification_and_final_only",
-                    "use_skills": True,
-                    "skills_directory": ".agent/skills",
-                    "enable_agent_task_planning": True,
-                    "task_planning_filesystem_mode": True,
-                    "enable_memory_filesystem_mode": True,
-                    "write_mode": "auto",
-                },
-            }
+        # Shared orchestrator defaults for both docker and local modes
+        orchestrator_config = {
+            "snapshot_storage": "snapshots",
+            "agent_temporary_workspace": "temp_workspaces",
+            "voting_sensitivity": "checklist_gated",
+            "voting_threshold": 3,
+            "max_new_answers_per_agent": 5,
+            # Fairness defaults (enabled across all coordination modes)
+            "fairness_enabled": True,
+            "fairness_lead_cap_answers": 2,
+            "max_midstream_injections_per_round": 2,
+            # Peer update batching for cleaner agent flow
+            "defer_peer_updates_until_restart": True,
+            "allow_midstream_peer_updates_before_checklist_submit": True,
+            # Multimodal tools enabled for all agents
+            "enable_multimodal_tools": True,
+            # Default generation backends (agents can override)
+            "image_generation_backend": "openai",
+            "video_generation_backend": "openai",
+            "audio_generation_backend": "openai",
+            "coordination": {
+                "max_orchestration_restarts": 0,  # Disabled pending MAS-268 fix
+                "learning_capture_mode": "verification_and_final_only",
+                "fast_iteration_mode": True,
+                "use_skills": True,
+                "skills_directory": ".agent/skills",
+                "enable_agent_task_planning": True,
+                "task_planning_filesystem_mode": True,
+                "enable_memory_filesystem_mode": True,
+                "write_mode": "auto",
+            },
+        }
 
         # Always set context_paths to avoid runtime prompt
         # Priority: context_paths (new) > context_path (deprecated) > empty list

@@ -388,7 +388,7 @@ export function InlineArtifactPreview({
     // For binary files, content.content may be base64 encoded
     if (!content.content && !content.binary) {
       return (
-        <div className="flex flex-col items-center justify-center h-full text-gray-500">
+        <div className="flex flex-col items-center justify-center h-full text-v2-text-muted">
           <AlertCircle className="w-8 h-8 mb-3 opacity-50" />
           <span>No content available</span>
         </div>
@@ -462,13 +462,13 @@ export function InlineArtifactPreview({
         if (highlightedHtml) {
           return (
             <div
-              className="overflow-auto h-full p-4 bg-gray-900 text-sm [&_pre]:!bg-transparent [&_code]:!bg-transparent"
+              className="overflow-auto h-full p-4 bg-v2-sidebar text-sm [&_pre]:!bg-transparent [&_code]:!bg-transparent"
               dangerouslySetInnerHTML={{ __html: highlightedHtml }}
             />
           );
         }
         return (
-          <pre className="overflow-auto h-full p-4 bg-gray-900 text-gray-300 text-sm font-mono whitespace-pre-wrap">
+          <pre className="overflow-auto h-full p-4 bg-v2-sidebar text-v2-text-secondary text-sm font-mono whitespace-pre-wrap">
             {content.content}
           </pre>
         );
@@ -478,7 +478,7 @@ export function InlineArtifactPreview({
   // Loading state
   if (isLoading) {
     return (
-      <div className="flex flex-col items-center justify-center h-full text-gray-400">
+      <div className="flex flex-col items-center justify-center h-full text-v2-text-muted">
         <Loader2 className="w-8 h-8 animate-spin mb-3" />
         <span>Loading preview...</span>
       </div>
@@ -510,19 +510,30 @@ export function InlineArtifactPreview({
       }
       // Return empty state while parent updates
       return (
-        <div className="flex flex-col items-center justify-center h-full text-gray-500">
+        <div className="flex flex-col items-center justify-center h-full text-v2-text-muted">
           <Eye className="w-12 h-12 mb-4 opacity-50" />
-          <span>Select a file to preview</span>
+          <span>File moved or removed</span>
+          <span className="text-sm mt-1">Choose another file to keep browsing</span>
+        </div>
+      );
+    }
+
+    if (is404) {
+      return (
+        <div className="flex flex-col items-center justify-center h-full text-v2-text-muted">
+          <Eye className="w-12 h-12 mb-4 opacity-50" />
+          <span>File moved or removed</span>
+          <span className="text-sm mt-1">Refresh or choose another file</span>
         </div>
       );
     }
 
     // For other errors, show error UI
     return (
-      <div className="flex flex-col items-center justify-center h-full text-gray-400">
+      <div className="flex flex-col items-center justify-center h-full text-v2-text-muted">
         <AlertCircle className="w-8 h-8 mb-3 text-red-400" />
         <span className="font-medium text-red-400">Failed to load file</span>
-        <span className="text-sm text-gray-500 mt-1">{error}</span>
+        <span className="text-sm text-v2-text-muted mt-1">{error}</span>
       </div>
     );
   }
@@ -530,7 +541,7 @@ export function InlineArtifactPreview({
   // No file selected
   if (!filePath) {
     return (
-      <div className="flex flex-col items-center justify-center h-full text-gray-500">
+      <div className="flex flex-col items-center justify-center h-full text-v2-text-muted">
         <Eye className="w-12 h-12 mb-4 opacity-50" />
         <span>Select a file to preview</span>
       </div>
@@ -540,16 +551,16 @@ export function InlineArtifactPreview({
   const fileName = getFileName(filePath);
 
   return (
-    <div className="flex flex-col h-full bg-gray-800 rounded-lg border border-gray-700 overflow-hidden">
+    <div className="flex flex-col h-full bg-v2-surface rounded-lg border border-v2-border overflow-hidden">
       {/* Header */}
-      <div className="flex items-center justify-between px-4 py-2 bg-gray-900/50 border-b border-gray-700">
+      <div className="flex items-center justify-between px-4 py-2 bg-v2-sidebar border-b border-v2-border">
         <div className="flex items-center gap-2 min-w-0">
           <span className="text-base shrink-0">{artifactConfig.icon}</span>
-          <span className="text-sm text-gray-300 truncate" title={fileName}>
+          <span className="text-sm text-v2-text-secondary truncate" title={fileName}>
             {fileName}
           </span>
           {content && (
-            <span className="text-xs text-gray-500">
+            <span className="text-xs text-v2-text-muted">
               ({formatFileSize(content.size)})
             </span>
           )}
@@ -563,8 +574,8 @@ export function InlineArtifactPreview({
                 onClick={() => setViewMode('preview')}
                 className={`p-1.5 rounded transition-colors ${
                   viewMode === 'preview'
-                    ? 'bg-blue-600 text-white'
-                    : 'text-gray-400 hover:text-gray-200 hover:bg-gray-700'
+                    ? 'bg-v2-accent text-white'
+                    : 'text-v2-text-muted hover:text-v2-text hover:bg-v2-sidebar-hover'
                 }`}
                 title="Preview"
               >
@@ -574,8 +585,8 @@ export function InlineArtifactPreview({
                 onClick={() => setViewMode('source')}
                 className={`p-1.5 rounded transition-colors ${
                   viewMode === 'source'
-                    ? 'bg-blue-600 text-white'
-                    : 'text-gray-400 hover:text-gray-200 hover:bg-gray-700'
+                    ? 'bg-v2-accent text-white'
+                    : 'text-v2-text-muted hover:text-v2-text hover:bg-v2-sidebar-hover'
                 }`}
                 title="Source"
               >
@@ -588,7 +599,7 @@ export function InlineArtifactPreview({
           {content && !content.binary && (
             <button
               onClick={handleCopy}
-              className="p-1.5 text-gray-400 hover:text-gray-200 hover:bg-gray-700 rounded transition-colors"
+              className="p-1.5 text-v2-text-muted hover:text-v2-text hover:bg-v2-sidebar-hover rounded transition-colors"
               title="Copy to clipboard"
             >
               {copied ? <Check className="w-4 h-4 text-green-400" /> : <Copy className="w-4 h-4" />}
@@ -599,7 +610,7 @@ export function InlineArtifactPreview({
           {content && (
             <button
               onClick={handleDownload}
-              className="p-1.5 text-gray-400 hover:text-gray-200 hover:bg-gray-700 rounded transition-colors"
+              className="p-1.5 text-v2-text-muted hover:text-v2-text hover:bg-v2-sidebar-hover rounded transition-colors"
               title="Download"
             >
               <Download className="w-4 h-4" />
@@ -610,7 +621,7 @@ export function InlineArtifactPreview({
           {content && (
             <button
               onClick={handleOpenInNewTab}
-              className="p-1.5 text-gray-400 hover:text-gray-200 hover:bg-gray-700 rounded transition-colors"
+              className="p-1.5 text-v2-text-muted hover:text-v2-text hover:bg-v2-sidebar-hover rounded transition-colors"
               title="Open in new tab"
             >
               <ExternalLink className="w-4 h-4" />
@@ -621,7 +632,7 @@ export function InlineArtifactPreview({
           {onFullscreen && (
             <button
               onClick={onFullscreen}
-              className="p-1.5 text-gray-400 hover:text-gray-200 hover:bg-gray-700 rounded transition-colors"
+              className="p-1.5 text-v2-text-muted hover:text-v2-text hover:bg-v2-sidebar-hover rounded transition-colors"
               title="Fullscreen preview"
             >
               <Maximize2 className="w-4 h-4" />
@@ -632,7 +643,7 @@ export function InlineArtifactPreview({
           {onClose && (
             <button
               onClick={onClose}
-              className="p-1.5 text-gray-400 hover:text-gray-200 hover:bg-gray-700 rounded transition-colors ml-1"
+              className="p-1.5 text-v2-text-muted hover:text-v2-text hover:bg-v2-sidebar-hover rounded transition-colors ml-1"
               title="Close preview"
             >
               <X className="w-4 h-4" />
@@ -650,7 +661,7 @@ export function InlineArtifactPreview({
           <div className="h-full overflow-auto">
             {isHighlighting ? (
               <div className="flex items-center justify-center h-full">
-                <Loader2 className="w-6 h-6 animate-spin text-gray-400" />
+                <Loader2 className="w-6 h-6 animate-spin text-v2-text-muted" />
               </div>
             ) : highlightedHtml ? (
               <div
@@ -658,7 +669,7 @@ export function InlineArtifactPreview({
                 dangerouslySetInnerHTML={{ __html: highlightedHtml }}
               />
             ) : content?.content ? (
-              <pre className="p-4 text-sm text-gray-300 font-mono whitespace-pre-wrap">
+              <pre className="p-4 text-sm text-v2-text-secondary font-mono whitespace-pre-wrap">
                 {content.content}
               </pre>
             ) : null}

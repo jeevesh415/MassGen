@@ -2,6 +2,7 @@
 
 from massgen.system_prompt_sections import (
     _CHECKLIST_ITEMS,
+    CommandExecutionSection,
     FilesystemBestPracticesSection,
     FilesystemOperationsSection,
     MemorySection,
@@ -62,6 +63,7 @@ def test_checklist_gated_decision_requires_blocking_evaluator_execution():
     """Checklist gated flow should require blocking evaluator execution before scoring."""
     content = _build_checklist_gated_decision(
         checklist_items=_CHECKLIST_ITEMS,
+        evaluator_available=True,
     )
     lower = content.lower()
     assert "background=false, refine=false" in lower
@@ -89,7 +91,7 @@ def test_checklist_gated_decision_round_evaluator_mode_requires_managed_packet_b
     assert "spawn_subagents" not in content
     assert "submit_checklist_args" not in content
     assert "expected_verdict" not in content
-    assert "propose_improvements_args" not in content
+    assert "draft_approach_args" not in content
     assert "submit_checklist" in lower
 
 
@@ -119,7 +121,7 @@ def test_checklist_gated_decision_orchestrator_managed_auto_injection_is_task_dr
     assert "auto-injected into your task plan" in lower
     assert "get_task_plan" in content
     assert "do not call `submit_checklist`" in content
-    assert "do not call `propose_improvements`" in content
+    assert "do not call `draft_approach`" in content
     assert "do not write a second diagnostic report" in lower
     assert "pure text artifact" in lower
     assert "multiple independent critiques" not in lower
@@ -216,6 +218,7 @@ def test_checklist_gated_decision_includes_peer_build_copy_guidance():
     without mutating read-only shared snapshots."""
     content = _build_checklist_gated_decision(
         checklist_items=_CHECKLIST_ITEMS,
+        evaluator_available=True,
     )
     assert "temp_workspaces" in content
     assert ".massgen_scratch/peer_eval/" in content
@@ -301,7 +304,7 @@ def test_task_planning_section_is_mandatory_for_complex_tasks():
     """Task planning section must state planning is required, not optional."""
     content = TaskPlanningSection().build_content()
     assert "REQUIRED" in content
-    assert "propose_improvements" in content
+    assert "draft_approach" in content
 
 
 def test_task_planning_section_prioritizes_correctness_and_final_regression_verification():
@@ -475,3 +478,55 @@ def test_filesystem_best_practices_evaluator_uses_prior_outputs_as_starting_poin
     assert "new" in lower or "unverified" in lower or "failing" in lower
     # Must not say "always verify independently" (that discourages reuse)
     assert "always verify independently" not in content
+
+
+def test_evaluation_guidance_reuse_existing_verification_artifacts():
+    """Evaluation guidance should tell agents to reuse prior round's verification
+    artifacts rather than re-rendering from scratch."""
+    section = FilesystemBestPracticesSection()
+    content = section.build_content()
+    lower = content.lower()
+    assert "reuse existing verification artifacts" in lower
+    assert "re-rendering from scratch" in lower
+    assert "only re-capture if" in lower
+
+
+def test_verification_replay_memories_discourage_redundant_recapture():
+    """Verification replay injection should tell agents not to re-render
+    artifacts that were already captured in the prior round."""
+    section = MemorySection(
+        memory_config={
+            "short_term": {"content": ""},
+            "long_term": [],
+            "temp_workspace_memories": [
+                {
+                    "agent_label": "agent1",
+                    "memories": {
+                        "short_term": {
+                            "verification_latest": {
+                                "name": "verification_latest",
+                                "content": "## Verify\n- rendered SVG and captured screenshots",
+                            },
+                        },
+                        "long_term": {},
+                    },
+                },
+            ],
+            "archived_memories": {"short_term": {}, "long_term": {}},
+        },
+    )
+    content = section.build_content()
+    lower = content.lower()
+    assert "do not re-render or re-capture" in lower
+    assert "unless you spot a gap" in lower
+
+
+def test_background_tool_guidance_discourages_immediate_wait():
+    """Background tool section should tell agents to continue working
+    after starting a background job, not immediately wait."""
+    section = CommandExecutionSection(docker_mode=False)
+    content = section.build_content()
+    lower = content.lower()
+    assert "continue with your next task" in lower
+    assert "do not immediately call" in lower
+    assert "exhausted all" in lower or "genuinely need the result" in lower

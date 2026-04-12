@@ -9,13 +9,16 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import datetime
 import json
 import logging
 import logging.handlers
 import os
+import time
 import uuid
+from collections import defaultdict
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 try:
     from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect
@@ -27,15 +30,20 @@ try:
 except ImportError:
     FASTAPI_AVAILABLE = False
 
+from massgen.config_builder import DOCKER_BACKEND_DEFAULTS
 from massgen.filesystem_manager._constants import (
     SKIP_DIRS_FOR_LOGGING,
     get_language_for_extension,
 )
 from massgen.frontend.displays.web_display import WebDisplay
 
+if TYPE_CHECKING:
+    from massgen.orchestrator import Orchestrator
+
 # Set up logging for workspace browser debugging
 workspace_logger = logging.getLogger("massgen.workspace")
 workspace_logger.setLevel(logging.DEBUG)
+logger = workspace_logger
 
 # Create log directory and file handler for persistent debugging
 _webui_log_dir = Path.home() / ".massgen" / "webui_logs"
@@ -105,6 +113,260 @@ def _cache_pdf(workspace: str, file_path: str, mtime: float, pdf_content: str) -
     _pdf_conversion_cache[key] = pdf_content
 
 
+# =========================================================================
+# Log Directory Scanning (historical session replay)
+# =========================================================================
+
+# Cache for _scan_log_dirs: (result_list, timestamp)
+_log_dir_cache: tuple[list[dict[str, Any]], float] | None = None
+_LOG_DIR_CACHE_TTL = 30.0  # seconds
+
+
+def _coerce_session_sort_timestamp(value: Any) -> float | None:
+    """Normalize supported session timestamp values into comparable floats."""
+    if value is None:
+        return None
+    if isinstance(value, (int, float)):
+        return float(value)
+    if isinstance(value, str):
+        stripped = value.strip()
+        if not stripped:
+            return None
+        try:
+            return float(stripped)
+        except ValueError:
+            pass
+        normalized = f"{stripped[:-1]}+00:00" if stripped.endswith("Z") else stripped
+        try:
+            return datetime.datetime.fromisoformat(normalized).timestamp()
+        except ValueError:
+            return None
+    return None
+
+
+def _session_sort_timestamp(*values: Any) -> float:
+    """Return the first valid normalized timestamp from the provided values."""
+    for value in values:
+        normalized = _coerce_session_sort_timestamp(value)
+        if normalized is not None:
+            return normalized
+    return 0.0
+
+
+def _find_latest_attempt(log_dir: Path) -> Path | None:
+    """Find the latest turn/attempt subdirectory in a log directory.
+
+    Walks turn_N/attempt_N directories and returns the one with the
+    highest turn then highest attempt number.
+    """
+    best = None
+    best_key = (-1, -1)
+    for turn_dir in sorted(log_dir.iterdir()):
+        if not turn_dir.is_dir() or not turn_dir.name.startswith("turn_"):
+            continue
+        try:
+            turn_num = int(turn_dir.name.split("_", 1)[1])
+        except (ValueError, IndexError):
+            continue
+        for attempt_dir in sorted(turn_dir.iterdir()):
+            if not attempt_dir.is_dir() or not attempt_dir.name.startswith("attempt_"):
+                continue
+            try:
+                attempt_num = int(attempt_dir.name.split("_", 1)[1])
+            except (ValueError, IndexError):
+                continue
+            key = (turn_num, attempt_num)
+            if key > best_key:
+                best_key = key
+                best = attempt_dir
+    return best
+
+
+def _scan_log_dirs(logs_root: Path) -> list[dict[str, Any]]:
+    """Scan massgen_logs directory for historical sessions.
+
+    Returns a list of session metadata dicts sorted by timestamp descending.
+    Each dict has: session_id, question, config, start_time, log_dir.
+    """
+    if not logs_root.is_dir():
+        return []
+
+    results: list[dict[str, Any]] = []
+    for entry in logs_root.iterdir():
+        if not entry.is_dir() or not entry.name.startswith("log_"):
+            continue
+        attempt_dir = _find_latest_attempt(entry)
+        if not attempt_dir:
+            continue
+        meta_file = attempt_dir / "execution_metadata.yaml"
+        if not meta_file.exists():
+            continue
+        try:
+            import yaml
+
+            meta = yaml.safe_load(meta_file.read_text())
+            if not meta or not isinstance(meta, dict):
+                continue
+            config_source = None
+            config_path = None
+            cli_args = meta.get("cli_args")
+            if isinstance(cli_args, dict):
+                config_source = cli_args.get("config_source")
+                config_path = cli_args.get("config_path") or cli_args.get("config_source")
+            # Extract model names from agent configs
+            models: list[str] = []
+            config_block = meta.get("config", {})
+            if isinstance(config_block, dict):
+                for agent_cfg in config_block.get("agents", []):
+                    if isinstance(agent_cfg, dict):
+                        backend = agent_cfg.get("backend", {})
+                        if isinstance(backend, dict) and "model" in backend:
+                            m = backend["model"]
+                            if m not in models:
+                                models.append(m)
+            results.append(
+                {
+                    "session_id": entry.name,
+                    "question": meta.get("query", ""),
+                    "config": config_source,
+                    "config_path": config_path,
+                    "models": models,
+                    "start_time": meta.get("timestamp"),
+                    "log_dir": str(attempt_dir),
+                },
+            )
+        except Exception:
+            continue
+
+    results.sort(
+        key=lambda r: _session_sort_timestamp(r.get("start_time")),
+        reverse=True,
+    )
+    return results
+
+
+def _scan_log_dirs_cached(logs_root: Path) -> list[dict[str, Any]]:
+    """Cached version of _scan_log_dirs with 30s TTL."""
+    global _log_dir_cache
+    now = time.time()
+    if _log_dir_cache is not None:
+        cached_results, cached_at = _log_dir_cache
+        if now - cached_at < _LOG_DIR_CACHE_TTL:
+            return cached_results
+    results = _scan_log_dirs(logs_root)
+    _log_dir_cache = (results, now)
+    return results
+
+
+def _read_events_jsonl(
+    session_id: str,
+    logs_root: Path,
+) -> list[dict[str, Any]] | None:
+    """Read events.jsonl from a log directory and wrap for frontend replay.
+
+    Returns a list of events suitable for processWSEvent() in the frontend,
+    starting with a synthesized 'init' event followed by 'structured_event'
+    wrappers around each events.jsonl line.
+
+    Returns None if the session_id doesn't match a log dir or no events.jsonl
+    exists.
+    """
+    log_dir = logs_root / session_id
+    if not log_dir.is_dir():
+        return None
+    attempt_dir = _find_latest_attempt(log_dir)
+    if not attempt_dir:
+        return None
+    events_file = attempt_dir / "events.jsonl"
+    if not events_file.exists():
+        return None
+
+    # Read metadata for the init event
+    meta_file = attempt_dir / "execution_metadata.yaml"
+    agents: list[str] = []
+    agent_models: dict[str, str] = {}
+    question = ""
+    if meta_file.exists():
+        try:
+            import yaml
+
+            meta = yaml.safe_load(meta_file.read_text())
+            if meta and isinstance(meta, dict):
+                question = meta.get("query", "")
+                config = meta.get("config", {})
+                if isinstance(config, dict):
+                    for agent_cfg in config.get("agents", []):
+                        if isinstance(agent_cfg, dict) and "id" in agent_cfg:
+                            aid = agent_cfg["id"]
+                            agents.append(aid)
+                            backend = agent_cfg.get("backend", {})
+                            if isinstance(backend, dict) and "model" in backend:
+                                agent_models[aid] = backend["model"]
+        except Exception:
+            pass
+
+    # If we couldn't determine agents from metadata, scan event lines
+    if not agents:
+        try:
+            with open(events_file) as f:
+                for line in f:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    ev = json.loads(line)
+                    aid = ev.get("agent_id")
+                    if aid and aid not in agents:
+                        agents.append(aid)
+        except Exception:
+            pass
+        if not agents:
+            return None
+
+    # Build the event list
+    result: list[dict[str, Any]] = []
+
+    # Synthesized init event
+    init_event: dict[str, Any] = {
+        "type": "init",
+        "session_id": session_id,
+        "agents": agents,
+        "question": question,
+    }
+    if agent_models:
+        init_event["agent_models"] = agent_models
+    result.append(init_event)
+
+    # Read and wrap each events.jsonl line
+    seq = 0
+    try:
+        with open(events_file) as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    ev = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                seq += 1
+                result.append(
+                    {
+                        "type": "structured_event",
+                        "session_id": session_id,
+                        "timestamp": ev.get("timestamp", 0),
+                        "sequence": seq,
+                        "event_type": ev.get("event_type", ""),
+                        "agent_id": ev.get("agent_id"),
+                        "round_number": ev.get("round_number", 0),
+                        "data": ev.get("data", {}),
+                    },
+                )
+    except Exception:
+        pass
+
+    return result if len(result) > 1 else None
+
+
 def _normalize_workspace_path(path: str) -> str:
     """Normalize a workspace path for consistent storage and lookup.
 
@@ -156,6 +418,8 @@ def _should_skip_dir(dir_name: str) -> bool:
     """
     import fnmatch
 
+    if dir_name == ".massgen_scratch":
+        return False
     if dir_name.startswith("."):
         return True
     if dir_name in SKIP_DIRS_FOR_LOGGING:
@@ -201,6 +465,147 @@ def _scan_workspace_files(workspace_path: Path) -> list[dict]:
     return files
 
 
+def _iter_workspace_search_roots(log_session_dir: Path | None) -> list[Path]:
+    """Return candidate log roots that may contain answer/final workspaces."""
+    if not log_session_dir:
+        return []
+
+    log_session_dir = Path(log_session_dir)
+    if not log_session_dir.exists():
+        return []
+
+    roots: list[Path] = []
+    seen: set[Path] = set()
+
+    def add_root(path: Path) -> None:
+        resolved = path.resolve()
+        if resolved in seen or not resolved.exists():
+            return
+        seen.add(resolved)
+        roots.append(resolved)
+
+    add_root(log_session_dir)
+
+    for turn_dir in sorted(log_session_dir.glob("turn_*")):
+        for attempt_dir in sorted(turn_dir.glob("attempt_*")):
+            add_root(attempt_dir)
+
+    return roots
+
+
+def _discover_logged_workspace_candidates(log_session_dir: Path | None) -> dict[str, list[str]]:
+    """Find answer/final workspaces recorded in the session logs.
+
+    Returns paths grouped by agent, ordered by preference:
+    1. Final workspace snapshots
+    2. Answer snapshots, newest first
+    """
+    candidates: dict[str, list[str]] = defaultdict(list)
+
+    def add_candidate(agent_id: str, workspace_path: Path) -> None:
+        resolved = str(workspace_path.resolve())
+        if resolved not in candidates[agent_id]:
+            candidates[agent_id].append(resolved)
+
+    for root in _iter_workspace_search_roots(log_session_dir):
+        final_dir = root / "final"
+        if final_dir.exists():
+            for agent_dir in sorted(final_dir.iterdir()):
+                if not agent_dir.is_dir() or not agent_dir.name.startswith("agent_"):
+                    continue
+                workspace_path = agent_dir / "workspace"
+                if workspace_path.exists() and workspace_path.is_dir():
+                    add_candidate(agent_dir.name, workspace_path)
+
+        for agent_dir in sorted(root.iterdir()):
+            if not agent_dir.is_dir() or not agent_dir.name.startswith("agent_"):
+                continue
+            for timestamp_dir in sorted(agent_dir.iterdir(), reverse=True):
+                if not timestamp_dir.is_dir():
+                    continue
+                answer_file = timestamp_dir / "answer.txt"
+                workspace_path = timestamp_dir / "workspace"
+                if answer_file.exists() and workspace_path.exists() and workspace_path.is_dir():
+                    add_candidate(agent_dir.name, workspace_path)
+
+    return dict(candidates)
+
+
+def _extract_live_workspace_paths(
+    status_data: dict[str, Any] | None,
+) -> tuple[list[str], dict[str, str]]:
+    """Extract live workspace paths keyed by agent ID from status data."""
+    agents_data = (status_data or {}).get("agents", {})
+    ordered_agent_ids: list[str] = []
+    current_paths_by_agent: dict[str, str] = {}
+
+    for agent_id, agent_info in agents_data.items():
+        ordered_agent_ids.append(agent_id)
+        workspace_paths = agent_info.get("workspace_paths", {}) or {}
+        workspace_path = workspace_paths.get("workspace")
+        if workspace_path and Path(workspace_path).exists():
+            current_paths_by_agent[agent_id] = str(Path(workspace_path).resolve())
+
+    return ordered_agent_ids, current_paths_by_agent
+
+
+def _resolve_watch_session_workspaces(
+    status_data: dict[str, Any] | None,
+    log_session_dir: Path | None,
+    fallback_live_workspaces_by_agent: dict[str, str] | None = None,
+) -> list[tuple[str, str, list[dict]]]:
+    """Return the live workspace for each agent for the workspace websocket.
+
+    Historical answer/final snapshots are surfaced through their own APIs and
+    should not silently replace a live workspace in the always-on workspace
+    stream when that live workspace exists, even when it is still empty.
+    If no live workspace path is available at all, the best logged snapshot is
+    used as a compatibility fallback so the browser still has something to show.
+    """
+    ordered_agent_ids, current_paths_by_agent = _extract_live_workspace_paths(status_data)
+
+    if fallback_live_workspaces_by_agent:
+        for agent_id, workspace_path in fallback_live_workspaces_by_agent.items():
+            if agent_id not in ordered_agent_ids:
+                ordered_agent_ids.append(agent_id)
+            if agent_id in current_paths_by_agent:
+                continue
+            if workspace_path and Path(workspace_path).exists():
+                current_paths_by_agent[agent_id] = str(Path(workspace_path).resolve())
+
+    logged_candidates = _discover_logged_workspace_candidates(log_session_dir)
+    for agent_id in logged_candidates:
+        if agent_id not in ordered_agent_ids:
+            ordered_agent_ids.append(agent_id)
+
+    scan_cache: dict[str, list[dict]] = {}
+
+    def scan(path: str) -> list[dict]:
+        if path not in scan_cache:
+            scan_cache[path] = _scan_workspace_files(Path(path))
+        return scan_cache[path]
+
+    resolved: list[tuple[str, str, list[dict]]] = []
+    seen_paths: set[str] = set()
+
+    for agent_id in ordered_agent_ids:
+        current_path = current_paths_by_agent.get(agent_id)
+        if current_path:
+            chosen_path = current_path
+        else:
+            candidates = logged_candidates.get(agent_id, [])
+            if not candidates:
+                continue
+            chosen_path = candidates[0]
+
+        if chosen_path in seen_paths:
+            continue
+        seen_paths.add(chosen_path)
+        resolved.append((agent_id, chosen_path, scan(chosen_path)))
+
+    return resolved
+
+
 class WorkspaceConnectionManager:
     """Manages WebSocket connections for workspace file listing.
 
@@ -216,7 +621,13 @@ class WorkspaceConnectionManager:
         self._connection_count = 0
         workspace_logger.info("WorkspaceConnectionManager initialized")
 
-    async def connect(self, websocket: WebSocket, session_id: str, workspace_paths: list[str]) -> None:
+    async def connect(
+        self,
+        websocket: WebSocket,
+        session_id: str,
+        workspace_paths: list[str],
+        workspace_metadata: dict[str, dict[str, str]] | None = None,
+    ) -> bool:
         """Accept and register a WebSocket connection for workspace file listing.
 
         Scans workspace directories and sends initial file list on connect.
@@ -231,10 +642,6 @@ class WorkspaceConnectionManager:
 
         await websocket.accept()
         workspace_logger.debug(f"[Conn #{conn_id}] WebSocket accepted")
-
-        if session_id not in self.workspace_connections:
-            self.workspace_connections[session_id] = set()
-        self.workspace_connections[session_id].add(websocket)
 
         # Collect initial file lists from workspace paths
         watched = []
@@ -261,21 +668,31 @@ class WorkspaceConnectionManager:
                 workspace_logger.warning(f"[Conn #{conn_id}] Path does not exist, skipping: {path}")
 
         # Send connected confirmation with initial file lists
-        await websocket.send_json(
-            {
-                "type": "workspace_connected",
-                "session_id": session_id,
-                "timestamp": asyncio.get_event_loop().time(),
-                "watched_paths": watched,
-                "initial_files": initial_files,
-            },
-        )
+        try:
+            await websocket.send_json(
+                {
+                    "type": "workspace_connected",
+                    "session_id": session_id,
+                    "timestamp": asyncio.get_event_loop().time(),
+                    "watched_paths": watched,
+                    "initial_files": initial_files,
+                    "workspace_metadata": workspace_metadata or {},
+                },
+            )
+        except (WebSocketDisconnect, RuntimeError):
+            workspace_logger.info(f"[Conn #{conn_id}] Client disconnected before initial send")
+            return False
+
+        if session_id not in self.workspace_connections:
+            self.workspace_connections[session_id] = set()
+        self.workspace_connections[session_id].add(websocket)
 
         workspace_logger.info(
             f"[Conn #{conn_id}] WebSocket CONNECTED: session={session_id}, "
             f"watching {len(watched)}/{len(workspace_paths)} paths, "
             f"total_connections={sum(len(conns) for conns in self.workspace_connections.values())}",
         )
+        return True
 
     def disconnect(self, websocket: WebSocket, session_id: str) -> None:
         """Remove a WebSocket connection."""
@@ -336,6 +753,21 @@ class ConnectionManager:
             "completed_at": time.time(),
         }
 
+        # Persist to disk via SessionRegistry
+        try:
+            from massgen.session import SessionRegistry
+
+            registry = SessionRegistry()
+            registry.register_session(
+                session_id=session_id,
+                config_path=config,
+                description=question[:100] if question else None,
+                status="completed",
+                source="webui",
+            )
+        except Exception:
+            logger.warning("Failed to persist session to registry", exc_info=True)
+
     async def connect(self, websocket: WebSocket, session_id: str) -> None:
         """Accept and register a WebSocket connection."""
         await websocket.accept()
@@ -379,6 +811,8 @@ class ConnectionManager:
         session_id: str,
         agent_ids: list,
         agent_models: dict[str, str] | None = None,
+        main_agent_id: str | None = None,
+        review_enabled: bool = False,
     ) -> WebDisplay:
         """Create a new WebDisplay for a session."""
 
@@ -390,6 +824,8 @@ class ConnectionManager:
             broadcast=broadcast_fn,
             session_id=session_id,
             agent_models=agent_models,
+            main_agent_id=main_agent_id,
+            review_enabled=review_enabled,
         )
         self.displays[session_id] = display
         return display
@@ -417,12 +853,16 @@ def create_app(
     config_path: str | None = None,
     automation_mode: bool = False,
     temporary_quickstart_session: dict[str, Any] | None = None,
+    cli_overrides: dict | None = None,
+    pending_question: str | None = None,
 ) -> FastAPI:
     """Create and configure the FastAPI application.
 
     Args:
         config_path: Default config path for coordination sessions
         automation_mode: If True, UI shows automation-friendly timeline view
+        cli_overrides: CLI flag overrides forwarded from cli_main --web
+        pending_question: Question from CLI to auto-start when first client connects
     """
     if not FASTAPI_AVAILABLE:
         raise ImportError(
@@ -439,9 +879,16 @@ def create_app(
         version="0.1.0",
     )
 
-    # Store automation_mode in app state for WebSocket access
+    # Store automation_mode in app state for server-side behavior (log
+    # suppression) but never send it to the frontend — the WebUI should
+    # always render the full UI regardless of how the run was started.
     app.state.automation_mode = automation_mode
     app.state.temporary_quickstart_session = temporary_quickstart_session
+    app.state.cli_overrides = cli_overrides
+    # Pending question from CLI --web "question" — auto-starts coordination
+    # when the first WebSocket client connects, giving the user the full
+    # visual experience (loading screen, preparation, agent cards, etc.).
+    app.state.pending_question = pending_question
 
     # CORS for development
     app.add_middleware(
@@ -452,6 +899,76 @@ def create_app(
         allow_headers=["*"],
     )
 
+    # Load persisted WebUI sessions from disk
+    try:
+        from massgen.session import SessionRegistry
+
+        _registry = SessionRegistry()
+        for _session in _registry.list_sessions(status="completed"):
+            if _session.get("source") == "webui":
+                _sid = _session["session_id"]
+                if _sid not in manager.completed_sessions:
+                    manager.completed_sessions[_sid] = {
+                        "question": _session.get("description"),
+                        "config": _session.get("config_path"),
+                        "completed_at": _session.get("end_time"),
+                    }
+        logger.info(
+            "Loaded %d persisted WebUI sessions",
+            len(manager.completed_sessions),
+        )
+    except Exception:
+        logger.warning("Failed to load persisted sessions", exc_info=True)
+
+    # =========================================================================
+    # Automation: auto-start coordination immediately (don't wait for browser)
+    # =========================================================================
+
+    if automation_mode and pending_question:
+
+        @app.on_event("startup")
+        async def _auto_start_coordination():
+            """Start coordination immediately in automation mode.
+
+            The browser can connect later and receive the current state via
+            state_snapshot — no need to wait for a WebSocket connection.
+            """
+            import uuid
+
+            session_id = f"auto-{uuid.uuid4().hex[:12]}"
+            cfg_path = get_default_config()
+            if not cfg_path:
+                logger.warning("[AutoStart] No config path available, skipping auto-start")
+                return
+
+            q = app.state.pending_question
+            if not q:
+                return
+            app.state.pending_question = None  # consume
+
+            # Store the auto-started session ID so the frontend can find it
+            app.state.auto_session_id = session_id
+
+            logger.info(f"[AutoStart] Starting coordination immediately: session={session_id}")
+            task = asyncio.create_task(
+                run_coordination(
+                    session_id,
+                    q,
+                    cfg_path,
+                    cli_overrides=getattr(app.state, "cli_overrides", None),
+                ),
+            )
+            manager.tasks[session_id] = task
+
+            # In automation mode, shut down the server when coordination finishes
+            def _shutdown_on_complete(fut):
+                server = getattr(app.state, "uvicorn_server", None)
+                if server is not None:
+                    logger.info("[AutoStart] Coordination finished — shutting down server")
+                    server.should_exit = True
+
+            task.add_done_callback(_shutdown_on_complete)
+
     # =========================================================================
     # API Routes
     # =========================================================================
@@ -460,6 +977,17 @@ def create_app(
     async def health_check():
         """Health check endpoint."""
         return {"status": "ok", "service": "massgen-web"}
+
+    @app.get("/api/active-session")
+    async def get_active_session():
+        """Get the currently running session ID (for automation auto-connect)."""
+        auto_id = getattr(app.state, "auto_session_id", None)
+        if auto_id and auto_id in manager.displays:
+            return {"session_id": auto_id, "source": "automation"}
+        # Fall back to any active session
+        for sid in manager.displays:
+            return {"session_id": sid, "source": "active"}
+        return {"session_id": None}
 
     @app.get("/api/config")
     async def get_config():
@@ -509,6 +1037,59 @@ def create_app(
                 status_code=500,
                 content={"error": str(e)},
             )
+
+    @app.get("/api/config/agents")
+    async def get_config_agents(path: str):
+        """Parse a config file and return its agent and orchestrator settings."""
+        try:
+            config_path = Path(path)
+            if not config_path.exists():
+                return JSONResponse(status_code=404, content={"error": "Config not found"})
+
+            import yaml as _yaml
+
+            raw = _yaml.safe_load(config_path.read_text(encoding="utf-8"))
+            if not raw or not isinstance(raw, dict):
+                return {"agents": []}
+
+            agents_list = raw.get("agents", [])
+            agents_result = []
+            for agent_cfg in agents_list:
+                if not isinstance(agent_cfg, dict):
+                    continue
+                backend = agent_cfg.get("backend", {})
+                if not isinstance(backend, dict):
+                    backend = {}
+                agents_result.append(
+                    {
+                        "id": agent_cfg.get("id", ""),
+                        "provider": backend.get("type", None),
+                        "model": backend.get("model", None),
+                    },
+                )
+
+            # Extract orchestrator settings
+            orch = raw.get("orchestrator", {}) or {}
+            result: dict[str, Any] = {"agents": agents_result}
+            if "max_new_answers_per_agent" in orch:
+                result["max_answers"] = orch["max_new_answers_per_agent"]
+
+            # Extract pre-collab settings from coordination block
+            coord = orch.get("coordination", {}) or {}
+
+            pg = coord.get("persona_generator", {}) or {}
+            if pg.get("enabled"):
+                result["persona_mode"] = pg.get("diversity_mode", "perspective")
+
+            ecg = coord.get("evaluation_criteria_generator", {}) or {}
+            result["eval_criteria_enabled"] = bool(ecg.get("enabled", False))
+
+            pi = coord.get("prompt_improver", {}) or {}
+            result["prompt_improver_enabled"] = bool(pi.get("enabled", False))
+
+            return result
+        except Exception as e:
+            return JSONResponse(status_code=500, content={"error": str(e)})
 
     @app.get("/api/configs")
     async def list_configs():
@@ -585,6 +1166,56 @@ def create_app(
         }
 
     # =========================================================================
+    # WebUI State Persistence Routes
+    # =========================================================================
+
+    @app.post("/api/webui/save-state")
+    async def save_webui_state(request_data: dict):
+        """Save WebUI state: generates webui_config.yaml and persists UI state.
+
+        Request body:
+        {
+            "agent_settings": {"agents": [...], "use_docker": false},
+            "ui_state": {"coordinationMode": "parallel", ...}
+        }
+        """
+        agent_settings = request_data.get("agent_settings", {})
+        ui_state = request_data.get("ui_state", {})
+
+        if not agent_settings.get("agents"):
+            return JSONResponse(
+                {"error": "No agents provided"},
+                status_code=400,
+            )
+
+        try:
+            result = _save_webui_state(
+                agent_settings=agent_settings,
+                ui_state=ui_state,
+            )
+            return result
+        except Exception as e:
+            return JSONResponse(
+                {"error": f"Failed to save state: {e!s}"},
+                status_code=500,
+            )
+
+    @app.get("/api/webui/state")
+    async def get_webui_state():
+        """Get persisted WebUI state.
+
+        Returns:
+            {"exists": bool, "config_path": str|null, "ui_state": object|null}
+        """
+        try:
+            return _load_webui_state()
+        except Exception as e:
+            return JSONResponse(
+                {"error": f"Failed to load state: {e!s}"},
+                status_code=500,
+            )
+
+    # =========================================================================
     # Quickstart Wizard API Routes
     # =========================================================================
 
@@ -616,11 +1247,23 @@ def create_app(
             config_path = project_config_path
             has_config = False
 
-        # Check Docker using diagnostics
-        diagnostics = diagnose_docker()
+        # If the server was launched in automation mode, the caller already
+        # supplied a working --config and is mid-run. The first-run quickstart
+        # wizard is irrelevant in that case — show the live coordination view
+        # directly. We keep `has_config` honest (it reflects only the
+        # quickstart config file's existence) but suppress `needs_setup` so
+        # the frontend doesn't redirect to /setup.
+        needs_setup = not has_config
+        if getattr(app.state, "automation_mode", False):
+            needs_setup = False
+
+        # Check Docker using diagnostics (run in thread to avoid blocking event loop)
+        import asyncio
+
+        diagnostics = await asyncio.to_thread(diagnose_docker)
 
         return {
-            "needs_setup": not has_config,
+            "needs_setup": needs_setup,
             "has_config": has_config,
             "config_path": str(config_path),
             "docker_available": diagnostics.is_available,
@@ -636,9 +1279,11 @@ def create_app(
         Returns detailed information about Docker installation status,
         daemon availability, permissions, and installed images.
         """
+        import asyncio
+
         from massgen.utils.docker_diagnostics import diagnose_docker
 
-        diagnostics = diagnose_docker()
+        diagnostics = await asyncio.to_thread(diagnose_docker)
         return diagnostics.to_dict()
 
     @app.post("/api/quickstart/complete")
@@ -1107,6 +1752,9 @@ def create_app(
             elif backend_type == "codex":
                 # Codex always shows - works with OAuth (codex login) or OPENAI_API_KEY
                 has_api_key = True
+            elif backend_type == "gemini_cli":
+                # Gemini CLI always shows - works with `gemini` CLI login, GOOGLE_API_KEY, or GEMINI_API_KEY
+                has_api_key = True
             elif caps.env_var:
                 api_key = os.getenv(caps.env_var, "")
                 # Check it's not empty and not a placeholder from .env.example
@@ -1231,7 +1879,7 @@ def create_app(
         """Get capabilities for a specific provider.
 
         Returns information about what features the provider supports,
-        such as web search, code execution, etc.
+        such as web search, code execution, reasoning, etc.
         """
         from massgen.backend.capabilities import BACKEND_CAPABILITIES
 
@@ -1247,10 +1895,69 @@ def create_app(
             "supports_web_search": "web_search" in caps.supported_capabilities,
             "supports_code_execution": "code_execution" in caps.supported_capabilities,
             "supports_mcp": "mcp" in caps.supported_capabilities,
+            "supports_reasoning": "reasoning" in caps.supported_capabilities,
             "builtin_tools": caps.builtin_tools,
             "filesystem_support": caps.filesystem_support,
             "all_capabilities": list(caps.supported_capabilities),
         }
+
+    @app.post("/api/config/preview")
+    async def preview_config(request_data: dict):
+        """Preview the resolved config after applying mode overrides.
+
+        Takes an optional config_path and mode_overrides, applies overrides
+        to the base config, and returns the resolved YAML.
+        """
+        import copy
+
+        import yaml
+
+        from massgen.cli import load_config_file, resolve_config_path
+
+        config_path = request_data.get("config_path")
+        mode_overrides = request_data.get("mode_overrides")
+
+        if not config_path:
+            return JSONResponse(
+                {"error": "config_path is required"},
+                status_code=400,
+            )
+
+        try:
+            resolved_path = resolve_config_path(config_path)
+            if resolved_path is None:
+                return JSONResponse(
+                    {"error": f"Could not resolve config: {config_path}"},
+                    status_code=404,
+                )
+
+            config, _ = load_config_file(str(resolved_path))
+            original_yaml = yaml.dump(
+                copy.deepcopy(config),
+                default_flow_style=False,
+                sort_keys=False,
+                allow_unicode=True,
+            )
+
+            _apply_mode_overrides(config, mode_overrides)
+
+            resolved_yaml = yaml.dump(
+                config,
+                default_flow_style=False,
+                sort_keys=False,
+                allow_unicode=True,
+            )
+
+            return {
+                "original_yaml": original_yaml,
+                "resolved_yaml": resolved_yaml,
+                "config": config,
+            }
+        except Exception as e:
+            return JSONResponse(
+                {"error": str(e)},
+                status_code=500,
+            )
 
     @app.get("/api/quickstart/reasoning-profile")
     async def get_quickstart_reasoning_profile(provider_id: str, model: str):
@@ -1701,6 +2408,22 @@ def create_app(
     async def list_sessions():
         """List all active and completed sessions."""
         sessions = []
+
+        def _display_models(display: WebDisplay | None) -> list[str]:
+            """Extract deduplicated model names from display's agent_models."""
+            if not display or not getattr(display, "agent_models", None):
+                return []
+            seen_m: list[str] = []
+            for m in display.agent_models.values():
+                if m not in seen_m:
+                    seen_m.append(m)
+            return seen_m
+
+        def _models_label(display: WebDisplay | None) -> str | None:
+            """Build a compact model label from display's agent_models."""
+            models = _display_models(display)
+            return ", ".join(models) if models else None
+
         # Active sessions (with WebSocket connections)
         for session_id in manager.active_connections.keys():
             display = manager.get_display(session_id)
@@ -1716,14 +2439,38 @@ def create_app(
                     "is_running": task is not None and not task.done() if task else False,
                     "question": display.question if display and hasattr(display, "question") else None,
                     "status": "active",
+                    "config": _models_label(display),
+                    "models": _display_models(display),
                 },
             )
 
-        # Completed sessions (no longer connected but preserved)
-        for session_id, metadata in manager.completed_sessions.items():
-            # Skip if already in active list
-            if session_id in manager.active_connections:
+        # Sessions with displays but no active WS connection
+        seen = set(manager.active_connections.keys())
+        for session_id, display in manager.displays.items():
+            if session_id in seen:
                 continue
+            seen.add(session_id)
+            task = manager.tasks.get(session_id)
+            completed_meta = manager.completed_sessions.get(session_id)
+            sessions.append(
+                {
+                    "session_id": session_id,
+                    "connections": 0,
+                    "has_display": True,
+                    "is_running": task is not None and not task.done() if task else False,
+                    "question": display.question if hasattr(display, "question") else None,
+                    "status": "completed" if completed_meta else "disconnected",
+                    "completed_at": completed_meta.get("completed_at") if completed_meta else None,
+                    "config": _models_label(display),
+                    "models": _display_models(display),
+                },
+            )
+
+        # Completed sessions without displays (from previous server runs, persisted to disk)
+        for session_id, metadata in manager.completed_sessions.items():
+            if session_id in seen:
+                continue
+            seen.add(session_id)
             sessions.append(
                 {
                     "session_id": session_id,
@@ -1736,13 +2483,137 @@ def create_app(
                 },
             )
 
-        return {"sessions": sessions}
+        # Historical sessions from log directories (events.jsonl replay)
+        logs_root = Path(".massgen") / "massgen_logs"
+        try:
+            log_dir_sessions = await asyncio.to_thread(
+                _scan_log_dirs_cached,
+                logs_root,
+            )
+            for log_session in log_dir_sessions:
+                sid = log_session["session_id"]
+                if sid in seen:
+                    continue
+                seen.add(sid)
+                sessions.append(
+                    {
+                        "session_id": sid,
+                        "connections": 0,
+                        "has_display": False,
+                        "is_running": False,
+                        "question": log_session.get("question"),
+                        "status": "completed",
+                        "config": log_session.get("config"),
+                        "config_path": log_session.get("config_path"),
+                        "models": log_session.get("models"),
+                        "start_time": log_session.get("start_time"),
+                        "log_dir": log_session.get("log_dir"),
+                    },
+                )
+        except Exception:
+            pass  # Don't break session list if log scanning fails
+
+        # Sort by start_time/completed_at descending, limit to 50
+        def _sort_key(s: dict) -> float:
+            return _session_sort_timestamp(
+                s.get("start_time"),
+                s.get("completed_at"),
+            )
+
+        sessions.sort(key=_sort_key, reverse=True)
+        return {"sessions": sessions[:50]}
 
     @app.post("/api/sessions")
     async def create_session():
         """Create a new coordination session."""
         session_id = str(uuid.uuid4())
         return JSONResponse({"session_id": session_id})
+
+    @app.delete("/api/sessions/{session_id}")
+    async def delete_session(session_id: str):
+        """Delete a session and clean up its resources."""
+        removed = False
+
+        # Remove from completed sessions
+        if session_id in manager.completed_sessions:
+            del manager.completed_sessions[session_id]
+            removed = True
+
+        # Remove display
+        if session_id in manager.displays:
+            del manager.displays[session_id]
+            removed = True
+
+        # Cancel and remove task
+        if session_id in manager.tasks:
+            task = manager.tasks[session_id]
+            if not task.done():
+                task.cancel()
+            del manager.tasks[session_id]
+            removed = True
+
+        # Remove orchestrator
+        if session_id in manager.orchestrators:
+            del manager.orchestrators[session_id]
+            removed = True
+
+        # Remove log dir reference
+        if session_id in manager.session_log_dirs:
+            del manager.session_log_dirs[session_id]
+
+        # Remove config reference
+        if session_id in manager.session_configs:
+            del manager.session_configs[session_id]
+
+        # Remove from persistent registry
+        try:
+            from massgen.session import SessionRegistry
+
+            SessionRegistry().delete_session(session_id)
+        except Exception:
+            logger.warning(
+                "Failed to delete session %s from registry",
+                session_id,
+                exc_info=True,
+            )
+
+        if not removed:
+            return JSONResponse(
+                {"error": "Session not found"},
+                status_code=404,
+            )
+
+        return JSONResponse({"status": "deleted", "session_id": session_id})
+
+    @app.get("/api/sessions/{session_id}/review")
+    async def get_review_state(session_id: str):
+        """Get current review state including file list and diffs.
+
+        Returns pending review data if a review is active, or
+        review_pending: false otherwise. Used by external agents
+        to fetch diff data for text-based resolution.
+        """
+        display = manager.get_display(session_id)
+        if display and hasattr(display, "_pending_review_data") and display._pending_review_data:
+            return JSONResponse({"review_pending": True, **display._pending_review_data})
+        return JSONResponse({"review_pending": False})
+
+    @app.post("/api/sessions/{session_id}/review-response")
+    async def submit_review_response(session_id: str, request: Request):
+        """Agent-side review resolution.
+
+        Accepts JSON body with approve/reject decision. Resolves the
+        pending review future, allowing the orchestrator to proceed.
+        """
+        data = await request.json()
+        display = manager.get_display(session_id)
+        if display and hasattr(display, "resolve_review"):
+            display.resolve_review(data, source="api")
+            return JSONResponse({"status": "ok"})
+        return JSONResponse(
+            {"error": "No active review for this session"},
+            status_code=404,
+        )
 
     @app.get("/api/workspace/{session_id}/{agent_id}")
     async def get_workspace_files(session_id: str, agent_id: str):
@@ -3350,7 +4221,7 @@ def create_app(
 
         # Debug: log vote rounds
         vote_info = [(n.get("label"), n.get("round")) for n in nodes if n.get("type") == "vote"]
-        print(f"[DEBUG] Timeline API: vote_info={vote_info}, currentVotingRound={current_voting_round}")
+        logger.debug(f"Timeline API: vote_info={vote_info}, currentVotingRound={current_voting_round}")
 
         return {
             "nodes": nodes,
@@ -3371,6 +4242,124 @@ def create_app(
             )
         return JSONResponse(display.get_state_snapshot())
 
+    @app.get("/api/sessions/{session_id}/events")
+    async def get_session_events(session_id: str):
+        """Get the full event history for a session (for v2 message replay).
+
+        Tries in-memory display first (live sessions), then falls back to
+        reading events.jsonl from the log directory (historical sessions).
+        """
+        # Try in-memory first (live sessions)
+        display = manager.get_display(session_id)
+        if display:
+            return JSONResponse(
+                {"events": getattr(display, "_event_history", [])},
+            )
+
+        # Fallback: read from events.jsonl on disk
+        logs_root = Path(".massgen") / "massgen_logs"
+        events = await asyncio.to_thread(
+            _read_events_jsonl,
+            session_id,
+            logs_root,
+        )
+        if events is not None:
+            return JSONResponse({"events": events})
+
+        return JSONResponse(
+            {"error": "Session not found"},
+            status_code=404,
+        )
+
+    @app.get("/api/sessions/{session_id}/subagent/{subagent_id}/events")
+    async def get_subagent_events(session_id: str, subagent_id: str, after: int = 0):
+        """Get events for a pre-collab or runtime subagent.
+
+        Reads events.jsonl from the subagent's log directory to enable
+        inner agent activity display in the WebUI.
+
+        Args:
+            session_id: Parent session ID
+            subagent_id: Subagent identifier (e.g. "persona_generation")
+            after: Return only events with sequence > after (for incremental polling)
+        """
+        from massgen.subagent.models import SubagentResult
+
+        # Resolve the log directory for this session
+        log_session_dir = None
+        display = manager.get_display(session_id)
+        if display:
+            log_session_dir = getattr(display, "_log_session_dir", None)
+        if not log_session_dir:
+            try:
+                from massgen.logger_config import get_log_session_dir
+
+                log_session_dir = get_log_session_dir()
+            except Exception:
+                pass
+
+        if not log_session_dir:
+            # Try from disk
+            logs_root = Path(".massgen") / "massgen_logs"
+            log_dir = logs_root / session_id
+            if log_dir.is_dir():
+                attempt_dir = _find_latest_attempt(log_dir)
+                if attempt_dir:
+                    log_session_dir = str(attempt_dir.parent.parent)  # up from turn_N/attempt_N
+
+        if not log_session_dir:
+            return JSONResponse({"events": [], "total": 0})
+
+        # Find the subagent log directory
+        subagent_log_dir = Path(log_session_dir) / "subagents" / subagent_id
+        if not subagent_log_dir.is_dir():
+            return JSONResponse({"events": [], "total": 0})
+
+        # Resolve events.jsonl using the canonical resolver
+        events_path_str = SubagentResult.resolve_events_path(subagent_log_dir)
+        if not events_path_str:
+            return JSONResponse({"events": [], "total": 0})
+
+        events_path = Path(events_path_str)
+        if not events_path.exists():
+            return JSONResponse({"events": [], "total": 0})
+
+        # Read and wrap events
+        def _read_subagent_events() -> tuple[list[dict[str, Any]], int]:
+            result: list[dict[str, Any]] = []
+            seq = 0
+            try:
+                with open(events_path, encoding="utf-8") as f:
+                    for line in f:
+                        line = line.strip()
+                        if not line:
+                            continue
+                        try:
+                            ev = json.loads(line)
+                        except json.JSONDecodeError:
+                            continue
+                        seq += 1
+                        if seq <= after:
+                            continue
+                        result.append(
+                            {
+                                "type": "structured_event",
+                                "session_id": session_id,
+                                "timestamp": ev.get("timestamp", 0),
+                                "sequence": seq,
+                                "event_type": ev.get("event_type", ""),
+                                "agent_id": ev.get("agent_id"),
+                                "round_number": ev.get("round_number", 0),
+                                "data": ev.get("data", {}),
+                            },
+                        )
+            except Exception:
+                pass
+            return result, seq
+
+        events, total = await asyncio.to_thread(_read_subagent_events)
+        return JSONResponse({"events": events, "total": total})
+
     @app.get("/api/sessions/{session_id}/final-answer")
     async def get_final_answer(session_id: str):
         """Get the clean final answer from the saved log file.
@@ -3384,25 +4373,19 @@ def create_app(
         display = manager.get_display(session_id)
         log_session_dir = getattr(display, "log_session_dir", None) if display else None
 
-        print(f"[DEBUG] get_final_answer: session_id={session_id}")
-        print(f"[DEBUG] get_final_answer: display={display}")
-        print(
-            f"[DEBUG] get_final_answer: log_session_dir from display={log_session_dir}",
-        )
+        logger.debug(f"get_final_answer: session_id={session_id}")
+        logger.debug(f"get_final_answer: display={display}")
+        logger.debug(f"get_final_answer: log_session_dir from display={log_session_dir}")
 
         # Fallback to global log session dir if display doesn't have it
         if not log_session_dir:
             from massgen.logger_config import get_log_session_dir
 
             log_session_dir = get_log_session_dir()
-            print(
-                f"[DEBUG] get_final_answer: log_session_dir from global={log_session_dir}",
-            )
+            logger.debug(f"get_final_answer: log_session_dir from global={log_session_dir}")
 
         if not log_session_dir or not log_session_dir.exists():
-            print(
-                "[DEBUG] get_final_answer: log_session_dir not found or doesn't exist",
-            )
+            logger.debug("get_final_answer: log_session_dir not found or doesn't exist")
             return JSONResponse(
                 {"error": "Log directory not found", "answer": None},
                 status_code=404,
@@ -3421,13 +4404,11 @@ def create_app(
                 if not agent_dir.is_dir():
                     continue
                 answer_file = agent_dir / "answer.txt"
-                print(f"[DEBUG] get_final_answer: Checking answer_file={answer_file}")
+                logger.debug(f"get_final_answer: Checking answer_file={answer_file}")
                 if answer_file.exists():
                     try:
                         answer_content = answer_file.read_text(encoding="utf-8")
-                        print(
-                            f"[DEBUG] get_final_answer: Found answer! Length={len(answer_content)}",
-                        )
+                        logger.debug(f"get_final_answer: Found answer! Length={len(answer_content)}")
                         return {
                             "answer": answer_content,
                             "agent_id": agent_dir.name,
@@ -3439,7 +4420,7 @@ def create_app(
 
         # Try 1: Direct final/ directory (log_session_dir/final)
         final_dir = log_session_dir / "final"
-        print(f"[DEBUG] get_final_answer: Looking for final_dir={final_dir}")
+        logger.debug(f"get_final_answer: Looking for final_dir={final_dir}")
         result = find_answer_in_final_dir(final_dir)
         if result:
             if "error" in result:
@@ -3450,11 +4431,11 @@ def create_app(
             return result
 
         # Try 2: Check for attempt_N subdirectories (log_session_dir/attempt_N/final)
-        print("[DEBUG] get_final_answer: Checking attempt subdirectories")
+        logger.debug("get_final_answer: Checking attempt subdirectories")
         for attempt_dir in sorted(log_session_dir.iterdir(), reverse=True):
             if not attempt_dir.is_dir() or not attempt_dir.name.startswith("attempt_"):
                 continue
-            print(f"[DEBUG] get_final_answer: Checking attempt dir: {attempt_dir}")
+            logger.debug(f"get_final_answer: Checking attempt dir: {attempt_dir}")
             final_dir = attempt_dir / "final"
             result = find_answer_in_final_dir(final_dir)
             if result:
@@ -3466,7 +4447,7 @@ def create_app(
                 return result
 
         # Fallback: search in turn subdirectories (for older log structure or if log_session_dir is base)
-        print("[DEBUG] get_final_answer: No final dir, searching turn subdirs")
+        logger.debug("get_final_answer: No final dir, searching turn subdirs")
         for turn_dir in sorted(log_session_dir.iterdir(), reverse=True):
             if not turn_dir.is_dir() or not turn_dir.name.startswith("turn_"):
                 continue
@@ -3575,7 +4556,12 @@ def create_app(
 
         # Start orchestration in background
         task = asyncio.create_task(
-            run_coordination(session_id, question, cfg_path),
+            run_coordination(
+                session_id,
+                question,
+                cfg_path,
+                cli_overrides=getattr(app.state, "cli_overrides", None),
+            ),
         )
         manager.tasks[session_id] = task
 
@@ -3678,25 +4664,59 @@ def create_app(
         await manager.connect(websocket, session_id)
 
         try:
+            # Send current state if session exists.
             # Send current state if session exists
             display = manager.get_display(session_id)
             if display:
                 await websocket.send_json(
                     {
                         "type": "state_snapshot",
-                        "automation_mode": app.state.automation_mode,
                         **display.get_state_snapshot(),
                     },
                 )
             else:
-                # Send init message with automation_mode even without display
                 await websocket.send_json(
                     {
                         "type": "init",
-                        "automation_mode": app.state.automation_mode,
                         "session_id": session_id,
                     },
                 )
+
+            # Auto-start coordination if a pending question was provided via
+            # CLI (e.g. `massgen --web "question"`).  Pop atomically so only
+            # the first connecting client triggers the run.
+            pending_q = getattr(app.state, "pending_question", None)
+            if pending_q and not display:
+                app.state.pending_question = None  # consume — one-shot
+                cfg_path = get_default_config()
+                if cfg_path and pending_q:
+                    # Send preparation_status with question so the frontend
+                    # can show the launch sequence (LaunchIndicator) immediately.
+                    await websocket.send_json(
+                        {
+                            "type": "preparation_status",
+                            "status": "Received prompt...",
+                            "detail": "Preparing to start coordination",
+                            "question": pending_q,
+                            "session_id": session_id,
+                        },
+                    )
+                    task = asyncio.create_task(
+                        run_coordination(
+                            session_id,
+                            pending_q,
+                            cfg_path,
+                            cli_overrides=getattr(app.state, "cli_overrides", None),
+                        ),
+                    )
+                    manager.tasks[session_id] = task
+                    await websocket.send_json(
+                        {
+                            "type": "coordination_started",
+                            "session_id": session_id,
+                            "config": cfg_path,
+                        },
+                    )
 
             # Handle incoming messages
             while True:
@@ -3763,8 +4783,16 @@ def create_app(
                             },
                         )
 
+                        mode_overrides = data.get("mode_overrides") or {}
                         task = asyncio.create_task(
-                            run_coordination(session_id, question, cfg_path, context_paths),
+                            run_coordination(
+                                session_id,
+                                question,
+                                cfg_path,
+                                context_paths,
+                                mode_overrides=mode_overrides or None,
+                                cli_overrides=getattr(app.state, "cli_overrides", None),
+                            ),
                         )
                         manager.tasks[session_id] = task
                         await websocket.send_json(
@@ -3787,9 +4815,50 @@ def create_app(
                         )
 
                 elif action == "broadcast_response":
-                    # Human response to a broadcast question
-                    # TODO: Integrate with BroadcastChannel
-                    pass
+                    # Human broadcast message to agents during active session
+                    broadcast_msg = data.get("message", "")
+                    broadcast_targets = data.get("targets")  # None = all agents
+
+                    if not broadcast_msg:
+                        await websocket.send_json(
+                            {
+                                "type": "error",
+                                "message": "Broadcast message cannot be empty",
+                            },
+                        )
+                    else:
+                        orchestrator = manager.orchestrators.get(session_id)
+                        if orchestrator is None:
+                            await websocket.send_json(
+                                {
+                                    "type": "error",
+                                    "message": "No active orchestrator for this session",
+                                },
+                            )
+                        else:
+                            # Ensure the human input hook is initialized
+                            orchestrator._ensure_runtime_human_input_hook_initialized()
+                            hook = orchestrator._human_input_hook
+                            if hook is not None:
+                                hook.set_pending_input(
+                                    content=broadcast_msg,
+                                    target_agents=broadcast_targets,
+                                    source="webui_broadcast",
+                                )
+                                await websocket.send_json(
+                                    {
+                                        "type": "broadcast_sent",
+                                        "message": broadcast_msg,
+                                        "targets": broadcast_targets,
+                                    },
+                                )
+                            else:
+                                await websocket.send_json(
+                                    {
+                                        "type": "error",
+                                        "message": "Human input hook not available",
+                                    },
+                                )
 
                 elif action == "continue":
                     # Continue conversation with follow-up question
@@ -3862,6 +4931,7 @@ def create_app(
 
                     # Start continuation coordination
                     next_turn = current_turn + 1
+                    cont_mode_overrides = data.get("mode_overrides") or {}
                     task = asyncio.create_task(
                         run_coordination_with_history(
                             session_id=session_id,
@@ -3870,6 +4940,8 @@ def create_app(
                             session_log_dir=session_log_dir,
                             turn_number=next_turn,
                             context_paths=context_paths,
+                            mode_overrides=cont_mode_overrides or None,
+                            cli_overrides=getattr(app.state, "cli_overrides", None),
                         ),
                     )
                     manager.tasks[session_id] = task
@@ -3883,8 +4955,29 @@ def create_app(
                         },
                     )
 
+                elif action == "review_response":
+                    # Browser sent a review decision (approve/reject)
+                    display = manager.get_display(session_id)
+                    if display and hasattr(display, "resolve_review"):
+                        display.resolve_review(data, source="webui")
+                    else:
+                        await websocket.send_json(
+                            {
+                                "type": "error",
+                                "message": "No active review to respond to",
+                            },
+                        )
+
                 elif action == "cancel":
                     # Cancel the running coordination task
+                    # Resolve any pending review as rejected before cancelling
+                    cancel_display = manager.get_display(session_id)
+                    if cancel_display and hasattr(cancel_display, "resolve_review"):
+                        cancel_display.resolve_review(
+                            {"approved": False, "action": "reject"},
+                            source="cancel",
+                        )
+
                     task = manager.tasks.get(session_id)
                     if task and not task.done():
                         # Set cancellation flag on orchestrator first (for graceful stop)
@@ -3958,7 +5051,9 @@ def create_app(
         workspace_logger.info(f"WS endpoint: new connection for session={session_id}")
 
         # Get workspace paths from query params or wait for watch action
-        initial_paths = []
+        initial_paths: list[str] = []
+        initial_workspace_metadata: dict[str, dict[str, str]] = {}
+        last_known_live_paths_by_agent: dict[str, str] = {}
 
         # Try to get workspace paths from status.json if session exists
         try:
@@ -3979,13 +5074,13 @@ def create_app(
                     with open(status_file) as f:
                         status_data = json.load(f)
 
-                    agents_data = status_data.get("agents", {})
-                    for agent_id_key, agent_info in agents_data.items():
-                        workspace_paths = agent_info.get("workspace_paths", {})
-                        workspace_path = workspace_paths.get("workspace")
-                        if workspace_path and Path(workspace_path).exists():
-                            initial_paths.append(workspace_path)
-                            workspace_logger.debug(f"WS endpoint: found workspace for {agent_id_key}: {workspace_path}")
+                    _, last_known_live_paths_by_agent = _extract_live_workspace_paths(status_data)
+                    for agent_id_key, workspace_path in last_known_live_paths_by_agent.items():
+                        initial_paths.append(workspace_path)
+                        initial_workspace_metadata[_normalize_workspace_path(workspace_path)] = {
+                            "agent_id": agent_id_key,
+                        }
+                        workspace_logger.debug(f"WS endpoint: found workspace for {agent_id_key}: {workspace_path}")
                 else:
                     workspace_logger.debug(f"WS endpoint: status.json not found at {status_file}")
         except Exception as e:
@@ -3994,7 +5089,14 @@ def create_app(
         workspace_logger.info(f"WS endpoint: connecting with {len(initial_paths)} initial paths")
 
         # Connect with initial paths (may be empty)
-        await workspace_manager.connect(websocket, session_id, initial_paths)
+        connected = await workspace_manager.connect(
+            websocket,
+            session_id,
+            initial_paths,
+            initial_workspace_metadata,
+        )
+        if not connected:
+            return
 
         try:
             # Handle incoming messages
@@ -4006,43 +5108,61 @@ def create_app(
                 if action == "watch_session":
                     # Watch all workspaces for this session (reads from status.json)
                     # Frontend uses this on initial connect to get all workspace files
-                    workspace_logger.info(f"WS watch_session request for session={session_id}")
+                    workspace_logger.debug(f"WS watch_session request for session={session_id}")
+
+                    # Re-resolve log_session_dir each call — it may have been
+                    # None at WS connect time if the display wasn't registered yet.
+                    current_log_dir = log_session_dir
+                    if not current_log_dir:
+                        try:
+                            display = manager.get_display(session_id)
+                            current_log_dir = getattr(display, "log_session_dir", None) if display else None
+                        except Exception:
+                            pass
+                    if not current_log_dir:
+                        try:
+                            from massgen.logger_config import get_log_session_dir
+
+                            current_log_dir = get_log_session_dir()
+                        except Exception:
+                            pass
+                    # Cache for future calls within this connection
+                    if current_log_dir and not log_session_dir:
+                        log_session_dir = current_log_dir
 
                     # Re-read status.json to get current workspace paths
-                    session_paths: list[str] = []
+                    status_data: dict[str, Any] | None = None
                     try:
-                        if log_session_dir:
-                            status_file = Path(log_session_dir) / "status.json"
+                        if current_log_dir:
+                            status_file = Path(current_log_dir) / "status.json"
                             if status_file.exists():
                                 with open(status_file) as f:
                                     status_data = json.load(f)
-                                agents_data = status_data.get("agents", {})
-                                for agent_id_key, agent_info in agents_data.items():
-                                    workspace_paths = agent_info.get("workspace_paths", {})
-                                    workspace_path = workspace_paths.get("workspace")
-                                    if workspace_path and Path(workspace_path).exists():
-                                        session_paths.append(workspace_path)
+                                _, last_known_live_paths_by_agent = _extract_live_workspace_paths(
+                                    status_data,
+                                )
                     except Exception as e:
                         workspace_logger.warning(f"WS watch_session: failed to read status.json: {e}")
 
+                    resolved_workspaces = _resolve_watch_session_workspaces(
+                        status_data,
+                        Path(current_log_dir) if current_log_dir else None,
+                        fallback_live_workspaces_by_agent=last_known_live_paths_by_agent,
+                    )
+                    session_paths = [path for _, path, _ in resolved_workspaces]
+
                     # Collect initial files for each workspace
                     initial_files: dict[str, list[dict]] = {}
-                    for path in session_paths:
-                        workspace_path = Path(path)
-                        if workspace_path.exists() and workspace_path.is_dir():
-                            try:
-                                files = _scan_workspace_files(workspace_path)
-                                # Normalize path for consistent key format
-                                normalized_path = _normalize_workspace_path(path)
-                                initial_files[normalized_path] = files
-                                workspace_logger.debug(
-                                    f"WS watch_session: scanned {len(files)} files for {workspace_path.name}",
-                                )
-                            except Exception as e:
-                                workspace_logger.warning(f"WS watch_session: failed to scan {path}: {e}")
-                                # Use normalized path for error case too
-                                normalized_path = _normalize_workspace_path(path)
-                                initial_files[normalized_path] = []
+                    workspace_metadata: dict[str, dict[str, str]] = {}
+                    for agent_id, path, files in resolved_workspaces:
+                        normalized_path = _normalize_workspace_path(path)
+                        initial_files[normalized_path] = files
+                        workspace_metadata[normalized_path] = {
+                            "agent_id": agent_id,
+                        }
+                        workspace_logger.debug(
+                            f"WS watch_session: scanned {len(files)} files for {Path(path).name}",
+                        )
 
                     # Normalize watched_paths for consistency
                     normalized_watched_paths = [_normalize_workspace_path(p) for p in session_paths]
@@ -4053,9 +5173,10 @@ def create_app(
                             "timestamp": asyncio.get_event_loop().time(),
                             "watched_paths": normalized_watched_paths,
                             "initial_files": initial_files,
+                            "workspace_metadata": workspace_metadata,
                         },
                     )
-                    workspace_logger.info(f"WS watch_session: sent {len(session_paths)} workspaces with files")
+                    workspace_logger.debug(f"WS watch_session: sent {len(session_paths)} workspaces with files")
 
                 elif action == "watch":
                     # Start watching additional paths
@@ -4327,6 +5448,8 @@ async def run_coordination_with_history(
     session_log_dir: Path,
     turn_number: int,
     context_paths: list | None = None,
+    mode_overrides: dict | None = None,
+    cli_overrides: dict | None = None,
 ) -> None:
     """Run coordination with conversation history from previous turns.
 
@@ -4342,13 +5465,19 @@ async def run_coordination_with_history(
         context_paths: Optional list of context paths from @path syntax
         session_log_dir: Path to the session log directory (e.g., .massgen/massgen_logs/log_xxx)
         turn_number: The turn number for this coordination (2, 3, etc.)
+        mode_overrides: Optional mode bar overrides from WebUI
+        cli_overrides: CLI flag overrides forwarded from cli_main --web
     """
     import traceback
 
     try:
         # Import here to avoid circular imports
-        from massgen.agent_config import AgentConfig, CoordinationConfig
+        from massgen.agent_config import AgentConfig
         from massgen.cli import (
+            _apply_orchestrator_runtime_params,
+            _parse_coordination_config,
+            _scope_agent_temporary_workspace,
+            _scope_snapshot_storage,
             create_agents_from_config,
             load_config_file,
             resolve_config_path,
@@ -4420,6 +5549,12 @@ async def run_coordination_with_history(
 
         config, raw_config_for_metadata = load_config_file(str(resolved_path))
 
+        # Apply mode bar overrides from WebUI before any config processing
+        _apply_mode_overrides(config, mode_overrides)
+
+        # Apply CLI flag overrides (--eval-criteria, --checklist-criteria-preset, etc.)
+        _apply_cli_overrides(config, cli_overrides)
+
         # Inject context paths from @path syntax if provided
         if context_paths:
             if "orchestrator" not in config:
@@ -4432,6 +5567,13 @@ async def run_coordination_with_history(
 
         # Extract orchestrator config dict from YAML
         orchestrator_cfg = config.get("orchestrator", {})
+
+        # Inject instance_id for Docker container naming (parallel execution safety)
+        instance_id = uuid.uuid4().hex[:8]
+        agent_entries = [config["agent"]] if "agent" in config else config.get("agents", [])
+        for agent_data in agent_entries:
+            backend_config = agent_data.get("backend", {})
+            backend_config["instance_id"] = instance_id
 
         # Create agents from config with progress updates
         # Note: Multi-turn reuses existing session, so progress is less critical but nice to have
@@ -4493,95 +5635,51 @@ async def run_coordination_with_history(
             if model_name:
                 agent_models[agent_id] = model_name
 
+        # Detect main_agent for checkpoint mode (show only main agent initially)
+        _main_agent_for_display = None
+        for agent_data in config.get("agents", []):
+            if isinstance(agent_data, dict) and agent_data.get("main_agent") is True:
+                _main_agent_for_display = agent_data.get("id")
+                break
+        # Fallback: if checkpoint enabled but no main_agent, use first agent
+        if not _main_agent_for_display:
+            coord_cfg = config.get("orchestrator", config).get("coordination", {})
+            if coord_cfg.get("checkpoint_enabled", False) and agent_ids:
+                _main_agent_for_display = agent_ids[0]
+
+        # Determine if web review is enabled (CLI override or YAML config)
+        _hist_coord_cfg = config.get("orchestrator", config).get("coordination", {})
+        _hist_web_review_enabled = _hist_coord_cfg.get("web_review", False)
+
         # Create web display with agent_models
-        display = manager.create_display(session_id, agent_ids, agent_models)
+        display = manager.create_display(
+            session_id,
+            agent_ids,
+            agent_models,
+            main_agent_id=_main_agent_for_display,
+            review_enabled=_hist_web_review_enabled,
+        )
+        # Set question early so late-joining clients get it in state_snapshot
+        display.question = question
 
         # Build AgentConfig object for orchestrator
         orchestrator_config = AgentConfig()
+        _apply_orchestrator_runtime_params(orchestrator_config, orchestrator_cfg)
 
-        # Apply voting sensitivity if specified
-        if "voting_sensitivity" in orchestrator_cfg:
-            orchestrator_config.voting_sensitivity = orchestrator_cfg["voting_sensitivity"]
+        # Apply timeout settings if specified in YAML
+        timeout_settings = config.get("timeout_settings", {})
+        if timeout_settings:
+            from massgen.agent_config import TimeoutConfig
 
-        # Apply answer count limit if specified
-        if "max_new_answers_per_agent" in orchestrator_cfg:
-            orchestrator_config.max_new_answers_per_agent = orchestrator_cfg["max_new_answers_per_agent"]
+            orchestrator_config.timeout_config = TimeoutConfig(**timeout_settings)
 
-        # Apply answer novelty requirement if specified
-        if "answer_novelty_requirement" in orchestrator_cfg:
-            orchestrator_config.answer_novelty_requirement = orchestrator_cfg["answer_novelty_requirement"]
-
-        # Apply coordination config from YAML (includes enable_agent_task_planning, etc.)
+        # Apply coordination config from YAML using canonical parser
         coord_cfg = orchestrator_cfg.get("coordination", {})
         if coord_cfg:
-            # Parse persona_generator config if present
-            from massgen.persona_generator import PersonaGeneratorConfig
-
-            persona_generator_config = PersonaGeneratorConfig()
-            if "persona_generator" in coord_cfg:
-                pg_cfg = coord_cfg["persona_generator"]
-                persona_generator_config = PersonaGeneratorConfig(
-                    enabled=pg_cfg.get("enabled", False),
-                    diversity_mode=pg_cfg.get("diversity_mode", "perspective"),
-                    persona_guidelines=pg_cfg.get("persona_guidelines"),
-                    persist_across_turns=pg_cfg.get("persist_across_turns", False),
-                    after_first_answer=pg_cfg.get("after_first_answer", "drop"),
-                )
-
-            orchestrator_config.coordination_config = CoordinationConfig(
-                enable_planning_mode=coord_cfg.get("enable_planning_mode", False),
-                planning_mode_instruction=coord_cfg.get(
-                    "planning_mode_instruction",
-                    "During coordination, describe what you would do without actually executing actions.",
-                ),
-                max_orchestration_restarts=coord_cfg.get(
-                    "max_orchestration_restarts",
-                    0,
-                ),
-                enable_agent_task_planning=coord_cfg.get(
-                    "enable_agent_task_planning",
-                    False,
-                ),
-                max_tasks_per_plan=coord_cfg.get("max_tasks_per_plan", 10),
-                broadcast=coord_cfg.get("broadcast", False),
-                broadcast_sensitivity=coord_cfg.get("broadcast_sensitivity", "medium"),
-                response_depth=coord_cfg.get("response_depth", "medium"),
-                broadcast_timeout=coord_cfg.get("broadcast_timeout", 300),
-                broadcast_wait_by_default=coord_cfg.get(
-                    "broadcast_wait_by_default",
-                    True,
-                ),
-                max_broadcasts_per_agent=coord_cfg.get("max_broadcasts_per_agent", 10),
-                task_planning_filesystem_mode=coord_cfg.get(
-                    "task_planning_filesystem_mode",
-                    False,
-                ),
-                enable_memory_filesystem_mode=coord_cfg.get(
-                    "enable_memory_filesystem_mode",
-                    False,
-                ),
-                learning_capture_mode=coord_cfg.get("learning_capture_mode", "round"),
-                disable_final_only_round_capture_fallback=coord_cfg.get(
-                    "disable_final_only_round_capture_fallback",
-                    False,
-                ),
-                use_skills=coord_cfg.get("use_skills", False),
-                massgen_skills=coord_cfg.get("massgen_skills", []),
-                skills_directory=coord_cfg.get("skills_directory", ".agent/skills"),
-                load_previous_session_skills=coord_cfg.get(
-                    "load_previous_session_skills",
-                    False,
-                ),
-                persona_generator=persona_generator_config,
-                drift_conflict_policy=coord_cfg.get("drift_conflict_policy", "skip"),
-            )
+            orchestrator_config.coordination_config = _parse_coordination_config(coord_cfg)
 
         # Get context sharing parameters — scope by session to avoid
         # concurrent WebUI sessions colliding on shared paths.
-        from massgen.cli import (
-            _scope_agent_temporary_workspace,
-            _scope_snapshot_storage,
-        )
 
         snapshot_storage = _scope_snapshot_storage(orchestrator_cfg.get("snapshot_storage"))
         agent_temporary_workspace = _scope_agent_temporary_workspace(
@@ -4597,7 +5695,11 @@ async def run_coordination_with_history(
             agent_temporary_workspace=agent_temporary_workspace,
             previous_turns=previous_turns,
             winning_agents_history=winning_agents_history,
+            raw_config=config,
         )
+
+        # Set up checkpoint coordination if main_agent configured
+        _setup_checkpoint_orchestrator(orchestrator, config)
 
         # Set up cancellation manager for WebUI cancellation support
         from massgen.cancellation import CancellationManager
@@ -4614,8 +5716,8 @@ async def run_coordination_with_history(
 
         # Store the log session directory in the display
         display.log_session_dir = get_log_session_dir()
-        print(
-            f"[WebUI] run_coordination_with_history: turn={turn_number}, log_dir={display.log_session_dir}",
+        logger.info(
+            f"run_coordination_with_history: turn={turn_number}, log_dir={display.log_session_dir}",
         )
 
         # Save execution metadata for session export/sharing (same as CLI)
@@ -4639,9 +5741,9 @@ async def run_coordination_with_history(
                     display.log_session_dir,
                     orchestrator,
                 )
-                print("[WebUI] Saved initial status.json with workspace paths")
+                logger.info("Saved initial status.json with workspace paths")
             except Exception as e:
-                print(f"[WebUI] Warning: Could not save initial status.json: {e}")
+                logger.warning(f"Could not save initial status.json: {e}")
 
         # Create coordination UI with web display
         ui = CoordinationUI(
@@ -4758,11 +5860,397 @@ async def run_coordination_with_history(
         )
 
 
+def _save_webui_state(
+    *,
+    agent_settings: dict,
+    ui_state: dict,
+    base_dir: Path | None = None,
+) -> dict:
+    """Save WebUI state: generate webui_config.yaml and persist ui_state.json.
+
+    Args:
+        agent_settings: Agent-level config with 'agents' list and 'use_docker'.
+        ui_state: Mode bar UI state (coordination mode, refinement, etc.).
+        base_dir: Override base directory (for testing). Defaults to Path.cwd().
+
+    Returns:
+        Dict with success, config_path, and state_path.
+    """
+    import json
+
+    import yaml
+
+    from massgen.config_builder import ConfigBuilder
+
+    base = base_dir or Path.cwd()
+    massgen_dir = base / ".massgen"
+    massgen_dir.mkdir(parents=True, exist_ok=True)
+
+    # --- Generate webui_config.yaml via ConfigBuilder ---
+    agents_config = agent_settings.get("agents", [])
+    use_docker = agent_settings.get("use_docker", False)
+
+    formatted_agents = []
+    agent_tools: dict[str, dict] = {}
+    for agent in agents_config:
+        agent_id = agent.get("id", f"agent_{chr(ord('a') + len(formatted_agents))}")
+        formatted_agents.append(
+            {
+                "id": agent_id,
+                "type": agent.get("provider", "openai"),
+                "model": agent.get("model", "gpt-4o"),
+                **({"reasoning_effort": agent["reasoning_effort"]} if agent.get("reasoning_effort") else {}),
+            },
+        )
+        tool_settings: dict = {}
+        if agent.get("enable_web_search") is not None:
+            tool_settings["enable_web_search"] = agent["enable_web_search"]
+        if agent.get("enable_code_execution") is not None:
+            tool_settings["enable_code_execution"] = agent["enable_code_execution"]
+        if tool_settings:
+            agent_tools[agent_id] = tool_settings
+
+    if not formatted_agents:
+        formatted_agents = [{"id": "agent_a", "type": "openai", "model": "gpt-4o"}]
+
+    builder = ConfigBuilder()
+    config = builder._generate_quickstart_config(
+        formatted_agents,
+        use_docker=use_docker,
+        agent_tools=agent_tools or None,
+    )
+
+    config_path = massgen_dir / "webui_config.yaml"
+    with open(config_path, "w", encoding="utf-8") as f:
+        yaml.dump(config, f, default_flow_style=False, sort_keys=False, allow_unicode=True)
+
+    # --- Save UI state to webui_state.json ---
+    state_path = massgen_dir / "webui_state.json"
+    with open(state_path, "w", encoding="utf-8") as f:
+        json.dump(ui_state, f, indent=2)
+
+    return {
+        "success": True,
+        "config_path": str(config_path),
+        "state_path": str(state_path),
+    }
+
+
+def _load_webui_state(*, base_dir: Path | None = None) -> dict:
+    """Load WebUI persisted state.
+
+    Args:
+        base_dir: Override base directory (for testing). Defaults to Path.cwd().
+
+    Returns:
+        Dict with exists, config_path, and ui_state.
+    """
+    import json
+
+    base = base_dir or Path.cwd()
+    massgen_dir = base / ".massgen"
+    config_path = massgen_dir / "webui_config.yaml"
+    state_path = massgen_dir / "webui_state.json"
+
+    if not config_path.exists():
+        return {"exists": False, "config_path": None, "ui_state": None}
+
+    ui_state = None
+    if state_path.exists():
+        try:
+            with open(state_path, encoding="utf-8") as f:
+                ui_state = json.load(f)
+        except (json.JSONDecodeError, OSError):
+            ui_state = None
+
+    return {
+        "exists": True,
+        "config_path": str(config_path),
+        "ui_state": ui_state,
+    }
+
+
+def _apply_agent_overrides(config: dict, overrides: dict) -> None:
+    """Apply agent-level overrides (count, model, backend) to config."""
+    agents = config.get("agents", [])
+
+    # Agent count adjustment
+    target_count = overrides.get("agent_count")
+    if target_count is not None and target_count != len(agents):
+        if target_count > len(agents):
+            # Add agents by cloning the last agent as template
+            template = (
+                agents[-1]
+                if agents
+                else {
+                    "backend": {"type": "chat_completions"},
+                    "backend_params": {"model": "gpt-4o"},
+                }
+            )
+            for i in range(len(agents), target_count):
+                import copy
+
+                new_agent = copy.deepcopy(template)
+                new_agent["id"] = f"agent_{chr(97 + i)}"
+                agents.append(new_agent)
+        else:
+            # Trim agents
+            agents[:] = agents[:target_count]
+        config["agents"] = agents
+
+    # Per-agent overrides (from WebUI per-agent chips)
+    agent_overrides_list = overrides.get("agent_overrides")
+    if agent_overrides_list:
+        for i, agent_override in enumerate(agent_overrides_list):
+            if i >= len(agents):
+                break
+            agent = agents[i]
+            if agent_override.get("model"):
+                new_model = agent_override["model"]
+                # Write model to whichever location the config uses:
+                # Some configs use backend.model, others use backend_params.model
+                if "backend_params" in agent:
+                    agent["backend_params"]["model"] = new_model
+                if "backend" in agent and "model" in agent.get("backend", {}):
+                    agent["backend"]["model"] = new_model
+                # If neither existed, write to backend_params (standard path)
+                if "backend_params" not in agent and "model" not in agent.get(
+                    "backend",
+                    {},
+                ):
+                    agent.setdefault("backend_params", {})["model"] = new_model
+            if agent_override.get("backend_type"):
+                agent.setdefault("backend", {})["type"] = agent_override["backend_type"]
+
+            # Reasoning effort
+            if agent_override.get("reasoning_effort"):
+                agent.setdefault("backend", {})["reasoning"] = {
+                    "effort": agent_override["reasoning_effort"],
+                    "summary": "auto",
+                }
+
+            # Web search
+            if agent_override.get("enable_web_search") is not None:
+                agent.setdefault("backend", {})["enable_web_search"] = agent_override["enable_web_search"]
+
+            # Code execution (backend-specific field name)
+            if agent_override.get("enable_code_execution") is not None:
+                backend_type = agent.get("backend", {}).get("type", "")
+                if backend_type in ("openai", "chat_completions"):
+                    agent.setdefault("backend", {})["enable_code_interpreter"] = agent_override["enable_code_execution"]
+                else:
+                    agent.setdefault("backend", {})["enable_code_execution"] = agent_override["enable_code_execution"]
+
+    # Legacy uniform model override — apply to all agents
+    model = overrides.get("agent_model")
+    if model:
+        for agent in config.get("agents", []):
+            agent.setdefault("backend_params", {})["model"] = model
+
+    # Legacy uniform backend override — apply to all agents
+    backend = overrides.get("agent_backend")
+    if backend:
+        for agent in config.get("agents", []):
+            agent.setdefault("backend", {})["type"] = backend
+
+
+def _apply_docker_override(config: dict, use_docker: bool) -> None:
+    """Toggle docker execution mode via per-agent backend keys."""
+    import copy
+
+    for agent in config.get("agents", []):
+        backend = agent.setdefault("backend", {})
+        if use_docker:
+            backend.update(copy.deepcopy(DOCKER_BACKEND_DEFAULTS))
+        else:
+            for key in DOCKER_BACKEND_DEFAULTS:
+                backend.pop(key, None)
+            backend["exclude_file_operation_mcps"] = False
+
+
+# NOTE: Checkpoint MCP injection into agent backends is now handled by
+# orchestrator._init_checkpoint_tool() in Orchestrator.__init__().
+# The old _inject_checkpoint_mcp_into_agent_config() and
+# _inject_checkpoint_mcp_from_yaml_config() functions were removed
+# because they injected at config level before workspace paths existed.
+
+
+def _apply_mode_overrides(config: dict, overrides: dict | None) -> None:
+    """Apply WebUI mode bar overrides to the loaded config dict."""
+    if not overrides:
+        return
+
+    orch = config.setdefault("orchestrator", {})
+
+    # Orchestrator-level overrides
+    orch_keys = (
+        "coordination_mode",
+        "max_new_answers_per_agent",
+        "skip_voting",
+        "skip_final_presentation",
+        "disable_injection",
+        "defer_voting_until_all_answered",
+        "final_answer_strategy",
+    )
+    for key in orch_keys:
+        if key in overrides:
+            orch[key] = overrides[key]
+
+    # Persona generator
+    if "persona_generator_enabled" in overrides:
+        coord = orch.setdefault("coordination", {})
+        pg = coord.setdefault("persona_generator", {})
+        pg["enabled"] = overrides["persona_generator_enabled"]
+        if "persona_diversity_mode" in overrides:
+            pg["diversity_mode"] = overrides["persona_diversity_mode"]
+
+    # Evaluation criteria generator
+    if "evaluation_criteria_generator_enabled" in overrides:
+        coord = orch.setdefault("coordination", {})
+        ecg = coord.setdefault("evaluation_criteria_generator", {})
+        ecg["enabled"] = overrides["evaluation_criteria_generator_enabled"]
+
+    # Prompt improver
+    if "prompt_improver_enabled" in overrides:
+        coord = orch.setdefault("coordination", {})
+        pi = coord.setdefault("prompt_improver", {})
+        pi["enabled"] = overrides["prompt_improver_enabled"]
+
+    # Plan mode overrides
+    if overrides.get("plan_mode") and overrides["plan_mode"] != "normal":
+        coord = orch.setdefault("coordination", {})
+        coord["enable_agent_task_planning"] = True
+        coord["task_planning_filesystem_mode"] = True
+        if overrides["plan_mode"] == "spec":
+            coord["spec_mode"] = True
+        if overrides["plan_mode"] == "analyze":
+            coord["analysis_mode"] = True
+
+    # Agent count + model/backend overrides
+    if any(
+        k in overrides
+        for k in (
+            "agent_count",
+            "agent_model",
+            "agent_backend",
+            "agent_overrides",
+        )
+    ):
+        _apply_agent_overrides(config, overrides)
+
+    # Checkpoint coordination mode
+    if overrides.get("checkpoint_enabled"):
+        coord = orch.setdefault("coordination", {})
+        coord["checkpoint_enabled"] = True
+        coord["checkpoint_mode"] = overrides.get("checkpoint_mode", "conversation")
+        gated_patterns = overrides.get("checkpoint_gated_patterns", [])
+        if gated_patterns:
+            coord["checkpoint_gated_patterns"] = gated_patterns
+        # Mark the main agent in config (MCP injection handled by orchestrator)
+        main_agent_id = overrides.get("main_agent")
+        # Default to first agent if not specified
+        if not main_agent_id:
+            agents_list = config.get("agents", [])
+            for agent in agents_list:
+                if isinstance(agent, dict) and agent.get("id"):
+                    main_agent_id = agent["id"]
+                    break
+        if main_agent_id:
+            agents_list = config.get("agents", [])
+            for agent in agents_list:
+                if isinstance(agent, dict):
+                    if agent.get("id") == main_agent_id:
+                        agent["main_agent"] = True
+                    else:
+                        agent.pop("main_agent", None)
+
+    # Docker toggle
+    if "docker_override" in overrides:
+        _apply_docker_override(config, overrides["docker_override"])
+
+
+def _apply_cli_overrides(config: dict, cli_overrides: dict | None) -> None:
+    """Apply CLI flag overrides forwarded from ``cli_main --web``.
+
+    Reuses the canonical injection helpers from :mod:`massgen.cli` so that
+    ``--eval-criteria``, ``--checklist-criteria-preset``, ``--orchestrator-timeout``,
+    and ``--cwd-context`` behave identically whether the run is started from
+    the terminal or from the WebUI.
+    """
+    if not cli_overrides:
+        return
+
+    from massgen.cli import (
+        _inject_checklist_criteria_preset_into_config,
+        _inject_eval_criteria_into_config,
+        _load_eval_criteria,
+        apply_cli_cwd_context_path,
+    )
+
+    if "eval_criteria" in cli_overrides:
+        criteria = _load_eval_criteria(cli_overrides["eval_criteria"])
+        _inject_eval_criteria_into_config(config, criteria)
+
+    if "checklist_criteria_preset" in cli_overrides:
+        _inject_checklist_criteria_preset_into_config(
+            config,
+            cli_overrides["checklist_criteria_preset"],
+        )
+
+    if "orchestrator_timeout" in cli_overrides:
+        timeout_settings = config.setdefault("timeout_settings", {})
+        timeout_settings["orchestrator_timeout_seconds"] = cli_overrides["orchestrator_timeout"]
+
+    if "cwd_context" in cli_overrides:
+        apply_cli_cwd_context_path(config, cli_overrides["cwd_context"])
+
+    if cli_overrides.get("web_review"):
+        coord = config.setdefault("orchestrator", {}).setdefault("coordination", {})
+        coord["web_review"] = True
+
+
+def _setup_checkpoint_orchestrator(
+    orchestrator: Orchestrator,
+    config: dict,
+) -> None:
+    """Detect main_agent in config and call orchestrator.set_main_agent().
+
+    If checkpoint is enabled but no agent has ``main_agent: true``,
+    defaults to the first agent.  MCP injection is handled automatically
+    by set_main_agent() which calls _init_checkpoint_tool() internally.
+    """
+    agents_list = config.get("agents", [])
+    if not isinstance(agents_list, list):
+        return
+
+    main_agent_id = None
+    for agent_data in agents_list:
+        if isinstance(agent_data, dict) and agent_data.get("main_agent") is True:
+            main_agent_id = agent_data.get("id")
+            break
+
+    # Fallback: if checkpoint is enabled but no main_agent is set,
+    # default to the first agent
+    if not main_agent_id:
+        coord_cfg = config.get("orchestrator", config).get("coordination", {})
+        checkpoint_enabled = coord_cfg.get("checkpoint_enabled", False)
+        if checkpoint_enabled and orchestrator.agents:
+            main_agent_id = sorted(orchestrator.agents.keys())[0]
+
+    if not main_agent_id or main_agent_id not in orchestrator.agents:
+        return
+
+    # set_main_agent() triggers _init_checkpoint_tool() automatically
+    orchestrator.set_main_agent(main_agent_id)
+
+
 async def run_coordination(
     session_id: str,
     question: str,
     config_path: str | None = None,
     context_paths: list | None = None,
+    mode_overrides: dict | None = None,
+    cli_overrides: dict | None = None,
 ) -> None:
     """Run coordination with web display.
 
@@ -4771,6 +6259,8 @@ async def run_coordination(
         question: Question for coordination
         config_path: Optional path to config YAML
         context_paths: Optional list of context paths from @path syntax
+        mode_overrides: Optional mode bar overrides from WebUI
+        cli_overrides: CLI flag overrides forwarded from cli_main --web
     """
     import traceback
 
@@ -4804,7 +6294,7 @@ async def run_coordination(
         await emit_preparation_status("Loading configuration...", config_path or "")
 
         # Import here to avoid circular imports
-        from massgen.agent_config import AgentConfig, CoordinationConfig
+        from massgen.agent_config import AgentConfig
         from massgen.cli import (
             create_agents_from_config,
             load_config_file,
@@ -4827,6 +6317,12 @@ async def run_coordination(
 
         config, raw_config_for_metadata = load_config_file(str(resolved_path))
 
+        # Apply mode bar overrides from WebUI before any config processing
+        _apply_mode_overrides(config, mode_overrides)
+
+        # Apply CLI flag overrides (--eval-criteria, --checklist-criteria-preset, etc.)
+        _apply_cli_overrides(config, cli_overrides)
+
         # Inject context paths from @path syntax if provided
         if context_paths:
             if "orchestrator" not in config:
@@ -4840,13 +6336,21 @@ async def run_coordination(
         # Extract orchestrator config dict from YAML
         orchestrator_cfg = config.get("orchestrator", {})
 
+        # Inject instance_id for Docker container naming (parallel execution safety)
+        # CLI main() does this at startup, but WebUI loads config from YAML directly
+        instance_id = uuid.uuid4().hex[:8]
+        agent_entries = [config["agent"]] if "agent" in config else config.get("agents", [])
+        for agent_data in agent_entries:
+            backend_config = agent_data.get("backend", {})
+            backend_config["instance_id"] = instance_id
+
         # Send agent setup status (this is the slow part - Docker containers, etc.)
         agent_configs = config.get("agents", [])
         num_agents = len(agent_configs)
         await send_init_status(f"Setting up {num_agents} agents...", "agents", 30)
 
         # Check if Docker is being used
-        uses_docker = config.get("execution", {}).get("use_docker", False)
+        uses_docker = any(agent.get("backend", {}).get("command_line_execution_mode") == "docker" for agent in config.get("agents", []))
         if uses_docker:
             await emit_preparation_status(
                 "Preparing Docker environment...",
@@ -4912,97 +6416,60 @@ async def run_coordination(
             ", ".join(agent_ids),
         )
 
+        # Detect main_agent for checkpoint mode (show only main agent initially)
+        _main_agent_for_display = None
+        for agent_data in config.get("agents", []):
+            if isinstance(agent_data, dict) and agent_data.get("main_agent") is True:
+                _main_agent_for_display = agent_data.get("id")
+                break
+        # Fallback: if checkpoint enabled but no main_agent, use first agent
+        if not _main_agent_for_display:
+            coord_cfg = config.get("orchestrator", config).get("coordination", {})
+            if coord_cfg.get("checkpoint_enabled", False) and agent_ids:
+                _main_agent_for_display = agent_ids[0]
+
+        # Determine if web review is enabled (CLI override or YAML config)
+        _coord_cfg = config.get("orchestrator", config).get("coordination", {})
+        _web_review_enabled = _coord_cfg.get("web_review", False)
+
         # Create web display with agent_models
-        display = manager.create_display(session_id, agent_ids, agent_models)
+        display = manager.create_display(
+            session_id,
+            agent_ids,
+            agent_models,
+            main_agent_id=_main_agent_for_display,
+            review_enabled=_web_review_enabled,
+        )
+        # Set question early so late-joining clients get it in state_snapshot
+        display.question = question
 
         await send_init_status("Initializing orchestrator...", "orchestrator", 80)
 
         # Build AgentConfig object for orchestrator (required by Orchestrator)
-        orchestrator_config = AgentConfig()
-
-        # Apply voting sensitivity if specified
-        if "voting_sensitivity" in orchestrator_cfg:
-            orchestrator_config.voting_sensitivity = orchestrator_cfg["voting_sensitivity"]
-
-        # Apply answer count limit if specified
-        if "max_new_answers_per_agent" in orchestrator_cfg:
-            orchestrator_config.max_new_answers_per_agent = orchestrator_cfg["max_new_answers_per_agent"]
-
-        # Apply answer novelty requirement if specified
-        if "answer_novelty_requirement" in orchestrator_cfg:
-            orchestrator_config.answer_novelty_requirement = orchestrator_cfg["answer_novelty_requirement"]
-
-        # Apply coordination config from YAML (includes enable_agent_task_planning, etc.)
-        coord_cfg = orchestrator_cfg.get("coordination", {})
-        if coord_cfg:
-            # Parse persona_generator config if present
-            from massgen.persona_generator import PersonaGeneratorConfig
-
-            persona_generator_config = PersonaGeneratorConfig()
-            if "persona_generator" in coord_cfg:
-                pg_cfg = coord_cfg["persona_generator"]
-                persona_generator_config = PersonaGeneratorConfig(
-                    enabled=pg_cfg.get("enabled", False),
-                    diversity_mode=pg_cfg.get("diversity_mode", "perspective"),
-                    persona_guidelines=pg_cfg.get("persona_guidelines"),
-                    persist_across_turns=pg_cfg.get("persist_across_turns", False),
-                    after_first_answer=pg_cfg.get("after_first_answer", "drop"),
-                )
-
-            orchestrator_config.coordination_config = CoordinationConfig(
-                enable_planning_mode=coord_cfg.get("enable_planning_mode", False),
-                planning_mode_instruction=coord_cfg.get(
-                    "planning_mode_instruction",
-                    "During coordination, describe what you would do without actually executing actions.",
-                ),
-                max_orchestration_restarts=coord_cfg.get(
-                    "max_orchestration_restarts",
-                    0,
-                ),
-                enable_agent_task_planning=coord_cfg.get(
-                    "enable_agent_task_planning",
-                    False,
-                ),
-                max_tasks_per_plan=coord_cfg.get("max_tasks_per_plan", 10),
-                broadcast=coord_cfg.get("broadcast", False),
-                broadcast_sensitivity=coord_cfg.get("broadcast_sensitivity", "medium"),
-                response_depth=coord_cfg.get("response_depth", "medium"),
-                broadcast_timeout=coord_cfg.get("broadcast_timeout", 300),
-                broadcast_wait_by_default=coord_cfg.get(
-                    "broadcast_wait_by_default",
-                    True,
-                ),
-                max_broadcasts_per_agent=coord_cfg.get("max_broadcasts_per_agent", 10),
-                task_planning_filesystem_mode=coord_cfg.get(
-                    "task_planning_filesystem_mode",
-                    False,
-                ),
-                enable_memory_filesystem_mode=coord_cfg.get(
-                    "enable_memory_filesystem_mode",
-                    False,
-                ),
-                learning_capture_mode=coord_cfg.get("learning_capture_mode", "round"),
-                disable_final_only_round_capture_fallback=coord_cfg.get(
-                    "disable_final_only_round_capture_fallback",
-                    False,
-                ),
-                use_skills=coord_cfg.get("use_skills", False),
-                massgen_skills=coord_cfg.get("massgen_skills", []),
-                skills_directory=coord_cfg.get("skills_directory", ".agent/skills"),
-                load_previous_session_skills=coord_cfg.get(
-                    "load_previous_session_skills",
-                    False,
-                ),
-                persona_generator=persona_generator_config,
-                drift_conflict_policy=coord_cfg.get("drift_conflict_policy", "skip"),
-            )
-
-        # Get context sharing parameters — scope by session to avoid
-        # concurrent WebUI sessions colliding on shared paths.
         from massgen.cli import (
+            _apply_orchestrator_runtime_params,
+            _parse_coordination_config,
             _scope_agent_temporary_workspace,
             _scope_snapshot_storage,
         )
+
+        orchestrator_config = AgentConfig()
+        _apply_orchestrator_runtime_params(orchestrator_config, orchestrator_cfg)
+
+        # Apply timeout settings if specified in YAML
+        timeout_settings = config.get("timeout_settings", {})
+        if timeout_settings:
+            from massgen.agent_config import TimeoutConfig
+
+            orchestrator_config.timeout_config = TimeoutConfig(**timeout_settings)
+
+        # Apply coordination config from YAML using canonical parser
+        coord_cfg = orchestrator_cfg.get("coordination", {})
+        if coord_cfg:
+            orchestrator_config.coordination_config = _parse_coordination_config(coord_cfg)
+
+        # Get context sharing parameters — scope by session to avoid
+        # concurrent WebUI sessions colliding on shared paths.
 
         snapshot_storage = _scope_snapshot_storage(orchestrator_cfg.get("snapshot_storage"))
         agent_temporary_workspace = _scope_agent_temporary_workspace(
@@ -5016,7 +6483,11 @@ async def run_coordination(
             session_id=session_id,
             snapshot_storage=snapshot_storage,
             agent_temporary_workspace=agent_temporary_workspace,
+            raw_config=config,
         )
+
+        # Set up checkpoint coordination if main_agent configured
+        _setup_checkpoint_orchestrator(orchestrator, config)
 
         # Set up cancellation manager for WebUI cancellation support
         from massgen.cancellation import CancellationManager
@@ -5036,8 +6507,8 @@ async def run_coordination(
         from massgen.logger_config import get_log_session_dir, save_execution_metadata
 
         display.log_session_dir = get_log_session_dir()
-        print(
-            f"[DEBUG] run_coordination: Set display.log_session_dir = {display.log_session_dir}",
+        logger.debug(
+            f"run_coordination: Set display.log_session_dir = {display.log_session_dir}",
         )
 
         # Print status.json location for automation mode monitoring
@@ -5065,9 +6536,9 @@ async def run_coordination(
                     display.log_session_dir,
                     orchestrator,
                 )
-                print("[WebUI] Saved initial status.json with workspace paths")
+                logger.info("Saved initial status.json with workspace paths")
             except Exception as e:
-                print(f"[WebUI] Warning: Could not save initial status.json: {e}")
+                logger.warning(f"Could not save initial status.json: {e}")
 
         # Create coordination UI with web display
         ui = CoordinationUI(
@@ -5183,6 +6654,8 @@ def run_server(
     reload: bool = False,
     config_path: str | None = None,
     automation_mode: bool = False,
+    cli_overrides: dict | None = None,
+    question: str | None = None,
 ) -> None:
     """Run the web server.
 
@@ -5191,7 +6664,9 @@ def run_server(
         port: Port to listen on
         reload: Enable auto-reload for development
         config_path: Default config path for coordination sessions
-        automation_mode: If True, UI shows automation-friendly timeline view
+        automation_mode: If True, suppresses verbose server logs
+        cli_overrides: CLI flag overrides forwarded from cli_main --web
+        question: Question from CLI to auto-start when first client connects
     """
     try:
         import uvicorn
@@ -5205,7 +6680,12 @@ def run_server(
         set_default_config(config_path)
 
     # Create app directly with automation_mode (can't pass args via factory string)
-    app = create_app(config_path=config_path, automation_mode=automation_mode)
+    app = create_app(
+        config_path=config_path,
+        automation_mode=automation_mode,
+        cli_overrides=cli_overrides,
+        pending_question=question,
+    )
 
     # In automation mode, suppress verbose logging to keep stdout clean
     if automation_mode:
@@ -5228,12 +6708,18 @@ def run_server(
             module="uvicorn.protocols.websockets",
         )
 
-        uvicorn.run(
-            app,
-            host=host,
-            port=port,
-            log_level="warning",
+        server = uvicorn.Server(
+            uvicorn.Config(
+                app,
+                host=host,
+                port=port,
+                log_level="warning",
+            ),
         )
+        # Store server on app.state so auto-start coordination can
+        # trigger shutdown when the run finishes (automation should exit).
+        app.state.uvicorn_server = server
+        server.run()
     else:
         uvicorn.run(
             app,
@@ -5280,7 +6766,7 @@ def run_temporary_quickstart_server(
         import time
         import webbrowser
 
-        browser_url = f"http://{host}:{port}/setup?temporary=1"
+        browser_url = f"http://{host}:{port}/?temporary=1&wizard=open&skill=1"
 
         def open_browser() -> None:
             time.sleep(0.5)

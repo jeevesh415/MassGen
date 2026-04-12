@@ -457,16 +457,22 @@ class FilesystemManager:
                 suppressed_repo_paths = []
                 for ctx_path_config in context_paths:
                     ctx_path = ctx_path_config.get("path", "")
+                    permission = ctx_path_config.get("permission", "read")
                     git_dir = os.path.join(ctx_path, ".git")
-                    if ctx_path and os.path.isdir(git_dir):
+                    if ctx_path and os.path.isdir(git_dir) and permission != "read":
+                        # Only suppress writable git repo paths (they use worktree
+                        # isolation). Read-only context paths (e.g., parent workspace
+                        # mounted for subagents) must stay mounted in Docker so the
+                        # agent can access deliverable files.
                         suppressed_repo_paths.append(ctx_path)
                         extra_mount_paths.append((git_dir, git_dir, "rw"))
                         logger.info(
                             f"[FilesystemManager] write_mode: mounting .git/ dir for worktree refs: {git_dir}",
                         )
                     else:
-                        # Preserve non-git context paths (e.g., log/session directories)
-                        # so agents can still read external artifacts in Docker.
+                        # Preserve read-only context paths and non-git paths (e.g.,
+                        # log/session directories, parent workspaces) so agents can
+                        # still read external artifacts in Docker.
                         preserved_context_paths.append(ctx_path_config)
                 context_paths = preserved_context_paths
                 logger.info(
@@ -2053,6 +2059,11 @@ class FilesystemManager:
                 if item.name == ".massgen":
                     logger.debug(f"[FilesystemManager] Preserving .massgen directory during clear: {item}")
                     continue
+                # Preserve memory directory — short_term and long_term memories
+                # must accumulate across rounds (trace analysis, learnings, etc.).
+                if item.name == "memory":
+                    logger.debug(f"[FilesystemManager] Preserving memory directory during clear: {item}")
+                    continue
                 if item.is_file():
                     item.unlink()
                 elif item.is_dir():
@@ -2134,6 +2145,20 @@ class FilesystemManager:
                 self.agent_temporary_workspace_parent.mkdir(parents=True, exist_ok=True)
             except Exception:
                 pass
+
+        # Prune stale workspaces from .massgen/workspaces/ (left over from previous runs)
+        try:
+            workspaces_dir = self.agent_temporary_workspace_parent.parent / "workspaces"
+            if workspaces_dir.exists() and workspaces_dir.is_dir():
+                for child in list(workspaces_dir.iterdir()):
+                    if child.is_dir():
+                        logger.info(f"[FilesystemManager] Pruning stale workspace: {child}")
+                        _safe_rmtree(child)
+                # Remove empty workspaces dir
+                if workspaces_dir.exists() and not any(workspaces_dir.iterdir()):
+                    workspaces_dir.rmdir()
+        except Exception as e:
+            logger.warning(f"[FilesystemManager] Failed to prune stale workspaces: {e}")
 
     @staticmethod
     def _rewrite_temp_workspace_path(raw_value: str, source_snapshot_root: Path, temp_snapshot_root: Path) -> str:
@@ -2333,6 +2358,11 @@ class FilesystemManager:
             _safe_rmtree(self.agent_temporary_workspace)
         self.agent_temporary_workspace.mkdir(parents=True, exist_ok=True)
 
+        # Framework metadata dirs to exclude from temp workspace copies.
+        # These contain agent IDs in filenames/content and backend-identifying
+        # artifacts — agents don't need them for evaluating others' work.
+        _snapshot_exclude_dirs = {".massgen", ".codex", ".gemini", ".claude", ".git"}
+
         # Copy all snapshots using anonymous IDs
         for agent_id, snapshot_path in all_snapshots.items():
             if snapshot_path.exists() and snapshot_path.is_dir():
@@ -2350,11 +2380,17 @@ class FilesystemManager:
                         dirs_exist_ok=True,
                         symlinks=True,
                         ignore_dangling_symlinks=True,
+                        ignore=shutil.ignore_patterns(*_snapshot_exclude_dirs),
                     )
                     self._normalize_media_call_ledger_paths(
                         source_snapshot_root=snapshot_path,
                         temp_snapshot_root=dest_dir,
                     )
+
+                    # Scrub remaining agent IDs from framework metadata files
+                    from ._path_rewriter import scrub_agent_ids_in_snapshot
+
+                    scrub_agent_ids_in_snapshot(dest_dir, agent_mapping)
 
         return self.agent_temporary_workspace
 
@@ -2466,8 +2502,23 @@ class FilesystemManager:
         """
         return self._original_cwd
 
+    @staticmethod
+    def _is_massgen_workspace(path: Path) -> bool:
+        """Check if a path is under a .massgen/workspaces/ directory."""
+        try:
+            parts = path.resolve().parts
+            for i, part in enumerate(parts):
+                if part == ".massgen" and i + 1 < len(parts) and parts[i + 1] == "workspaces":
+                    return True
+        except Exception:
+            pass
+        return False
+
     def cleanup(self) -> None:
-        """Cleanup temporary resources (not the main workspace) and Docker containers."""
+        """Cleanup temporary resources and Docker containers.
+
+        Also removes the main workspace directory if it's under .massgen/workspaces/.
+        """
         # Cleanup isolation contexts if manager is active
         if self.isolation_manager:
             try:
@@ -2495,6 +2546,20 @@ class FilesystemManager:
                 _safe_rmtree(self.local_skills_directory)
             except Exception as e:
                 logger.warning(f"[FilesystemManager] Failed to cleanup local skills directory: {e}")
+
+        # Cleanup main workspace if it's under .massgen/workspaces/
+        if hasattr(self, "cwd") and self.cwd and self._is_massgen_workspace(self.cwd):
+            try:
+                ws = self.cwd.resolve()
+                if ws.exists() and ws.is_dir() and len(ws.parts) >= 4:
+                    logger.info(f"[FilesystemManager] Cleaning up workspace: {ws}")
+                    _safe_rmtree(ws)
+                    # Prune empty parent dirs up to .massgen/workspaces/
+                    parent = ws.parent
+                    if parent.exists() and parent.name == "workspaces" and not any(parent.iterdir()):
+                        parent.rmdir()
+            except Exception as e:
+                logger.warning(f"[FilesystemManager] Failed to cleanup workspace: {e}")
 
         # Cleanup temporary workspace
         p = self.agent_temporary_workspace

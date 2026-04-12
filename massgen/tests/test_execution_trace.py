@@ -178,6 +178,56 @@ class TestExecutionTraceWriter:
             assert "# Execution Trace: agent_a" in content
             assert "file content" in content
 
+    def test_injected_context_adds_entry(self):
+        """add_injected_context records an INJECTED_CONTEXT entry."""
+        writer = ExecutionTraceWriter(agent_id="agent_a", model="claude-3-5-sonnet")
+        writer.add_injected_context(
+            name="trace_analysis_round_2",
+            content="### DO\n- Use one logged verification pass",
+        )
+
+        markdown = writer.to_markdown()
+
+        assert "trace_analysis_round_2" in markdown
+        assert "Use one logged verification pass" in markdown
+
+    def test_injected_context_section_header(self):
+        """Injected context entries appear under a clear section heading."""
+        writer = ExecutionTraceWriter(agent_id="agent_a", model="claude-3-5-sonnet")
+        writer.add_injected_context(name="trace_analysis_round_2", content="some content")
+
+        markdown = writer.to_markdown()
+
+        assert "Injected Context" in markdown
+
+    def test_injected_context_before_round_start(self):
+        """Injected context appears before round entries in the trace."""
+        writer = ExecutionTraceWriter(agent_id="agent_a", model="claude-3-5-sonnet")
+        writer.add_injected_context(name="trace_analysis_round_2", content="trace content")
+        writer.start_round(round_num=2, answer_label="2.1")
+        writer.add_tool_call(name="Read", args={"file_path": "/workspace/main.py"})
+
+        markdown = writer.to_markdown()
+
+        injected_pos = markdown.find("Injected Context")
+        round_pos = markdown.find("## Round 2")
+        assert injected_pos != -1
+        assert round_pos != -1
+        assert injected_pos < round_pos
+
+    def test_injected_context_multiple_files(self):
+        """Multiple injected context entries are all present in the trace."""
+        writer = ExecutionTraceWriter(agent_id="agent_a", model="claude-3-5-sonnet")
+        writer.add_injected_context(name="trace_analysis_round_1", content="round 1 analysis")
+        writer.add_injected_context(name="trace_analysis_round_2", content="round 2 analysis")
+
+        markdown = writer.to_markdown()
+
+        assert "trace_analysis_round_1" in markdown
+        assert "round 1 analysis" in markdown
+        assert "trace_analysis_round_2" in markdown
+        assert "round 2 analysis" in markdown
+
     def test_errors_section_aggregated(self):
         """Errors are aggregated in a dedicated section at the end."""
         writer = ExecutionTraceWriter(agent_id="agent_a", model="claude-3-5-sonnet")

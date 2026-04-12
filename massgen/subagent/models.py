@@ -650,6 +650,8 @@ class RoundEvaluatorResult:
     next_tasks_strategy_mode: Literal["incremental_refinement", "thesis_shift"] | None = None
     next_tasks_incremental_override_reason: str | None = None
     next_tasks_success_contract: dict[str, Any] | None = None
+    evolved_prompt: str | None = None
+    evolved_prompt_rationale: str | None = None
     clean_packet_text: str | None = None  # packet_text with verdict_block stripped
 
     _VERDICT_BLOCK_RE = re.compile(
@@ -793,6 +795,17 @@ class RoundEvaluatorResult:
         if strategy_mode == "thesis_shift" and thesis_shift_task_count < 1:
             return None
 
+        # Soft validation for evolved_prompt: extract if well-formed, remove if not.
+        evolved_prompt_raw = normalized.get("evolved_prompt")
+        if evolved_prompt_raw is not None:
+            if not isinstance(evolved_prompt_raw, dict) or not str(evolved_prompt_raw.get("prompt") or "").strip():
+                import logging as _logging
+
+                _logging.getLogger(__name__).warning(
+                    "next_tasks payload has malformed or empty evolved_prompt — ignoring",
+                )
+                normalized.pop("evolved_prompt", None)
+
         return normalized
 
     @staticmethod
@@ -828,6 +841,13 @@ class RoundEvaluatorResult:
         success_contract = next_tasks.get("success_contract")
         normalized_success_contract = copy.deepcopy(success_contract) if isinstance(success_contract, dict) else None
 
+        evolved_prompt = None
+        evolved_prompt_rationale = None
+        evolved_prompt_obj = next_tasks.get("evolved_prompt")
+        if isinstance(evolved_prompt_obj, dict):
+            evolved_prompt = str(evolved_prompt_obj.get("prompt") or "").strip() or None
+            evolved_prompt_rationale = str(evolved_prompt_obj.get("evolution_rationale") or "").strip() or None
+
         return {
             "objective": objective,
             "primary_strategy": primary_strategy,
@@ -837,6 +857,8 @@ class RoundEvaluatorResult:
             "strategy_mode": strategy_mode,
             "incremental_override_reason": incremental_override_reason,
             "success_contract": normalized_success_contract,
+            "evolved_prompt": evolved_prompt,
+            "evolved_prompt_rationale": evolved_prompt_rationale,
         }
 
     @classmethod
@@ -1080,6 +1102,8 @@ class RoundEvaluatorResult:
             next_tasks_strategy_mode=next_tasks_strategy.get("strategy_mode"),
             next_tasks_incremental_override_reason=next_tasks_strategy.get("incremental_override_reason"),
             next_tasks_success_contract=next_tasks_strategy.get("success_contract"),
+            evolved_prompt=next_tasks_strategy.get("evolved_prompt"),
+            evolved_prompt_rationale=next_tasks_strategy.get("evolved_prompt_rationale"),
             clean_packet_text=cls.strip_verdict_block(packet_text) if packet_text else None,
         )
 
@@ -1111,6 +1135,8 @@ class RoundEvaluatorResult:
             "next_tasks_strategy_mode": self.next_tasks_strategy_mode,
             "next_tasks_incremental_override_reason": self.next_tasks_incremental_override_reason,
             "next_tasks_success_contract": self.next_tasks_success_contract,
+            "evolved_prompt": self.evolved_prompt,
+            "evolved_prompt_rationale": self.evolved_prompt_rationale,
             "clean_packet_text": self.clean_packet_text,
         }
 
@@ -1143,6 +1169,8 @@ class RoundEvaluatorResult:
             next_tasks_strategy_mode=data.get("next_tasks_strategy_mode"),
             next_tasks_incremental_override_reason=data.get("next_tasks_incremental_override_reason"),
             next_tasks_success_contract=data.get("next_tasks_success_contract"),
+            evolved_prompt=data.get("evolved_prompt"),
+            evolved_prompt_rationale=data.get("evolved_prompt_rationale"),
             clean_packet_text=data.get("clean_packet_text"),
         )
 

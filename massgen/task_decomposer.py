@@ -76,7 +76,7 @@ class TaskDecomposer:
     ) -> str:
         """Build the decomposition prompt passed to the subagent."""
         n_agents = len(agent_ids)
-        schema_entry = '{"subtask": "owned scope + integration touchpoints + quality bar", ' '"criteria": [{"text": "criterion text", "category": "must"}]}'
+        schema_entry = '{"subtask": "owned scope + integration touchpoints + quality bar", ' '"criteria": [{"text": "criterion text", "category": "standard"}]}'
         schema = ", ".join(f'"{aid}": {schema_entry}' for aid in agent_ids)
         planning_context_requirements = ""
         if has_planning_spec_context:
@@ -128,6 +128,7 @@ Requirements:
         voting_sensitivity: str | None = None,
         voting_threshold: int | None = None,
         has_planning_spec_context: bool = False,
+        fast_iteration_mode: bool = False,
     ) -> dict[str, str]:
         """Generate subtask assignments via a MassGen subagent call.
 
@@ -149,6 +150,8 @@ Requirements:
                 the pre-collaboration subagent coordination config.
             has_planning_spec_context: Whether planning/spec context is mounted
                 and should be explicitly referenced by prompt guidance.
+            fast_iteration_mode: Whether to enable fast iteration mode for
+                the pre-collaboration subagent coordination.
 
         Returns:
             Dictionary mapping agent_id to subtask description
@@ -232,6 +235,8 @@ Requirements:
                 coordination["voting_sensitivity"] = voting_sensitivity
             if voting_threshold is not None:
                 coordination["voting_threshold"] = voting_threshold
+            if fast_iteration_mode:
+                coordination["fast_iteration_mode"] = True
 
             subagent_orch_config = SubagentOrchestratorConfig(
                 enabled=True,
@@ -239,9 +244,11 @@ Requirements:
                 coordination=coordination,
                 max_new_answers=5,
             )
-            parent_context_paths = self._build_subagent_parent_context_paths(
+            from massgen.precollab_utils import build_subagent_parent_context_paths
+
+            parent_context_paths = build_subagent_parent_context_paths(
                 parent_workspace=base_workspace,
-                parent_agent_configs=parent_agent_configs,
+                agent_configs=parent_agent_configs,
             )
 
             manager = SubagentManager(
@@ -323,51 +330,6 @@ Requirements:
         fallback_subtasks = self._generate_fallback_subtasks(task, agent_ids, existing_system_messages)
         self.last_subtask_specs = {aid: {"subtask": subtask, "criteria": []} for aid, subtask in fallback_subtasks.items()}
         return fallback_subtasks
-
-    @staticmethod
-    def _build_subagent_parent_context_paths(
-        parent_workspace: str,
-        parent_agent_configs: list[dict[str, Any]],
-    ) -> list[dict[str, str]]:
-        """Build read-only context paths for pre-collab decomposition subagents."""
-        base_workspace = Path(parent_workspace).resolve()
-        context_paths: list[dict[str, str]] = []
-        seen: set[str] = set()
-
-        def _add_path(raw_path: str | None) -> None:
-            if not raw_path:
-                return
-            try:
-                path_obj = Path(raw_path)
-                resolved = path_obj.resolve() if path_obj.is_absolute() else (base_workspace / path_obj).resolve()
-            except Exception:
-                return
-
-            path_str = str(resolved)
-            if path_str in seen:
-                return
-            seen.add(path_str)
-            context_paths.append({"path": path_str, "permission": "read"})
-
-        _add_path(str(base_workspace))
-
-        for config in parent_agent_configs:
-            if not isinstance(config, dict):
-                continue
-            backend = config.get("backend", {})
-            if not isinstance(backend, dict):
-                continue
-            inherited_paths = backend.get("context_paths", [])
-            if not isinstance(inherited_paths, list):
-                continue
-            for entry in inherited_paths:
-                if isinstance(entry, str):
-                    _add_path(entry)
-                elif isinstance(entry, dict):
-                    raw_path = entry.get("path")
-                    _add_path(str(raw_path).strip() if raw_path else None)
-
-        return context_paths
 
     def _parse_subtasks_from_text(self, text: str, agent_ids: list[str]) -> dict[str, str]:
         """Parse decomposition JSON from model text output."""
@@ -559,13 +521,14 @@ Requirements:
             text = str(entry.get("text") or "").strip()
             if not text:
                 continue
-            category = str(entry.get("category") or "should").strip().lower()
-            if category == "core":
-                category = "must"
-            elif category == "stretch":
-                category = "could"
-            if category not in {"must", "should", "could"}:
-                category = "should"
+            category = str(entry.get("category") or "standard").strip().lower()
+            # Map legacy values to new scheme
+            if category in ("core", "must", "should"):
+                category = "standard"
+            elif category in ("could", "stretch"):
+                category = "stretch"
+            if category not in {"primary", "standard", "stretch"}:
+                category = "standard"
             normalized_entry = {
                 "text": text,
                 "category": category,

@@ -118,6 +118,8 @@ export function FileViewerModal({ isOpen, onClose, filePath, workspacePath }: Fi
 
   // Memoize the content display
   const contentDisplay = useMemo(() => {
+    const isMissingFile = !!error && (error.toLowerCase().includes('not found') || error.includes('404'))
+
     if (isLoading || isHighlighting) {
       return (
         <div className="flex flex-col items-center justify-center h-64 text-gray-400">
@@ -128,6 +130,16 @@ export function FileViewerModal({ isOpen, onClose, filePath, workspacePath }: Fi
     }
 
     if (error) {
+      if (isMissingFile) {
+        return (
+          <div className="flex flex-col items-center justify-center h-64 text-gray-400">
+            <File className="w-12 h-12 mb-3 opacity-60" />
+            <p className="font-medium">File moved or removed</p>
+            <p className="text-sm text-gray-500 mt-1">Select another file to continue browsing</p>
+          </div>
+        )
+      }
+
       return (
         <div className="flex flex-col items-center justify-center h-64 text-red-400">
           <AlertCircle className="w-12 h-12 mb-3" />

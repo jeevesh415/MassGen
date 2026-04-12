@@ -22,6 +22,10 @@ class TestSupportsServerHooks:
         backend = _make_codex_backend(tmp_path)
         assert backend.supports_mcp_server_hooks() is True
 
+    def test_native_hooks_are_available(self, tmp_path: Path) -> None:
+        backend = _make_codex_backend(tmp_path)
+        assert backend.supports_native_hooks() is True
+
 
 class TestGetHookDir:
     def test_returns_codex_subdir(self, tmp_path: Path) -> None:

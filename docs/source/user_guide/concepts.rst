@@ -443,6 +443,107 @@ The system reaches :term:`consensus` when all agents have voted. No forced agree
 
 **Result:** Agent C wins with 3 votes (including self-vote) and presents the final answer.
 
+Checklist-Gated Evaluation
+~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+By default, agents decide when to vote based on their own judgment. **Checklist-gated evaluation** adds structured quality gates that agents must pass before they can vote, ensuring answers meet specific standards rather than relying on subjective "good enough" assessments.
+
+This design is inspired by `GEPA (Genetic-Pareto) <https://gepa-ai.github.io/gepa/>`_, a framework for optimizing systems through LLM-based reflection and Pareto-efficient evolutionary search. GEPA's core insight is that structured diagnostic feedback -- what it calls "Actionable Side Information" -- produces far better iterative improvement than numeric scores alone. MassGen adapts this idea into multi-agent coordination: agents evaluate their work against explicit, evaluable criteria and receive structured feedback that guides their next iteration, rather than simply deciding "is this good enough?"
+
+Rather than having a workflow-based improvement process encoded via code, MassGen is an interactive agent harness, with agents responsible for both implementing solutions and evaluating them against a checklist. This creates a tight feedback loop where agents diagnose weaknesses, propose specific improvements, implement them, and re-evaluate until they meet the quality bar to vote.
+
+**How It Works:**
+
+When ``voting_sensitivity: checklist_gated`` is enabled, agents follow a structured cycle:
+
+.. code-block:: text
+
+   ┌─────────────────────────────────────────────┐
+   │  1. IMPLEMENT                                │
+   │     Agent works on the task, produces output │
+   └──────────────────────┬──────────────────────┘
+                          │
+                          ▼
+   ┌─────────────────────────────────────────────┐
+   │  2. SUBMIT CHECKLIST                         │
+   │     Agent scores its work against criteria:  │
+   │     E1: Requirements met?          (8/10)    │
+   │     E2: No broken functionality?   (9/10)    │
+   │     E3: Thorough, no gaps?         (6/10)    │
+   │     E4: Shows care beyond correct? (5/10)    │
+   └──────────────────────┬──────────────────────┘
+                          │
+                   ┌──────┴──────┐
+                   │             │
+               ITERATE        VOTE/STOP
+                   │             │
+                   ▼             ▼
+   ┌────────────────────┐  ┌──────────────┐
+   │ 3. PROPOSE         │  │ Terminal:    │
+   │    IMPROVEMENTS    │  │ Agent votes  │
+   │    What to fix,    │  │ for best     │
+   │    what to keep    │  │ answer       │
+   └────────┬───────────┘  └──────────────┘
+            │
+            ▼
+   ┌────────────────────┐
+   │ 4. IMPLEMENT FIXES │
+   │    Submit improved  │
+   │    new_answer       │
+   │    (back to step 2) │
+   └─────────────────────┘
+
+**The Two Tools:**
+
+- ``submit_checklist`` -- The agent scores each criterion for the answers in context. The system returns a verdict: **iterate** (keep improving) or **vote/stop** (quality bar met). The agent cannot vote until the checklist says the work is ready.
+
+- ``draft_approach`` -- After an iterate verdict, the agent specifies what to fix and what to preserve. This creates a structured improvement plan rather than vague "make it better" instructions. The agent then implements the plan and submits a new answer.
+
+**Default Criteria (E1-E4):**
+
+MassGen ships with four default evaluation criteria that work across any task type:
+
+.. list-table::
+   :header-rows: 1
+   :widths: 8 62 15
+
+   * - ID
+     - Criterion
+     - Focus
+   * - E1
+     - The output directly achieves what was asked for -- requirements are met, not just approximated.
+     - Correctness
+   * - E2
+     - No broken functionality, errors, or obvious defects. Everything that's present works correctly.
+     - Functionality
+   * - E3
+     - The output is thorough -- no significant gaps, thin sections, or placeholder content.
+     - Completeness
+   * - E4
+     - The output shows care beyond correctness -- thoughtful choices, consistent style, attention to edge cases.
+     - Craft
+
+**Custom Evaluation Criteria:**
+
+For tasks where the defaults are too generic, MassGen can generate task-specific criteria before coordination begins. Enable this with ``evaluation_criteria_generator: {enabled: true}`` in your config. A pre-coordination consensus run analyzes the task and produces tailored E1-EN criteria that replace the defaults.
+
+You can also provide criteria directly via ``--eval-criteria criteria.json`` or ``--checklist-criteria-preset`` for common task types (persona generation, task decomposition, prompt crafting, log analysis).
+
+**Configuration:**
+
+.. code-block:: yaml
+
+   orchestrator:
+     voting_sensitivity: checklist_gated   # Enable checklist gates
+     evaluation_criteria_generator:
+       enabled: true                       # Generate task-specific criteria
+       min_criteria: 4
+       max_criteria: 7
+
+**Why Checklists Matter:**
+
+Without structured evaluation, agents tend to converge prematurely -- voting for "good enough" answers that miss subtle quality gaps. The checklist forces agents to explicitly assess each quality dimension before they can vote, catching blind spots that subjective judgment misses. Combined with ``draft_approach``, this creates a tight feedback loop: diagnose weaknesses, plan fixes, implement, re-evaluate.
+
 Benefits of Multi-Agent Approach
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 

@@ -198,7 +198,7 @@ orchestrator-managed round-evaluator stage:
   parent uses `critique_packet.md` as the diagnostic basis for `submit_checklist`
 - the parent does not run a second full self-evaluation pass; additional
   verification is only for explicit `evidence_gaps`
-- the parent still owns `submit_checklist`, `propose_improvements`, `new_answer`, and `vote`
+- the parent still owns `submit_checklist`, `draft_approach`, `new_answer`, and `vote`
 - generated child YAML for `round_evaluator` always mounts the shared
   temp-workspace root read-only
 - if the evaluator child times out before producing `critique_packet.md`, the

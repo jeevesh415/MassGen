@@ -46,12 +46,19 @@ from .base_with_custom_tool_and_mcp import (
     ToolExecutionConfig,
     UploadFileError,
 )
+from .llm_circuit_breaker import (
+    CircuitBreakerOpenError,
+    LLMCircuitBreaker,
+    LLMCircuitBreakerConfig,
+)
 
 
 class ClaudeBackend(StreamingBufferMixin, CustomToolAndMCPBackend):
     """Claude backend using Anthropic's Messages API with full multi-tool support."""
 
     def __init__(self, api_key: str | None = None, **kwargs):
+        # Extract circuit breaker config before passing to super
+        cb_config = self._build_circuit_breaker_config(kwargs)
         super().__init__(api_key, **kwargs)
         self.api_key = api_key or os.getenv("ANTHROPIC_API_KEY")
         self.search_count = 0  # Track web search usage for pricing
@@ -59,6 +66,27 @@ class ClaudeBackend(StreamingBufferMixin, CustomToolAndMCPBackend):
         self.formatter = ClaudeFormatter()
         self.api_params_handler = ClaudeAPIParamsHandler(self)
         self._uploaded_file_ids: list[str] = []
+        self.circuit_breaker = LLMCircuitBreaker(
+            config=cb_config,
+            backend_name="claude",
+        )
+
+    @staticmethod
+    def _build_circuit_breaker_config(
+        kwargs: dict[str, Any],
+    ) -> LLMCircuitBreakerConfig:
+        """Extract circuit breaker settings from kwargs and build config."""
+        cb_kwargs: dict[str, Any] = {}
+        prefix = "llm_circuit_breaker_"
+        keys_to_pop: list[str] = []
+        for key in kwargs:
+            if key.startswith(prefix):
+                param = key[len(prefix) :]
+                cb_kwargs[param] = kwargs[key]
+                keys_to_pop.append(key)
+        for key in keys_to_pop:
+            kwargs.pop(key)
+        return LLMCircuitBreakerConfig(**cb_kwargs)
 
     def supports_upload_files(self) -> bool:
         """Claude Vision supports inline images; Files API handles PDFs and text docs."""
@@ -289,7 +317,14 @@ class ClaudeBackend(StreamingBufferMixin, CustomToolAndMCPBackend):
                         f"{filename or file_path or url} - {skip_reason}. "
                         f"Only PDF and TXT files are supported.",
                     )
-                    skipped_files.append((msg_idx, item_idx, filename or file_path or url or "unknown", skip_reason))
+                    skipped_files.append(
+                        (
+                            msg_idx,
+                            item_idx,
+                            filename or file_path or url or "unknown",
+                            skip_reason,
+                        ),
+                    )
                     continue
 
                 try:
@@ -378,11 +413,15 @@ class ClaudeBackend(StreamingBufferMixin, CustomToolAndMCPBackend):
                         f"[Agent {agent_id or 'default'}] Failed to upload file via Files API: {upload_error}",
                     )
                     failure_context = filename or filename_hint or file_path or url or "unknown"
-                    failed_uploads.append((msg_idx, item_idx, failure_context, str(upload_error)))
+                    failed_uploads.append(
+                        (msg_idx, item_idx, failure_context, str(upload_error)),
+                    )
                     continue
 
         except Exception as e:
-            logger.warning(f"[Agent {agent_id or 'default'}] Files API upload error: {e}")
+            logger.warning(
+                f"[Agent {agent_id or 'default'}] Files API upload error: {e}",
+            )
             raise UploadFileError(f"Files API upload failed: {e}") from e
         finally:
             if httpx_client:
@@ -453,7 +492,9 @@ class ClaudeBackend(StreamingBufferMixin, CustomToolAndMCPBackend):
             for file_id in self._uploaded_file_ids:
                 try:
                     await client.beta.files.delete(file_id)
-                    logger.debug(f"[Agent {agent_id or 'default'}] Deleted Files API file: {file_id}")
+                    logger.debug(
+                        f"[Agent {agent_id or 'default'}] Deleted Files API file: {file_id}",
+                    )
                 except Exception as delete_error:
                     logger.warning(
                         f"[Agent {agent_id or 'default'}] Failed to delete Files API file {file_id}: {delete_error}",
@@ -464,7 +505,9 @@ class ClaudeBackend(StreamingBufferMixin, CustomToolAndMCPBackend):
             logger.info(f"[Agent {agent_id or 'default'}] Files API cleanup completed")
 
         except Exception as e:
-            logger.warning(f"[Agent {agent_id or 'default'}] Files API cleanup error: {e}")
+            logger.warning(
+                f"[Agent {agent_id or 'default'}] Files API cleanup error: {e}",
+            )
         finally:
             if client and hasattr(client, "aclose"):
                 await client.aclose()  # type: ignore[attr-defined]
@@ -534,13 +577,21 @@ class ClaudeBackend(StreamingBufferMixin, CustomToolAndMCPBackend):
         # Check if we need to upload files via Files API
         if all_params.get("_has_file_search_files"):
             logger.info("Processing Files API uploads...")
-            processed_messages = await self._upload_files_via_files_api(processed_messages, client, agent_id)
+            processed_messages = await self._upload_files_via_files_api(
+                processed_messages,
+                client,
+                agent_id,
+            )
             all_params["_has_files_api_files"] = True
             all_params.pop("_has_file_search_files", None)
 
         self._ensure_no_pending_upload_markers(processed_messages)
 
-        api_params = await self.api_params_handler.build_api_params(processed_messages, tools, all_params)
+        api_params = await self.api_params_handler.build_api_params(
+            processed_messages,
+            tools,
+            all_params,
+        )
 
         if all_params.get("_strict_tool_use_enabled"):
             strict_count = all_params.get("_strict_tool_count", 0)
@@ -592,10 +643,15 @@ class ClaudeBackend(StreamingBufferMixin, CustomToolAndMCPBackend):
                         claude_tool = {
                             "name": func.get("name"),
                             "description": func.get("description", ""),
-                            "input_schema": func.get("parameters", {"type": "object", "properties": {}}),
+                            "input_schema": func.get(
+                                "parameters",
+                                {"type": "object", "properties": {}},
+                            ),
                         }
                         api_params["tools"].append(claude_tool)
-                logger.debug(f"[Claude] Added {len(custom_tool_schemas)} custom tool schemas")
+                logger.debug(
+                    f"[Claude] Added {len(custom_tool_schemas)} custom tool schemas",
+                )
 
         # Start API call timing
         model = api_params.get("model", "unknown")
@@ -608,12 +664,21 @@ class ClaudeBackend(StreamingBufferMixin, CustomToolAndMCPBackend):
             model=model,
             operation="stream",
         ):
-            # Create stream (handle betas)
+            # Create stream (handle betas) with circuit breaker protection
             try:
-                if "betas" in api_params:
-                    stream = await client.beta.messages.create(**api_params)
-                else:
-                    stream = await client.messages.create(**api_params)
+
+                async def _make_api_call():
+                    if "betas" in api_params:
+                        return await client.beta.messages.create(**api_params)
+                    return await client.messages.create(**api_params)
+
+                stream = await self.circuit_breaker.call_with_retry(
+                    _make_api_call,
+                    agent_id=agent_id,
+                )
+            except CircuitBreakerOpenError:
+                self.end_api_call_timing(success=False, error="circuit_breaker_open")
+                raise
             except Exception as e:
                 self.end_api_call_timing(success=False, error=str(e))
                 raise
@@ -806,7 +871,10 @@ class ClaudeBackend(StreamingBufferMixin, CustomToolAndMCPBackend):
         tool_name = call.get("name", "unknown")
         self._append_tool_to_buffer(tool_name, error_msg, is_error=True)
 
-    async def _execute_custom_tool(self, call: dict[str, Any]) -> AsyncGenerator[CustomToolChunk]:
+    async def _execute_custom_tool(
+        self,
+        call: dict[str, Any],
+    ) -> AsyncGenerator[CustomToolChunk]:
         """Execute custom tool with streaming support - async generator for base class.
 
         This method is called by _execute_tool_with_logging and yields CustomToolChunk
@@ -863,7 +931,10 @@ class ClaudeBackend(StreamingBufferMixin, CustomToolAndMCPBackend):
                 kwargs["_programmatic_flow_logged"] = True
 
             # Notify frontend about tool search status
-            if all_params.get("enable_tool_search") and not kwargs.get("_tool_search_logged", False):
+            if all_params.get("enable_tool_search") and not kwargs.get(
+                "_tool_search_logged",
+                False,
+            ):
                 variant = all_params.get("tool_search_variant", "regex")
                 log_stream_chunk(
                     "backend.claude",
@@ -882,15 +953,26 @@ class ClaudeBackend(StreamingBufferMixin, CustomToolAndMCPBackend):
         if all_params.get("_has_file_search_files"):
             logger.info("Processing Files API uploads in MCP mode...")
             agent_id = kwargs.get("agent_id")
-            current_messages = await self._upload_files_via_files_api(current_messages, client, agent_id)
+            current_messages = await self._upload_files_via_files_api(
+                current_messages,
+                client,
+                agent_id,
+            )
             all_params["_has_files_api_files"] = True
             all_params.pop("_has_file_search_files", None)
 
         self._ensure_no_pending_upload_markers(current_messages)
 
-        api_params = await self.api_params_handler.build_api_params(current_messages, tools, all_params)
+        api_params = await self.api_params_handler.build_api_params(
+            current_messages,
+            tools,
+            all_params,
+        )
 
-        if all_params.get("_strict_tool_use_enabled") and not kwargs.get("_strict_tool_use_logged", False):
+        if all_params.get("_strict_tool_use_enabled") and not kwargs.get(
+            "_strict_tool_use_logged",
+            False,
+        ):
             strict_count = all_params.get("_strict_tool_count", 0)
             strict_names = all_params.get("_strict_tool_names", [])
             log_stream_chunk(
@@ -916,12 +998,21 @@ class ClaudeBackend(StreamingBufferMixin, CustomToolAndMCPBackend):
             model=model,
             operation="stream",
         ):
-            # Create stream (handle code execution beta)
+            # Create stream (handle code execution beta) with circuit breaker
             try:
-                if "betas" in api_params:
-                    stream = await client.beta.messages.create(**api_params)
-                else:
-                    stream = await client.messages.create(**api_params)
+
+                async def _make_api_call_ce():
+                    if "betas" in api_params:
+                        return await client.beta.messages.create(**api_params)
+                    return await client.messages.create(**api_params)
+
+                stream = await self.circuit_breaker.call_with_retry(
+                    _make_api_call_ce,
+                    agent_id=agent_id,
+                )
+            except CircuitBreakerOpenError:
+                self.end_api_call_timing(success=False, error="circuit_breaker_open")
+                raise
             except Exception as e:
                 self.end_api_call_timing(success=False, error=str(e))
                 raise
@@ -943,7 +1034,14 @@ class ClaudeBackend(StreamingBufferMixin, CustomToolAndMCPBackend):
                     # Extract input token counts from message_start event
                     if hasattr(event, "message") and hasattr(event.message, "usage"):
                         _input_tokens = getattr(event.message.usage, "input_tokens", 0) or 0
-                        _cache_creation_input_tokens = getattr(event.message.usage, "cache_creation_input_tokens", 0) or 0
+                        _cache_creation_input_tokens = (
+                            getattr(
+                                event.message.usage,
+                                "cache_creation_input_tokens",
+                                0,
+                            )
+                            or 0
+                        )
                         _cache_read_input_tokens = getattr(event.message.usage, "cache_read_input_tokens", 0) or 0
                     continue
                 elif event.type == "content_block_start":
@@ -957,11 +1055,15 @@ class ClaudeBackend(StreamingBufferMixin, CustomToolAndMCPBackend):
                             initial_input = ""
                             if hasattr(event.content_block, "input") and event.content_block.input:
                                 if isinstance(event.content_block.input, dict):
-                                    initial_input = json.dumps(event.content_block.input)
+                                    initial_input = json.dumps(
+                                        event.content_block.input,
+                                    )
                                 else:
                                     initial_input = str(event.content_block.input)
                                 if is_programmatic:
-                                    logger.debug(f"[Programmatic Flow] Tool '{tool_name}' has direct input: {initial_input}")
+                                    logger.debug(
+                                        f"[Programmatic Flow] Tool '{tool_name}' has direct input: {initial_input}",
+                                    )
 
                             current_tool_uses[tool_id] = {
                                 "id": tool_id,
@@ -972,7 +1074,9 @@ class ClaudeBackend(StreamingBufferMixin, CustomToolAndMCPBackend):
                                 "is_programmatic": is_programmatic,
                             }
                             if is_programmatic:
-                                logger.info(f"[Programmatic Flow] Tool '{tool_name}' called from code execution (caller: {caller})")
+                                logger.info(
+                                    f"[Programmatic Flow] Tool '{tool_name}' called from code execution (caller: {caller})",
+                                )
                                 yield StreamChunk(
                                     type="content",
                                     content=f"\n🔄 [Programmatic] Tool '{tool_name}' called from code execution\n",
@@ -999,7 +1103,9 @@ class ClaudeBackend(StreamingBufferMixin, CustomToolAndMCPBackend):
                                 )
                             elif tool_name.startswith("tool_search_tool_"):
                                 variant = "regex" if "regex" in tool_name else "bm25"
-                                logger.debug(f"[Tool Search] Searching for tools (variant: {variant})")
+                                logger.debug(
+                                    f"[Tool Search] Searching for tools (variant: {variant})",
+                                )
                                 yield StreamChunk(
                                     type="content",
                                     content=f"\n🔎 [Tool Search] Searching for tools ({variant})...\n",
@@ -1008,11 +1114,17 @@ class ClaudeBackend(StreamingBufferMixin, CustomToolAndMCPBackend):
                             result_block = event.content_block
                             result_parts = []
                             if hasattr(result_block, "stdout") and result_block.stdout:
-                                result_parts.append(f"Output: {result_block.stdout.strip()}")
+                                result_parts.append(
+                                    f"Output: {result_block.stdout.strip()}",
+                                )
                             if hasattr(result_block, "stderr") and result_block.stderr:
-                                result_parts.append(f"Error: {result_block.stderr.strip()}")
+                                result_parts.append(
+                                    f"Error: {result_block.stderr.strip()}",
+                                )
                             if hasattr(result_block, "return_code") and result_block.return_code != 0:
-                                result_parts.append(f"Exit code: {result_block.return_code}")
+                                result_parts.append(
+                                    f"Exit code: {result_block.return_code}",
+                                )
                             if result_parts:
                                 result_text = f"\n💻 [Code Execution Result]\n{chr(10).join(result_parts)}\n"
                                 yield StreamChunk(type="content", content=result_text)
@@ -1029,25 +1141,41 @@ class ClaudeBackend(StreamingBufferMixin, CustomToolAndMCPBackend):
                                 {"content": text_chunk},
                                 backend_name="claude",
                             )
-                            log_stream_chunk("backend.claude", "content", text_chunk, agent_id)
+                            log_stream_chunk(
+                                "backend.claude",
+                                "content",
+                                text_chunk,
+                                agent_id,
+                            )
                             yield StreamChunk(type="content", content=text_chunk)
                         elif event.delta.type == "thinking_delta":
                             # Handle extended thinking content from Claude models
                             thinking_chunk = event.delta.thinking
                             self._append_reasoning_to_buffer(thinking_chunk)
-                            log_stream_chunk("backend.claude", "reasoning", thinking_chunk, agent_id)
+                            log_stream_chunk(
+                                "backend.claude",
+                                "reasoning",
+                                thinking_chunk,
+                                agent_id,
+                            )
                             yield StreamChunk(type="reasoning", content=thinking_chunk)
                         elif event.delta.type == "input_json_delta":
                             if hasattr(event, "index"):
                                 for tool_id, tool_data in current_tool_uses.items():
                                     if tool_data.get("index") == event.index:
-                                        partial_json = getattr(event.delta, "partial_json", "")
+                                        partial_json = getattr(
+                                            event.delta,
+                                            "partial_json",
+                                            "",
+                                        )
                                         tool_data["input"] += partial_json
                                         break
                 elif event.type == "content_block_stop":
                     if hasattr(event, "index"):
                         for tool_id, tool_data in current_tool_uses.items():
-                            if tool_data.get("index") == event.index and tool_data.get("server_side"):
+                            if tool_data.get("index") == event.index and tool_data.get(
+                                "server_side",
+                            ):
                                 tool_name = tool_data.get("name", "")
                                 tool_input = tool_data.get("input", "")
                                 try:
@@ -1057,7 +1185,10 @@ class ClaudeBackend(StreamingBufferMixin, CustomToolAndMCPBackend):
                                 if tool_name == "code_execution":
                                     code = parsed_input.get("code", "")
                                     if code:
-                                        yield StreamChunk(type="content", content=f"💻 [Code] {code}\n")
+                                        yield StreamChunk(
+                                            type="content",
+                                            content=f"💻 [Code] {code}\n",
+                                        )
                                     yield StreamChunk(
                                         type="content",
                                         content="✅ [Code Execution] Completed\n",
@@ -1182,9 +1313,17 @@ class ClaudeBackend(StreamingBufferMixin, CustomToolAndMCPBackend):
 
                     # Emit non-MCP/non-custom tool calls for the caller to execute
                     if non_mcp_non_custom_tool_calls:
-                        log_stream_chunk("backend.claude", "tool_calls", non_mcp_non_custom_tool_calls, agent_id)
+                        log_stream_chunk(
+                            "backend.claude",
+                            "tool_calls",
+                            non_mcp_non_custom_tool_calls,
+                            agent_id,
+                        )
                         self._append_tool_call_to_buffer(non_mcp_non_custom_tool_calls)
-                        yield StreamChunk(type="tool_calls", tool_calls=non_mcp_non_custom_tool_calls)
+                        yield StreamChunk(
+                            type="tool_calls",
+                            tool_calls=non_mcp_non_custom_tool_calls,
+                        )
                     self.end_api_call_timing(success=True)
                     response_completed = True
                     break
@@ -1297,7 +1436,9 @@ class ClaudeBackend(StreamingBufferMixin, CustomToolAndMCPBackend):
             for call in normalized_custom_calls:
                 handled_via_nlip = False
                 if nlip_available:
-                    logger.info(f"[NLIP] Using NLIP routing for custom tool {call['name']}")
+                    logger.info(
+                        f"[NLIP] Using NLIP routing for custom tool {call['name']}",
+                    )
                     try:
                         async for chunk in self._stream_tool_execution_via_nlip(
                             call,
@@ -1331,7 +1472,9 @@ class ClaudeBackend(StreamingBufferMixin, CustomToolAndMCPBackend):
             for call in normalized_mcp_calls:
                 handled_via_nlip = False
                 if nlip_available:
-                    logger.info(f"[NLIP] Using NLIP routing for MCP tool {call['name']}")
+                    logger.info(
+                        f"[NLIP] Using NLIP routing for MCP tool {call['name']}",
+                    )
                     try:
                         async for chunk in self._stream_tool_execution_via_nlip(
                             call,
@@ -1383,7 +1526,12 @@ class ClaudeBackend(StreamingBufferMixin, CustomToolAndMCPBackend):
 
             updated_messages = self._trim_message_history(updated_messages)
 
-            async for chunk in self._stream_with_custom_and_mcp_tools(updated_messages, tools, client, **kwargs):
+            async for chunk in self._stream_with_custom_and_mcp_tools(
+                updated_messages,
+                tools,
+                client,
+                **kwargs,
+            ):
                 yield chunk
             return
         else:
@@ -1393,8 +1541,16 @@ class ClaudeBackend(StreamingBufferMixin, CustomToolAndMCPBackend):
                 "role": "assistant",
                 "content": content.strip(),
             }
-            log_stream_chunk("backend.claude", "complete_message", complete_message, agent_id)
-            yield StreamChunk(type="complete_message", complete_message=complete_message)
+            log_stream_chunk(
+                "backend.claude",
+                "complete_message",
+                complete_message,
+                agent_id,
+            )
+            yield StreamChunk(
+                type="complete_message",
+                complete_message=complete_message,
+            )
             yield StreamChunk(
                 type="mcp_status",
                 status="mcp_session_complete",
@@ -1425,7 +1581,14 @@ class ClaudeBackend(StreamingBufferMixin, CustomToolAndMCPBackend):
                     # Extract input token counts from message_start event
                     if hasattr(chunk, "message") and hasattr(chunk.message, "usage"):
                         _input_tokens = getattr(chunk.message.usage, "input_tokens", 0) or 0
-                        _cache_creation_input_tokens = getattr(chunk.message.usage, "cache_creation_input_tokens", 0) or 0
+                        _cache_creation_input_tokens = (
+                            getattr(
+                                chunk.message.usage,
+                                "cache_creation_input_tokens",
+                                0,
+                            )
+                            or 0
+                        )
                         _cache_read_input_tokens = getattr(chunk.message.usage, "cache_read_input_tokens", 0) or 0
                     continue
                 elif chunk.type == "content_block_start":
@@ -1439,11 +1602,15 @@ class ClaudeBackend(StreamingBufferMixin, CustomToolAndMCPBackend):
                             initial_input = ""
                             if hasattr(chunk.content_block, "input") and chunk.content_block.input:
                                 if isinstance(chunk.content_block.input, dict):
-                                    initial_input = json.dumps(chunk.content_block.input)
+                                    initial_input = json.dumps(
+                                        chunk.content_block.input,
+                                    )
                                 else:
                                     initial_input = str(chunk.content_block.input)
                                 if is_programmatic:
-                                    logger.debug(f"[Programmatic Flow] Tool '{tool_name}' has direct input: {initial_input}")
+                                    logger.debug(
+                                        f"[Programmatic Flow] Tool '{tool_name}' has direct input: {initial_input}",
+                                    )
 
                             current_tool_uses_local[tool_id] = {
                                 "id": tool_id,
@@ -1454,7 +1621,9 @@ class ClaudeBackend(StreamingBufferMixin, CustomToolAndMCPBackend):
                                 "is_programmatic": is_programmatic,
                             }
                             if is_programmatic:
-                                logger.info(f"[Programmatic Flow] Tool '{tool_name}' called from code execution (caller: {caller})")
+                                logger.info(
+                                    f"[Programmatic Flow] Tool '{tool_name}' called from code execution (caller: {caller})",
+                                )
                                 yield StreamChunk(
                                     type="content",
                                     content=f"\n🔄 [Programmatic] Tool '{tool_name}' called from code execution\n",
@@ -1481,7 +1650,9 @@ class ClaudeBackend(StreamingBufferMixin, CustomToolAndMCPBackend):
                                 )
                             elif tool_name.startswith("tool_search_tool_"):
                                 variant = "regex" if "regex" in tool_name else "bm25"
-                                logger.debug(f"[Tool Search] Searching for tools (variant: {variant})")
+                                logger.debug(
+                                    f"[Tool Search] Searching for tools (variant: {variant})",
+                                )
                                 yield StreamChunk(
                                     type="content",
                                     content=f"\n🔎 [Tool Search] Searching for tools ({variant})...\n",
@@ -1490,11 +1661,17 @@ class ClaudeBackend(StreamingBufferMixin, CustomToolAndMCPBackend):
                             result_block = chunk.content_block
                             result_parts = []
                             if hasattr(result_block, "stdout") and result_block.stdout:
-                                result_parts.append(f"Output: {result_block.stdout.strip()}")
+                                result_parts.append(
+                                    f"Output: {result_block.stdout.strip()}",
+                                )
                             if hasattr(result_block, "stderr") and result_block.stderr:
-                                result_parts.append(f"Error: {result_block.stderr.strip()}")
+                                result_parts.append(
+                                    f"Error: {result_block.stderr.strip()}",
+                                )
                             if hasattr(result_block, "return_code") and result_block.return_code != 0:
-                                result_parts.append(f"Exit code: {result_block.return_code}")
+                                result_parts.append(
+                                    f"Exit code: {result_block.return_code}",
+                                )
                             if result_parts:
                                 result_text = f"\n💻 [Code Execution Result]\n{chr(10).join(result_parts)}\n"
                                 yield StreamChunk(
@@ -1525,7 +1702,12 @@ class ClaudeBackend(StreamingBufferMixin, CustomToolAndMCPBackend):
                             # Handle extended thinking content from Claude models
                             thinking_chunk = chunk.delta.thinking
                             self._append_reasoning_to_buffer(thinking_chunk)
-                            log_stream_chunk("backend.claude", "reasoning", thinking_chunk, agent_id)
+                            log_stream_chunk(
+                                "backend.claude",
+                                "reasoning",
+                                thinking_chunk,
+                                agent_id,
+                            )
                             yield StreamChunk(type="reasoning", content=thinking_chunk)
                         elif chunk.delta.type == "input_json_delta":
                             if hasattr(chunk, "index"):
@@ -1547,7 +1729,9 @@ class ClaudeBackend(StreamingBufferMixin, CustomToolAndMCPBackend):
                             tool_id,
                             tool_data,
                         ) in current_tool_uses_local.items():
-                            if tool_data.get("index") == chunk.index and tool_data.get("server_side"):
+                            if tool_data.get("index") == chunk.index and tool_data.get(
+                                "server_side",
+                            ):
                                 tool_name = tool_data.get("name", "")
                                 tool_input = tool_data.get("input", "")
                                 try:
@@ -1610,7 +1794,10 @@ class ClaudeBackend(StreamingBufferMixin, CustomToolAndMCPBackend):
                     for tool_use in current_tool_uses_local.values():
                         tool_name = tool_use.get("name", "")
                         is_server_side = tool_use.get("server_side", False)
-                        if not is_server_side and tool_name not in ["web_search", "code_execution"]:
+                        if not is_server_side and tool_name not in [
+                            "web_search",
+                            "code_execution",
+                        ]:
                             tool_input = tool_use.get("input", "")
                             try:
                                 parsed_input = json.loads(tool_input) if tool_input else {}
@@ -1690,7 +1877,9 @@ class ClaudeBackend(StreamingBufferMixin, CustomToolAndMCPBackend):
         else:
             log_type, user_message = "mcp_error", "[MCP] Error occurred"
 
-        logger.warning(f"MCP tool call #{call_index_snapshot} failed - {log_type}: {error}")
+        logger.warning(
+            f"MCP tool call #{call_index_snapshot} failed - {log_type}: {error}",
+        )
 
         yield StreamChunk(
             type="content",
@@ -1736,7 +1925,11 @@ class ClaudeBackend(StreamingBufferMixin, CustomToolAndMCPBackend):
             return (result_str, {"error": result_str})
         return (result_str, result_obj)
 
-    def create_tool_result_message(self, tool_call: dict[str, Any], result_content: str) -> dict[str, Any]:
+    def create_tool_result_message(
+        self,
+        tool_call: dict[str, Any],
+        result_content: str,
+    ) -> dict[str, Any]:
         """Create tool result message in Claude's expected format."""
         tool_call_id = self.extract_tool_call_id(tool_call)
         return {
@@ -1776,7 +1969,9 @@ class ClaudeBackend(StreamingBufferMixin, CustomToolAndMCPBackend):
         except ImportError:
             pass  # structured_logging module not available
         except Exception as e:
-            logger.warning(f"Failed to instrument Anthropic client for observability: {e}")
+            logger.warning(
+                f"Failed to instrument Anthropic client for observability: {e}",
+            )
         return client
 
     def get_provider_name(self) -> str:

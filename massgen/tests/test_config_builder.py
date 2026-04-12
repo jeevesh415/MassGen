@@ -10,7 +10,10 @@ These tests ensure:
 Run with: uv run pytest massgen/tests/test_config_builder.py -v
 """
 
+from pathlib import Path
+
 import pytest
+import yaml
 
 from massgen.config_builder import (
     ConfigBuilder,
@@ -500,6 +503,9 @@ class TestQuickstartDecompositionSettings:
         assert orch["fairness_enabled"] is True
         assert orch["fairness_lead_cap_answers"] == 2
         assert orch["max_midstream_injections_per_round"] == 2
+        assert orch["defer_peer_updates_until_restart"] is True
+        assert orch["allow_midstream_peer_updates_before_checklist_submit"] is True
+        assert orch["coordination"]["fast_iteration_mode"] is True
         assert "coordination_mode" not in orch
         assert "presenter_agent" not in orch
         assert "max_new_answers_global" not in orch
@@ -699,6 +705,86 @@ class TestQuickstartConfigPathHelpers:
         assert path == fake_home / ".config" / "massgen" / "global-name.yaml"
 
 
+class TestConfigBuilderAuthDetection:
+    """Test backend availability detection for config generation."""
+
+    @pytest.fixture
+    def builder(self):
+        return ConfigBuilder()
+
+    def test_detect_api_keys_marks_gemini_cli_available_with_cached_login(self, builder, tmp_path, monkeypatch):
+        """Cached Gemini CLI login should count as backend availability."""
+        monkeypatch.delenv("GOOGLE_API_KEY", raising=False)
+        monkeypatch.delenv("GEMINI_API_KEY", raising=False)
+
+        fake_home = tmp_path / "home"
+        gemini_home = fake_home / ".gemini"
+        gemini_home.mkdir(parents=True, exist_ok=True)
+        (gemini_home / "oauth_creds.json").write_text("{}")
+        monkeypatch.setattr(Path, "home", classmethod(lambda cls: fake_home))
+
+        api_keys = builder.detect_api_keys()
+
+        assert api_keys["gemini_cli"] is True
+
+    def test_generate_config_programmatic_allows_gemini_cli_with_cached_login(self, builder, tmp_path, monkeypatch):
+        """Config generation should allow Gemini CLI when cached login exists."""
+        monkeypatch.delenv("GOOGLE_API_KEY", raising=False)
+        monkeypatch.delenv("GEMINI_API_KEY", raising=False)
+
+        fake_home = tmp_path / "home"
+        gemini_home = fake_home / ".gemini"
+        gemini_home.mkdir(parents=True, exist_ok=True)
+        (gemini_home / "google_accounts.json").write_text("{}")
+        monkeypatch.setattr(Path, "home", classmethod(lambda cls: fake_home))
+
+        output_path = tmp_path / "gemini_cli_config.yaml"
+        success = builder.generate_config_programmatic(
+            output_path=str(output_path),
+            num_agents=1,
+            backend_type="gemini_cli",
+            model="gemini-3.1-pro-preview",
+            use_docker=False,
+        )
+
+        assert success is True
+        assert output_path.exists()
+        assert "type: gemini_cli" in output_path.read_text()
+
+    def test_generate_config_programmatic_defaults_to_single_agent(self, builder, tmp_path, monkeypatch):
+        """Programmatic config generation defaults to one agent."""
+        monkeypatch.setattr(builder, "detect_api_keys", lambda: {"openai": True})
+
+        output_path = tmp_path / "default_single_agent.yaml"
+        success = builder.generate_config_programmatic(
+            output_path=str(output_path),
+            backend_type="openai",
+            model="gpt-5.4",
+            use_docker=False,
+        )
+
+        assert success is True
+        config = yaml.safe_load(output_path.read_text())
+        assert len(config["agents"]) == 1
+
+    def test_generate_config_programmatic_honors_explicit_agent_id(self, builder, tmp_path, monkeypatch):
+        """Programmatic config generation should preserve an explicit single-agent id."""
+        monkeypatch.setattr(builder, "detect_api_keys", lambda: {"openai": True})
+
+        output_path = tmp_path / "explicit_agent_id.yaml"
+        success = builder.generate_config_programmatic(
+            output_path=str(output_path),
+            backend_type="openai",
+            model="gpt-5.4",
+            agent_id="agent_a",
+            use_docker=False,
+        )
+
+        assert success is True
+        config = yaml.safe_load(output_path.read_text())
+        assert config["agents"][0]["id"] == "agent_a"
+
+
 class TestHeadlessQuickstartMultiBackend:
     """Test multi-backend headless quickstart support."""
 
@@ -716,6 +802,11 @@ class TestHeadlessQuickstartMultiBackend:
         """Backends not in priority list fall back to provider default."""
         model = builder._resolve_default_model("gemini")
         assert model  # Should find a model from provider info
+
+    def test_resolve_default_model_uses_updated_grok_headless_default(self, builder):
+        """Headless quickstart should use the latest configured Grok default."""
+        model = builder._resolve_default_model("grok")
+        assert model == "grok-4.20-0309-reasoning"
 
     def test_explicit_agent_specs_are_used(self, builder, tmp_path, monkeypatch):
         """Explicit agent specs create one agent per entry."""
@@ -856,6 +947,92 @@ class TestHeadlessQuickstartMultiBackend:
         assert result["backend"] == "claude"
         assert len(generated) == 1
         assert generated[0]["backend"] == "claude"
+
+    def test_exact_output_path_is_honored(self, builder, tmp_path, monkeypatch):
+        """Headless quickstart should write to an exact requested file path."""
+        monkeypatch.setattr(
+            builder,
+            "detect_api_keys",
+            lambda: {"openai": True},
+        )
+
+        generated = []
+        requested_path = tmp_path / "nested" / "custom-headless.yaml"
+
+        def mock_programmatic(output_path, num_agents, backend_type, model, **kwargs):
+            generated.append(
+                {
+                    "output_path": output_path,
+                    "num_agents": num_agents,
+                    "backend_type": backend_type,
+                    "model": model,
+                },
+            )
+            import pathlib
+
+            pathlib.Path(output_path).parent.mkdir(parents=True, exist_ok=True)
+            pathlib.Path(output_path).write_text("agents: []")
+            return True
+
+        monkeypatch.setattr(builder, "generate_config_programmatic", mock_programmatic)
+
+        result = builder.run_quickstart_headless(
+            output_dir=str(tmp_path / ".massgen"),
+            output_path=str(requested_path),
+            backend_override="openai",
+            model_override="gpt-5.4",
+            use_docker=False,
+        )
+
+        assert result["success"]
+        assert result["config_path"] == str(requested_path)
+        assert generated == [
+            {
+                "output_path": str(requested_path),
+                "num_agents": 1,
+                "backend_type": "openai",
+                "model": "gpt-5.4",
+            },
+        ]
+
+    def test_single_backend_explicit_agent_id_is_forwarded(self, builder, tmp_path, monkeypatch):
+        """Headless quickstart should forward an explicit agent id in single-backend mode."""
+        monkeypatch.setattr(
+            builder,
+            "detect_api_keys",
+            lambda: {"openai": True},
+        )
+
+        generated = []
+
+        def mock_programmatic(output_path, num_agents, backend_type, model, **kwargs):
+            generated.append(
+                {
+                    "output_path": output_path,
+                    "num_agents": num_agents,
+                    "backend_type": backend_type,
+                    "model": model,
+                    "agent_id": kwargs.get("agent_id"),
+                },
+            )
+            import pathlib
+
+            pathlib.Path(output_path).parent.mkdir(parents=True, exist_ok=True)
+            pathlib.Path(output_path).write_text("agents: []")
+            return True
+
+        monkeypatch.setattr(builder, "generate_config_programmatic", mock_programmatic)
+
+        result = builder.run_quickstart_headless(
+            output_dir=str(tmp_path / ".massgen"),
+            backend_override="openai",
+            model_override="gpt-5.4",
+            agent_id="agent_a",
+            use_docker=False,
+        )
+
+        assert result["success"]
+        assert generated[0]["agent_id"] == "agent_a"
 
 
 if __name__ == "__main__":

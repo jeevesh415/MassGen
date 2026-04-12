@@ -46,8 +46,12 @@ class TextContentModal(BaseModal):
 class EvaluationCriteriaModal(BaseModal):
     """Modal showing the active evaluation criteria (E1, E2, …) for the current run."""
 
-    # Category badge markup: MUST=red bold, SHOULD=yellow, COULD=green dim
+    # Category badge markup
     _CATEGORY_COLORS: dict[str, str] = {
+        "primary": "[bold magenta]PRIMARY[/]",
+        "standard": "[bold red]STANDARD[/]",
+        "stretch": "[green]STRETCH[/]",
+        # Legacy values for backward compatibility
         "must": "[bold red]MUST[/]",
         "should": "[yellow]SHOULD[/]",
         "could": "[green]COULD[/]",
@@ -77,10 +81,10 @@ class EvaluationCriteriaModal(BaseModal):
             return "[dim]No evaluation criteria loaded.[/]"
         counts: dict[str, int] = {}
         for c in self._criteria:
-            cat = c.get("category", "should").lower()
+            cat = c.get("category", "standard").lower()
             counts[cat] = counts.get(cat, 0) + 1
         parts = []
-        for cat in ("must", "should", "could"):
+        for cat in ("primary", "standard", "stretch", "must", "should", "could"):
             n = counts.get(cat, 0)
             if n:
                 parts.append(f"{n} {cat}")
@@ -92,7 +96,7 @@ class EvaluationCriteriaModal(BaseModal):
         """Return Rich-markup string for a single criterion entry."""
         cid = criterion.get("id", "?")
         text = criterion.get("text", "")
-        category = criterion.get("category", "should")
+        category = criterion.get("category", "standard")
         verify_by = criterion.get("verify_by")
 
         badge = self._category_badge(category)

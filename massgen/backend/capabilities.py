@@ -60,6 +60,7 @@ class Capability(Enum):
     """Enumeration of all possible backend capabilities."""
 
     WEB_SEARCH = "web_search"
+    X_SEARCH = "x_search"
     CODE_EXECUTION = "code_execution"
     BASH = "bash"
     MULTIMODAL = "multimodal"  # Legacy - being phased out
@@ -386,12 +387,15 @@ BACKEND_CAPABILITIES: dict[str, BackendCapabilities] = {
         provider_name="Grok",
         supported_capabilities={
             "web_search",
+            "x_search",
+            "code_execution",
             "mcp",
             "image_understanding",
         },
-        builtin_tools=["web_search"],
+        builtin_tools=["web_search", "x_search", "code_execution"],
         filesystem_support="mcp",
         models=[
+            "grok-4.20-0309-reasoning",
             "grok-4-1-fast-reasoning",
             "grok-4-1-fast-non-reasoning",
             "grok-code-fast-1",
@@ -400,10 +404,11 @@ BACKEND_CAPABILITIES: dict[str, BackendCapabilities] = {
             "grok-3",
             "grok-3-mini",
         ],
-        default_model="grok-4-1-fast-reasoning",
+        default_model="grok-4.20-0309-reasoning",
         env_var="XAI_API_KEY",
-        notes="Web search includes real-time data access. Image understanding capabilities.",
+        notes=("Uses xAI's Responses API tooling surface. " "Supports web_search, x_search, and code execution. " "Legacy Chat Completions search_parameters are not supported."),
         model_release_dates={
+            "grok-4.20-0309-reasoning": "2026-03",
             "grok-4-1-fast-reasoning": "2025-11",
             "grok-4-1-fast-non-reasoning": "2025-11",
             "grok-code-fast-1": "2025-08",
@@ -412,6 +417,7 @@ BACKEND_CAPABILITIES: dict[str, BackendCapabilities] = {
             "grok-3": "2025-02",
             "grok-3-mini": "2025-05",
         },
+        base_url="https://api.x.ai/v1",
     ),
     "azure_openai": BackendCapabilities(
         backend_type="azure_openai",
@@ -721,6 +727,7 @@ AGENT_FRAMEWORK_BACKENDS = frozenset(
         "claude_code",
         "codex",
         "copilot",
+        "gemini_cli",
     },
 )
 
@@ -851,6 +858,14 @@ def validate_backend_config(backend_type: str, config: dict) -> list[str]:
         if "web_search" not in caps.supported_capabilities:
             errors.append(f"{backend_type} does not support web_search")
 
+    if config.get("enable_x_search"):
+        if backend_type != "grok":
+            errors.append(
+                f"enable_x_search is only supported by Grok backend, not {backend_type}",
+            )
+        elif "x_search" not in caps.supported_capabilities:
+            errors.append(f"{backend_type} does not support x_search")
+
     if "enable_code_execution" in config and config["enable_code_execution"]:
         if "code_execution" not in caps.supported_capabilities:
             errors.append(f"{backend_type} does not support code_execution")
@@ -876,6 +891,13 @@ def validate_backend_config(backend_type: str, config: dict) -> list[str]:
     if "mcp_servers" in config and config["mcp_servers"]:
         if "mcp" not in caps.supported_capabilities:
             errors.append(f"{backend_type} does not support MCP")
+
+    if backend_type == "grok":
+        extra_body = config.get("extra_body")
+        if isinstance(extra_body, dict) and "search_parameters" in extra_body:
+            errors.append(
+                "Grok no longer supports extra_body.search_parameters. " "Use enable_web_search and/or enable_x_search instead.",
+            )
 
     # Check for deprecated system prompt parameters (standardized across all backends)
     if "append_system_prompt" in config:

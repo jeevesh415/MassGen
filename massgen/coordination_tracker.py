@@ -59,6 +59,14 @@ class EventType(str, Enum):
     BROADCAST_TIMEOUT = "broadcast_timeout"
     HUMAN_BROADCAST_RESPONSE = "human_broadcast_response"
 
+    # Checkpoint coordination events
+    CHECKPOINT_CALLED = "checkpoint_called"
+    CHECKPOINT_AGENTS_ACTIVATED = "checkpoint_agents_activated"
+    CHECKPOINT_CONSENSUS_REACHED = "checkpoint_consensus_reached"
+    CHECKPOINT_ACTION_EXECUTED = "checkpoint_action_executed"
+    CHECKPOINT_ACTION_FAILED = "checkpoint_action_failed"
+    CHECKPOINT_COMPLETED = "checkpoint_completed"
+
 
 ACTION_TO_EVENT = {
     ActionType.ERROR: EventType.AGENT_ERROR,
@@ -272,6 +280,13 @@ class CoordinationTracker:
         if the agent_id was not registered at session initialization.
         """
         return self._path_tokens.get(agent_id, secrets.token_hex(4))
+
+    def regenerate_path_tokens(self) -> None:
+        """Regenerate anonymous path tokens for all agents.
+
+        Call at round start so tokens can't be correlated across rounds.
+        """
+        self._path_tokens = {agent_id: secrets.token_hex(4) for agent_id in self._path_tokens}
 
     def _get_agent_number(self, agent_id: str) -> int | None:
         """Get the 1-based number for an agent (1, 2, 3, etc.).
@@ -1302,6 +1317,52 @@ class CoordinationTracker:
                     "temp_workspace_parent": orchestrator._agent_temporary_workspace if hasattr(orchestrator, "_agent_temporary_workspace") else None,
                 }
 
+            # Get evaluation criteria if available (inline > generated > preset)
+            eval_criteria_list = None
+            if orchestrator and hasattr(orchestrator, "_get_active_criteria"):
+                try:
+                    texts, categories, _verify_by, _anti, _anchors = orchestrator._get_active_criteria()
+                    if texts and categories:
+                        eval_criteria_list = [
+                            {
+                                "id": cid,
+                                "text": text,
+                                "category": categories.get(cid, "standard"),
+                            }
+                            for cid, text in zip(categories.keys(), texts)
+                        ]
+                except Exception:
+                    pass
+
+            # Get context paths from orchestrator config
+            context_paths_list = None
+            if orchestrator and hasattr(orchestrator, "agents"):
+                for agent in orchestrator.agents.values():
+                    if agent and hasattr(agent, "backend") and agent.backend and hasattr(agent.backend, "config") and "context_paths" in agent.backend.config:
+                        raw = agent.backend.config["context_paths"]
+                        if raw:
+                            context_paths_list = [
+                                {
+                                    "path": cp.get("path", ""),
+                                    "permission": cp.get("permission", "read"),
+                                }
+                                for cp in raw
+                                if isinstance(cp, dict) and cp.get("path")
+                            ]
+                        break  # All agents share the same config
+
+            # Detect docker execution mode from agent backend config
+            docker_enabled = False
+            if orchestrator and hasattr(orchestrator, "agents"):
+                for agent in orchestrator.agents.values():
+                    if agent and hasattr(agent, "backend") and agent.backend and hasattr(agent.backend, "config"):
+                        exec_mode = agent.backend.config.get(
+                            "command_line_execution_mode",
+                            "local",
+                        )
+                        docker_enabled = exec_mode == "docker"
+                        break
+
             # Calculate total costs across all agents
             total_cost = 0.0
             total_input_tokens = 0
@@ -1470,17 +1531,27 @@ class CoordinationTracker:
                     finish_reason = "error"
                     finish_reason_details = f"Agent(s) encountered errors: {', '.join(error_agents)}"
                     is_complete = True
+                # Waiting for user review in WebUI
+                elif getattr(orchestrator, "_review_pending", False):
+                    finish_reason = "waiting_for_review"
+                    finish_reason_details = "User review required in WebUI"
+                    is_complete = False
                 # Still in progress
                 else:
                     finish_reason = "in_progress"
                     finish_reason_details = f"Phase: {phase}"
                     is_complete = False
 
+            _review_pending = bool(
+                orchestrator and getattr(orchestrator, "_review_pending", False),
+            )
+
             status_data = {
                 # IMPORTANT: finish_reason is placed first for visibility
                 "finish_reason": finish_reason,
                 "finish_reason_details": finish_reason_details,
                 "is_complete": is_complete,
+                "review_pending": _review_pending,
                 "meta": {
                     "last_updated": time.time(),
                     "session_id": log_dir.name if log_dir else "",
@@ -1489,6 +1560,9 @@ class CoordinationTracker:
                     "start_time": self.start_time,
                     "elapsed_seconds": round(elapsed, 3),
                     "orchestrator_paths": orchestrator_paths,
+                    "eval_criteria": eval_criteria_list,
+                    "context_paths": context_paths_list,
+                    "docker_enabled": docker_enabled,
                 },
                 "costs": {
                     "total_estimated_cost": round(total_cost, 6),

@@ -237,7 +237,7 @@ def test_round_evaluator_prompt_returns_file_authoritative_critique_and_spec_gui
     assert "verdict.json" in config.system_prompt
     assert "next_tasks.json" in config.system_prompt
     assert "submit_checklist_args" not in config.system_prompt
-    assert "propose_improvements_args" not in config.system_prompt
+    assert "draft_approach_args" not in config.system_prompt
     assert "expected_verdict" not in config.system_prompt
     assert "draft checklist tool arguments" in lower
     assert "predict terminal outcomes" in lower
@@ -262,7 +262,7 @@ def test_round_evaluator_prompt_keeps_parent_workflow_out_of_returned_packet():
     assert "concise summary" in lower
     assert "do not paste the full critique packet into your answer" in lower
     assert "submit_checklist" not in config.system_prompt
-    assert "propose_improvements" not in config.system_prompt
+    assert "draft_approach" not in config.system_prompt
 
 
 def test_round_evaluator_prompt_saves_files_and_concise_answer():
@@ -787,6 +787,122 @@ def test_subagent_section_builder_guidance_not_shown_without_builder():
 
     # Builder delegation guidance should not appear when builder is absent
     assert "for `builder` tasks" not in content.lower()
+
+
+# ── Regression Guard subagent type ──
+
+
+def test_regression_guard_subagent_md_exists():
+    """regression_guard SUBAGENT.md exists and has required frontmatter."""
+    path = Path(__file__).parent.parent / "subagent_types" / "regression_guard" / "SUBAGENT.md"
+    assert path.exists(), "regression_guard/SUBAGENT.md missing"
+    content = path.read_text()
+    assert "name: regression_guard" in content
+    assert "description:" in content
+    assert "expected_input:" in content
+    assert "blind comparator" in content
+
+
+def test_regression_guard_discovered_when_allowed():
+    """regression_guard is found by scanner when explicitly in allowed_types."""
+    from massgen.subagent.type_scanner import scan_subagent_types
+
+    builtin_dir = Path(__file__).parent.parent / "subagent_types"
+    types = scan_subagent_types(
+        builtin_dir=builtin_dir,
+        project_dir=Path("/nonexistent"),
+        allowed_types=["regression_guard"],
+    )
+    names = [t.name for t in types]
+    assert "regression_guard" in names
+
+
+def test_regression_guard_not_in_defaults():
+    """regression_guard is NOT in DEFAULT_SUBAGENT_TYPES (must be explicitly enabled)."""
+    from massgen.subagent.type_scanner import DEFAULT_SUBAGENT_TYPES
+
+    assert "regression_guard" not in DEFAULT_SUBAGENT_TYPES
+
+
+def test_regression_guard_uses_blocking_mode():
+    """regression_guard should use background=False (blocking) in the prompt."""
+    from massgen.subagent.models import SpecializedSubagentConfig
+    from massgen.system_prompt_sections import SubagentSection
+
+    types = [
+        SpecializedSubagentConfig(name="regression_guard", description="Blind comparison"),
+    ]
+    section = SubagentSection("/workspace", max_concurrent=3, specialized_subagents=types)
+    content = section.build_content()
+    assert "background=False" in content
+
+
+def test_regression_guard_inline_guidance_enforces_blindness():
+    """regression_guard inline guidance must tell agent NOT to reveal which is the candidate."""
+    from massgen.subagent.models import SpecializedSubagentConfig
+    from massgen.system_prompt_sections import SubagentSection
+
+    types = [
+        SpecializedSubagentConfig(name="regression_guard", description="Blind comparison"),
+    ]
+    section = SubagentSection("/workspace", max_concurrent=3, specialized_subagents=types)
+    content = section.build_content().lower()
+    assert "do not" in content and "candidate" in content
+    assert "answer a" in content or "answer b" in content
+
+
+def test_regression_guard_specialized_guidance_enforces_blindness():
+    """Specialized guidance must tell agent to NOT reveal candidate identity."""
+    from massgen.subagent.models import SpecializedSubagentConfig
+    from massgen.system_prompt_sections import SubagentSection
+
+    types = [
+        SpecializedSubagentConfig(name="regression_guard", description="Blind comparison"),
+    ]
+    section = SubagentSection("/workspace", max_concurrent=3, specialized_subagents=types)
+    content = section.build_content().lower()
+    assert "for `regression_guard` tasks, explicitly include" in content
+    assert "evaluation criteria verbatim" in content
+    assert "do not reveal" in content
+    assert "comparison must be blind" in content
+
+
+def test_regression_guard_guidance_not_shown_without_type():
+    """regression_guard guidance should not appear when type is absent."""
+    from massgen.subagent.models import SpecializedSubagentConfig
+    from massgen.system_prompt_sections import SubagentSection
+
+    types = [
+        SpecializedSubagentConfig(name="evaluator", description="Checks features"),
+    ]
+    section = SubagentSection("/workspace", max_concurrent=3, specialized_subagents=types)
+    content = section.build_content().lower()
+    assert "for `regression_guard` tasks" not in content
+
+
+def test_regression_guard_phase5_guidance_when_enabled():
+    """Phase 5 should tell agent to label anonymously and not reveal candidate."""
+    from massgen.system_prompt_sections import _build_checklist_gated_decision
+
+    prompt = _build_checklist_gated_decision(
+        checklist_items=["Criterion 1"],
+        regression_guard_enabled=True,
+    )
+    lower = prompt.lower()
+    assert "regression_guard" in lower
+    assert "do not" in lower and "candidate" in lower
+    assert "answer a" in lower and "answer b" in lower
+
+
+def test_regression_guard_phase5_guidance_absent_when_disabled():
+    """Phase 5 should NOT mention regression guard when disabled."""
+    from massgen.system_prompt_sections import _build_checklist_gated_decision
+
+    prompt = _build_checklist_gated_decision(
+        checklist_items=["Criterion 1"],
+        regression_guard_enabled=False,
+    )
+    assert "regression_guard" not in prompt.lower()
 
 
 # ── Test 13-15: EvaluationSection with evaluator subagent ──

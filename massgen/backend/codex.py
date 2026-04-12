@@ -41,7 +41,9 @@ Sandbox Limitations (IMPORTANT):
 - The OS sandbox ONLY restricts WRITES - reads are NOT blocked!
 - This means Codex can read files from anywhere on the filesystem, including
   sensitive directories outside the workspace and context_paths.
-- MassGen's permission hooks cannot intercept Codex's native tool calls.
+- MassGen can add limited Bash-only guardrails via native Codex hooks, but it
+  still cannot fully intercept Codex-native Write/WebSearch/MCP/non-shell tool
+  calls.
 - For security-sensitive workloads, PREFER DOCKER MODE which provides full
   filesystem isolation via container boundaries.
 - When running without Docker, the writable_roots config restricts writes
@@ -63,6 +65,7 @@ import asyncio
 import json
 import os
 import shutil
+import sys
 import time
 import uuid
 from collections.abc import AsyncGenerator, Callable
@@ -142,6 +145,9 @@ class CodexBackend(StreamingBufferMixin, NativeToolBackendMixin, LLMBackend):
         if kwargs.get("command_line_execution_mode") == "docker":
             self._remove_injected_command_line_mcp()
         self.__init_native_tool_mixin__()
+        self._init_native_hook_adapter(
+            "massgen.mcp_tools.native_hook_adapters.CodexNativeHookAdapter",
+        )
 
         # Authentication setup
         self.api_key = api_key or os.getenv("OPENAI_API_KEY")
@@ -189,10 +195,17 @@ class CodexBackend(StreamingBufferMixin, NativeToolBackendMixin, LLMBackend):
         # Tool event tracking (for emit_tool_start/emit_tool_complete)
         self._tool_start_times: dict[str, float] = {}
         self._tool_id_to_name: dict[str, str] = {}
+        self._workflow_call_emitted_this_turn = False
+        self._workflow_mcp_item_ids_emitted: set[str] = set()
 
         # Docker execution mode
         self._docker_execution = kwargs.get("command_line_execution_mode") == "docker"
         self._docker_codex_verified = False
+        adapter = self.get_native_hook_adapter()
+        if adapter and hasattr(adapter, "hook_dir"):
+            adapter.hook_dir = self.get_hook_dir()
+        if adapter and hasattr(adapter, "docker_mode"):
+            adapter.docker_mode = self._docker_execution
 
         # Custom tools: wrap as MCP server for Codex to connect to
         custom_tools = list(kwargs.get("custom_tools", []))
@@ -804,6 +817,11 @@ class CodexBackend(StreamingBufferMixin, NativeToolBackendMixin, LLMBackend):
         config: dict[str, Any] = {}
         config_dir = Path(self.cwd) / ".codex"
         config_dir.mkdir(parents=True, exist_ok=True)
+        adapter = self.get_native_hook_adapter()
+        if adapter and hasattr(adapter, "hook_dir"):
+            adapter.hook_dir = config_dir
+        if adapter and hasattr(adapter, "docker_mode"):
+            adapter.docker_mode = self._docker_execution
 
         # Model settings
         if self.model:
@@ -863,6 +881,8 @@ class CodexBackend(StreamingBufferMixin, NativeToolBackendMixin, LLMBackend):
                 state=self._checklist_state,
                 output_path=specs_path,
             )
+            # Store path so orchestrator can sync state back (e.g. evaluator personas)
+            self._checklist_specs_path = specs_path
             checklist_mcp = build_checklist_config(specs_path, hook_dir=self.get_hook_dir())
             # Replace any previous checklist entry
             self.mcp_servers = [s for s in self.mcp_servers if not (isinstance(s, dict) and s.get("name") == "massgen_checklist")]
@@ -965,9 +985,29 @@ class CodexBackend(StreamingBufferMixin, NativeToolBackendMixin, LLMBackend):
             if self.RUNTIME_INPUT_PRIORITY_GUIDANCE not in full_prompt:
                 full_prompt = f"{full_prompt}\n\n{self.RUNTIME_INPUT_PRIORITY_GUIDANCE}"
             agents_md_path = config_dir / "AGENTS.md"
-            agents_md_path.write_text(full_prompt)
+            agents_md_path.write_text(full_prompt, encoding="utf-8")
             config["model_instructions_file"] = str(agents_md_path)
             logger.info(f"Wrote Codex AGENTS.md: {agents_md_path} ({len(full_prompt)} chars)")
+
+        permission_hooks_config = self._build_permission_hooks_config(config_dir)
+        merged_hooks_config = permission_hooks_config
+        if adapter and self._massgen_hooks_config:
+            merged_hooks_config = adapter.merge_native_configs(
+                permission_hooks_config,
+                self._massgen_hooks_config,
+            )
+        elif self._massgen_hooks_config:
+            merged_hooks_config = self._massgen_hooks_config
+
+        hooks_path = config_dir / "hooks.json"
+        hooks_section = merged_hooks_config.get("hooks", {}) if merged_hooks_config else {}
+        if hooks_section:
+            self._prepare_native_hook_script(config_dir)
+            hooks_path.write_text(json.dumps(merged_hooks_config, indent=2), encoding="utf-8")
+            config.setdefault("features", {})["codex_hooks"] = True
+        else:
+            hooks_path.unlink(missing_ok=True)
+            (config_dir / "codex_hook_script.py").unlink(missing_ok=True)
 
         # Configure sandbox for local (non-Docker) workspace-write mode.
         # Codex OS-level sandbox (Seatbelt on macOS, Landlock on Linux) restricts writes to:
@@ -1021,7 +1061,7 @@ class CodexBackend(StreamingBufferMixin, NativeToolBackendMixin, LLMBackend):
         self._workspace_config_written = True
         # Debug: read back and log the written config
         try:
-            written = config_path.read_text()
+            written = config_path.read_text(encoding="utf-8")
             # Log first 500 chars to see MCP section
             logger.info(f"Codex config.toml written ({len(written)} chars): {written[:800]}")
         except Exception:
@@ -1099,7 +1139,60 @@ class CodexBackend(StreamingBufferMixin, NativeToolBackendMixin, LLMBackend):
                 for k, v in section_val.items():
                     lines.append(f"{k} = {CodexBackend._toml_value(v)}")
                 lines.append("")
-        path.write_text("\n".join(lines) + "\n")
+        path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+    def _build_permission_manifest(self) -> dict[str, Any] | None:
+        """Serialize managed path permissions for the standalone Codex hook script."""
+        fm = getattr(self, "filesystem_manager", None)
+        if fm is None:
+            return None
+
+        ppm = getattr(fm, "path_permission_manager", None)
+        managed_paths = getattr(ppm, "managed_paths", None)
+        if ppm is None or not managed_paths:
+            return None
+
+        return {
+            "version": 1,
+            "workspace": str(Path(self.cwd).resolve()),
+            "managed_paths": [
+                {
+                    "path": str(Path(mp.path).resolve()),
+                    "permission": mp.permission.value,
+                    "path_type": mp.path_type,
+                    "is_file": bool(mp.is_file),
+                    "protected_paths": [str(Path(p).resolve()) for p in (mp.protected_paths or [])],
+                }
+                for mp in managed_paths
+            ],
+        }
+
+    def _prepare_native_hook_script(self, config_dir: Path) -> Path | None:
+        """Copy the standalone Codex hook script into the workspace hook dir."""
+        try:
+            from ..mcp_tools.native_hook_adapters.codex_adapter import (
+                _HOOK_SCRIPT_NAME,
+                _HOOK_SCRIPT_PATH,
+            )
+        except ImportError:
+            logger.warning("Codex native hook adapter not available, skipping hook script copy")
+            return None
+
+        destination = config_dir / _HOOK_SCRIPT_NAME
+        shutil.copy2(_HOOK_SCRIPT_PATH, destination)
+        return destination
+
+    def _native_hook_command(self, config_dir: Path, event_name: str) -> str:
+        """Build the command string Codex should execute for a native hook event."""
+        hook_script_path = config_dir / "codex_hook_script.py"
+        python_exe = "python3" if self._docker_execution else sys.executable
+        return f"{python_exe} {hook_script_path}" f" --hook-dir {config_dir}" f" --event {event_name}"
+
+    def _build_permission_hooks_config(self, config_dir: Path) -> dict[str, Any]:
+        manifest_path = config_dir / "permission_manifest.json"
+        """Codex Bash PreToolUse hooks are disabled; remove any stale manifest."""
+        manifest_path.unlink(missing_ok=True)
+        return {}
 
     def _cleanup_workspace_config(self) -> None:
         """Remove the project-scoped .codex/ directory we created."""
@@ -1108,7 +1201,16 @@ class CodexBackend(StreamingBufferMixin, NativeToolBackendMixin, LLMBackend):
         config_dir = Path(self.cwd) / ".codex"
         try:
             # Remove individual files we created
-            for filename in ("config.toml", "custom_tool_specs.json", "workflow_tool_specs.json", "checklist_specs.json", "AGENTS.md"):
+            for filename in (
+                "config.toml",
+                "custom_tool_specs.json",
+                "workflow_tool_specs.json",
+                "checklist_specs.json",
+                "AGENTS.md",
+                "hooks.json",
+                "permission_manifest.json",
+                "codex_hook_script.py",
+            ):
                 filepath = config_dir / filename
                 if filepath.exists():
                     filepath.unlink()
@@ -1286,6 +1388,38 @@ class CodexBackend(StreamingBufferMixin, NativeToolBackendMixin, LLMBackend):
         cmd.append(prompt)
 
         return cmd
+
+    @staticmethod
+    def _truncate_line(line: str, max_chars: int = 200) -> str:
+        """Truncate long diagnostic lines to keep logs readable."""
+        if len(line) <= max_chars:
+            return line
+        return f"{line[:max_chars]}..."
+
+    @staticmethod
+    def _looks_like_json_event_line(line: str) -> bool:
+        """Return True when a stream line resembles a JSON event object."""
+        stripped = line.lstrip()
+        return stripped.startswith("{") or stripped.startswith("[")
+
+    def _decode_codex_event_line(self, line_str: str) -> dict[str, Any] | None:
+        """Decode one Codex stream line, tolerating plain-text diagnostics.
+
+        Codex occasionally emits non-JSON status or hook error text alongside the
+        JSON event stream. Those lines are useful diagnostics, but they are not
+        protocol parse failures and should not be logged as such.
+        """
+        try:
+            return json.loads(line_str)
+        except json.JSONDecodeError:
+            truncated = self._truncate_line(line_str)
+            if self._looks_like_json_event_line(line_str):
+                logger.warning(f"Failed to parse Codex event: {truncated}")
+            elif "Command blocked by PreToolUse hook" in line_str or "ERROR codex_core::" in line_str:
+                logger.info(f"Codex non-JSON output: {truncated}")
+            else:
+                logger.debug(f"Skipping non-JSON Codex output: {truncated}")
+            return None
 
     def _parse_codex_event(self, event: dict[str, Any]) -> list[StreamChunk]:
         """Parse a Codex JSON event into StreamChunks.
@@ -1554,8 +1688,28 @@ class CodexBackend(StreamingBufferMixin, NativeToolBackendMixin, LLMBackend):
 
             if not is_completed:
                 # item.started (in_progress) — emit tool_start
-                # Skip workflow MCP tools — only the completed result matters
                 if server == "massgen_workflow_tools":
+                    workflow_call = self._build_workflow_tool_call_from_codex_item(
+                        tool_name=tool_name,
+                        arguments=item.get("arguments", {}),
+                        item_id=item_id,
+                    )
+                    if workflow_call:
+                        if self._workflow_call_emitted_this_turn:
+                            logger.info(
+                                "Codex: suppressing additional workflow MCP start " "after first accepted call (%s)",
+                                tool_name,
+                            )
+                            return []
+                        self._workflow_call_emitted_this_turn = True
+                        self._workflow_mcp_item_ids_emitted.add(item_id)
+                        return [
+                            StreamChunk(
+                                type="tool_calls",
+                                tool_calls=[workflow_call],
+                                source="codex",
+                            ),
+                        ]
                     return []
                 if is_background_wait_call:
                     self._active_background_wait_calls.add(item_id)
@@ -1591,8 +1745,24 @@ class CodexBackend(StreamingBufferMixin, NativeToolBackendMixin, LLMBackend):
 
                 # Workflow MCP tools: extract as tool_calls (preserve existing behavior)
                 if server == "massgen_workflow_tools":
+                    if item_id in self._workflow_mcp_item_ids_emitted:
+                        return []
+                    if self._workflow_call_emitted_this_turn:
+                        logger.info(
+                            "Codex: ignoring additional workflow MCP completion " "after first accepted call (%s)",
+                            tool_name,
+                        )
+                        return []
                     workflow_call = self._try_extract_workflow_mcp_result_from_codex(result)
+                    if not workflow_call:
+                        workflow_call = self._build_workflow_tool_call_from_codex_item(
+                            tool_name=tool_name,
+                            arguments=item.get("arguments", {}),
+                            item_id=item_id,
+                        )
                     if workflow_call:
+                        self._workflow_call_emitted_this_turn = True
+                        self._workflow_mcp_item_ids_emitted.add(item_id)
                         return [
                             StreamChunk(
                                 type="tool_calls",
@@ -1603,7 +1773,7 @@ class CodexBackend(StreamingBufferMixin, NativeToolBackendMixin, LLMBackend):
                     return []
 
                 # Non-workflow: emit tool_complete
-                result_str = str(result) if not isinstance(result, str) else result
+                result_str = self._stringify_mcp_result(result)
                 is_error = bool(item.get("error"))
                 if is_error:
                     result_str = f"[Error]: {item.get('error', '')}"
@@ -1848,6 +2018,8 @@ class CodexBackend(StreamingBufferMixin, NativeToolBackendMixin, LLMBackend):
         held_done_chunk = None
         has_workflow = has_workflow_mcp or bool(self._pending_workflow_instructions)
         got_workflow_tool_calls = False
+        self._workflow_call_emitted_this_turn = False
+        self._workflow_mcp_item_ids_emitted.clear()
 
         try:
             stream = self._stream_docker(prompt, resume_session) if self._is_docker_mode else self._stream_local(prompt, resume_session)
@@ -1965,10 +2137,8 @@ class CodexBackend(StreamingBufferMixin, NativeToolBackendMixin, LLMBackend):
                 if line_str is None:
                     break
 
-                try:
-                    event = json.loads(line_str)
-                except json.JSONDecodeError:
-                    logger.warning(f"Failed to parse Codex event: {line_str}")
+                event = self._decode_codex_event_line(line_str)
+                if event is None:
                     continue
 
                 logger.info(f"Codex raw event (docker): {json.dumps(event, default=str)[:500]}")
@@ -2044,10 +2214,8 @@ class CodexBackend(StreamingBufferMixin, NativeToolBackendMixin, LLMBackend):
                 if not line_str:
                     continue
 
-                try:
-                    event = json.loads(line_str)
-                except json.JSONDecodeError:
-                    logger.warning(f"Failed to parse Codex event: {line_str}")
+                event = self._decode_codex_event_line(line_str)
+                if event is None:
                     continue
 
                 logger.info(f"Codex raw event: {json.dumps(event, default=str)[:500]}")
@@ -2122,6 +2290,68 @@ class CodexBackend(StreamingBufferMixin, NativeToolBackendMixin, LLMBackend):
             return extract_workflow_tool_call(parsed)
         except (json.JSONDecodeError, TypeError):
             return None
+
+    @staticmethod
+    def _build_workflow_tool_call_from_codex_item(
+        tool_name: str,
+        arguments: Any,
+        item_id: str,
+    ) -> dict[str, Any] | None:
+        """Build a workflow tool call directly from a Codex MCP item payload."""
+        if not tool_name:
+            return None
+
+        normalized_args = arguments
+        if isinstance(normalized_args, str):
+            try:
+                normalized_args = json.loads(normalized_args)
+            except json.JSONDecodeError:
+                normalized_args = {}
+        if not isinstance(normalized_args, dict):
+            normalized_args = {}
+
+        return {
+            "id": f"call_{item_id}",
+            "type": "function",
+            "function": {
+                "name": tool_name,
+                "arguments": normalized_args,
+            },
+        }
+
+    @staticmethod
+    def _stringify_mcp_result(result: Any) -> str:
+        """Normalize Codex MCP results into a frontend-friendly string payload.
+
+        Codex commonly wraps MCP output in ``{"content": [{"type": "text",
+        "text": "..."}], ...}``. For WebUI consumers, the inner text is the
+        useful payload. For other structured objects, prefer JSON serialization
+        over Python repr so clients can parse planning/custom-tool responses.
+        """
+        if isinstance(result, str):
+            return result
+
+        if isinstance(result, dict):
+            content_list = result.get("content", [])
+            if isinstance(content_list, list):
+                for item in content_list:
+                    if isinstance(item, dict) and item.get("type") == "text":
+                        text = item.get("text")
+                        if isinstance(text, str) and text:
+                            return text
+
+            try:
+                return json.dumps(result, ensure_ascii=False)
+            except (TypeError, ValueError):
+                return str(result)
+
+        if isinstance(result, list):
+            try:
+                return json.dumps(result, ensure_ascii=False)
+            except (TypeError, ValueError):
+                return str(result)
+
+        return str(result)
 
     def get_disallowed_tools(self, config: dict[str, Any]) -> list[str]:
         """Return Codex native tools to disable.
@@ -2204,6 +2434,8 @@ class CodexBackend(StreamingBufferMixin, NativeToolBackendMixin, LLMBackend):
         self._pending_workflow_instructions = ""
         self._tool_start_times.clear()
         self._tool_id_to_name.clear()
+        self._workflow_call_emitted_this_turn = False
+        self._workflow_mcp_item_ids_emitted.clear()
         self._cleanup_workspace_config()
         logger.info("Codex session state reset.")
 

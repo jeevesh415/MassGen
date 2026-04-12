@@ -252,7 +252,7 @@ class TestEvidenceBasedFindings:
         from massgen.system_prompt_sections import _build_checklist_analysis
 
         content = _build_checklist_analysis().lower()
-        assert "foundation" in content
+        assert "fundamental" in content
 
 
 class TestMultimodalToolsSectionUpdated:

@@ -678,12 +678,12 @@ Every analysis report MUST answer these questions:
   - Non-tool time (model/streaming/waiting)
 - Split each checklist-containing round into:
   - **Evaluation** = round start -> first `submit_checklist` start
-  - **Checklist->Propose** = first `submit_checklist` end -> first `propose_improvements` start
-  - **Implementation** = first `propose_improvements` end -> round end
+  - **Checklist->Propose** = first `submit_checklist` end -> first `draft_approach` start
+  - **Implementation** = first `draft_approach` end -> round end
   - **Post-checklist (no propose)** = first `submit_checklist` end -> round end (if no propose happened)
 - Report percentages for **evaluation vs implementation**:
   - Across all checklist-containing segments
-  - Across only segments that actually include `propose_improvements`
+  - Across only segments that actually include `draft_approach`
 
 #### 3. Command Pattern Analysis
 - **Were there frequently repeated commands that could be avoided?** (e.g., `openskills read`, `npm install`, `ls -R`)
@@ -951,7 +951,7 @@ rows = []
 for s in sorted(segments, key=lambda x: (x["agent"], x["start"])):
     calls = sorted(by_segment.get((s["agent"], s["seg_idx"]), []), key=lambda t: t["start_time"])
     submit = [t for t in calls if t["tool_name"] == "mcp__massgen_checklist__submit_checklist"]
-    propose = [t for t in calls if t["tool_name"] == "mcp__massgen_checklist__propose_improvements"]
+    propose = [t for t in calls if t["tool_name"] == "mcp__massgen_checklist__draft_approach"]
 
     # round-level tool wall time
     ints = []
@@ -1065,14 +1065,14 @@ Save this report to `[log_dir]/turn_N/ANALYSIS_REPORT.md` (where N is the turn n
 
 **Phase definitions used in this report:**
 - Evaluation = round start -> first `submit_checklist` start
-- Checklist->Propose = first `submit_checklist` end -> first `propose_improvements` start
-- Implementation = first `propose_improvements` end -> round end
+- Checklist->Propose = first `submit_checklist` end -> first `draft_approach` start
+- Implementation = first `draft_approach` end -> round end
 - Post-checklist (no propose) = first `submit_checklist` end -> round end (if no propose happened)
 
 | Scope | Evaluation (min / %) | Checklist->Propose (min / %) | Implementation (min / %) | Post-checklist no-propose (min / %) |
 |-------|-----------------------|-------------------------------|---------------------------|--------------------------------------|
 | All checklist-containing segments | | | | |
-| Only segments with propose_improvements | | | | |
+| Only segments with draft_approach | | | | |
 
 ### Per-Round Evaluation vs Improvement Table
 | Agent | Segment | Round | Total (min) | Eval pre-checklist (min) | Checklist->Propose (min) | Improve post-propose (min) | Post-checklist no-propose (min) | Eval vs Improve verdict |
@@ -1293,3 +1293,152 @@ WHERE trace_id = '[TRACE_ID]'
   AND attributes->>'massgen.usage.input' IS NOT NULL
 GROUP BY attributes->>'massgen.agent_id'
 ```
+
+## Part 8: Wall-Time Phase Analysis
+
+When analyzing a run for wall-time bottlenecks, break it into phases per round per agent, compute think vs tool exec time, and identify the critical path. This section is reference material for performing that analysis.
+
+### Phase Categories
+
+Every segment of agent work in a round is classified into one of these categories:
+
+| Category | Description | Signals |
+|----------|-------------|---------|
+| THINKING | Model inference with zero tool calls (extended thinking, planning in head) | Long gap before first `tool_start` in a round, no tool calls at all |
+| SCAFFOLD | Project setup ceremony (changedoc, CONTEXT.md, task plans, skill doc reads) | `write_file` for planning docs, `openskills read`, task status updates at round start |
+| BUILD | Creating or rewriting deliverables | `write_file`/`execute_command` for generators, scripts, assets |
+| VERIFY | Inspecting deliverables for correctness | `read_media`, screenshot capture, pixel diffs, file structure checks |
+| FIX | Correcting issues found during verification | Edit/rewrite cycles immediately after a VERIFY block |
+| SCORE | Checklist evaluation and improvement planning | `submit_checklist`, `draft_approach`, diagnostic reports |
+| HANDOFF | End-of-round bookkeeping | Verification memos, essential-files manifests, task status mark-complete |
+| WASTE | Unproductive work (rabbit holes, repeated failures) | 3+ consecutive failures on the same approach, tool crashes, environment issues |
+
+Assign categories by reading `execution_trace.md` or `events.jsonl` and grouping consecutive tool calls by purpose. A block may combine categories (e.g., VERIFY+FIX) when they are tightly interleaved.
+
+### Computing Think Time vs Tool Exec Time from events.jsonl
+
+The primary data source is `events.jsonl` in the attempt directory. Each line is a JSON object with fields: `timestamp` (ISO), `event_type`, `agent_id`, `round_number`, `data`.
+
+**Relevant event types:**
+
+| Event Type | Key `data` Fields | Notes |
+|------------|-------------------|-------|
+| `round_start` | — | Marks beginning of a round for an agent |
+| `round_end` | — | Marks end of a round |
+| `tool_start` | `tool_id`, `tool_name`, `args`, `server_name` | Start of tool execution |
+| `tool_complete` | `tool_id`, `tool_name`, `elapsed_seconds`, `status` | End of tool execution |
+
+**Algorithm:**
+
+1. Filter events by `agent_id` and `round_number`.
+2. Pair `tool_start`/`tool_complete` by `tool_id`.
+3. Compute tool exec time as the union of all `[tool_start.timestamp, tool_complete.timestamp]` intervals (merge overlapping intervals for concurrent/background tools).
+4. Think time = round duration minus tool exec union. This includes model inference, API latency, SDK overhead, and any untracked gaps.
+5. For each phase block (consecutive group of tool calls with the same category), report both think (gaps between tools) and exec (tool durations) separately.
+
+```python
+from datetime import datetime
+from collections import defaultdict
+
+def parse_events(events, agent_id, round_number):
+    """Return tool intervals and round boundaries for one agent-round."""
+    starts = {}  # tool_id -> timestamp
+    intervals = []
+    round_start = round_end = None
+
+    for e in events:
+        if e["agent_id"] != agent_id:
+            continue
+        ts = datetime.fromisoformat(e["timestamp"])
+
+        if e["event_type"] == "round_start" and e["round_number"] == round_number:
+            round_start = ts
+        elif e["event_type"] == "round_end" and e["round_number"] == round_number:
+            round_end = ts
+        elif e["event_type"] == "tool_start" and e["round_number"] == round_number:
+            starts[e["data"]["tool_id"]] = ts
+        elif e["event_type"] == "tool_complete" and e["round_number"] == round_number:
+            tid = e["data"]["tool_id"]
+            if tid in starts:
+                intervals.append((starts[tid], ts, e["data"]["tool_name"]))
+
+    return round_start, round_end, intervals
+
+def compute_think_vs_exec(round_start, round_end, intervals):
+    """Return total think and exec seconds, plus merged exec intervals."""
+    if not round_start or not round_end:
+        return 0, 0
+    # Merge overlapping intervals
+    sorted_iv = sorted((s.timestamp(), e.timestamp()) for s, e, _ in intervals)
+    merged = []
+    for s, e in sorted_iv:
+        if merged and s <= merged[-1][1]:
+            merged[-1] = (merged[-1][0], max(merged[-1][1], e))
+        else:
+            merged.append((s, e))
+    exec_total = sum(e - s for s, e in merged)
+    round_total = (round_end - round_start).total_seconds()
+    return round_total - exec_total, exec_total
+```
+
+### Identifying the Critical Path
+
+The critical-path agent per round is the one whose round takes the longest wall time, since agents run concurrently within a round.
+
+1. For each round, find max(agent round duration). Mark that agent `[CP]`.
+2. Sum the CP agent durations across all rounds plus any blocking pre-round phases (criteria generation, decomposition) to get total critical-path time.
+3. The critical-path breakdown shows where wall time actually goes -- optimizing the non-CP agent is irrelevant unless it becomes the new bottleneck.
+
+**Output table format:**
+
+| Phase | Duration | % of Total |
+|-------|----------|------------|
+| Criteria gen | Xm | X% |
+| Round 0 (agent_b) `[CP]` | Xm | X% |
+| Round 1 (agent_a) `[CP]` | Xm | X% |
+
+### Key Metrics to Extract
+
+**TTFT (Time to First Tool):** Time from `round_start` to the first `tool_start` for that agent in that round. Long TTFT (>2 min) indicates the model is planning in extended thinking before acting. Agents with consistently high TTFT are candidates for prompt changes that encourage incremental tool use.
+
+**bg_wait time:** Total duration of `custom_tool__wait_for_background_tool` calls (pair by `tool_id` in events.jsonl, or sum `elapsed_seconds` from `tool_complete` events where `tool_name` contains `wait_for_background_tool`). This measures time agents spend blocked on async work like `read_media` or `generate_media`.
+
+**Tool call counts by type:** Group `tool_start` events by `tool_name` per agent per round. High counts for planning tools (e.g., 24 task status updates) or repeated failed commands signal overhead worth investigating.
+
+**Per-round cost:** From `metrics_summary.json` or Logfire `massgen.usage.cost` attributes per agent round span.
+
+### Known Data Gaps
+
+| Gap | Impact | What Cannot Be Measured |
+|-----|--------|------------------------|
+| Claude Code backend has no API timing | Cannot split think time into API latency vs model reasoning vs SDK overhead | `claude_code.py` does not call `start_api_call_timing`/`end_api_call_timing`. A 13-minute TTFT is a black box. |
+| Codex tracks 1 API call per round, not per tool call | Cannot decompose thinking gaps between individual tools | TTFT is available at session level only; inter-tool gaps are opaque. |
+| No reasoning vs output generation split | Cannot tell if a long gap is model thinking or generating large output (e.g., 90KB SVG) | Applies to all backends. |
+| read_media / generate_media have no internal timing | Cannot distinguish multimodal model latency from background tool framework overhead | 30-70s waits with no breakdown. |
+| Criteria gen subagent has no per-turn breakdown | Blocking pre-round time with no visibility into internal steps | Only total duration is available. |
+
+When these gaps affect analysis, note them explicitly in the report rather than guessing. Recommend instrumentation fixes (e.g., "add API timing to Claude Code backend") as actionable issues.
+
+### Phase Analysis Report Structure
+
+When producing a wall-time phase analysis, use this structure per round per agent:
+
+```
+### ROUND N -- Xm wall time | $X.XX
+
+#### agent_id (Backend / Model) -- Xm | $X.XX | N tools [CP]
+
+| # | Category | Duration | Think | Exec | Tools | What |
+|---|----------|----------|-------|------|-------|------|
+| 1 | SCAFFOLD | 0.9m | 0.9m | 0.0m | 3 | Create changedoc, task plan |
+| 2 | BUILD | 4.4m | 4.4m | 0.0m | 6 | Write SVG generator |
+| ... | | | | | | |
+| | **Total** | **Xm** | **Xm** | **Xm** | **N** | |
+```
+
+Follow with:
+- **Critical Path Summary** table (which agent is CP per round, total critical-path time)
+- **Category Rollup** (critical-path only: sum time by category across all rounds)
+- **Aggregate Time Breakdown** (model thinking, TTFT, bg_wait, shell commands, other tool exec, unaccounted)
+- **Structural Patterns** (numbered list of key observations: repeated scaffold, infinite-improvement treadmill, waste rabbit holes, etc.)
+- **Actionable Opportunities** ranked by wall-time impact

@@ -639,6 +639,87 @@ async def test_hookless_subagent_delivery_failure_does_not_silently_drop(mock_or
     assert len(remaining) >= 1, "Subagent results must not be permanently dropped on delivery failure"
 
 
+@pytest.mark.asyncio
+async def test_codex_hook_flush_includes_local_subagent_queue(mock_orchestrator, monkeypatch):
+    """Codex hook delivery should flush orchestrator-owned queued subagent results."""
+    from massgen.subagent.models import SubagentResult
+
+    orchestrator = mock_orchestrator(num_agents=1)
+    agent_id = "agent_a"
+    agent = orchestrator.agents[agent_id]
+
+    result = SubagentResult(
+        subagent_id="trace_analyzer_agent_a_r2",
+        status="completed",
+        success=True,
+        answer="Trace analysis completed.\n### DO\n- Run tests now.",
+    )
+    orchestrator._pending_subagent_results[agent_id] = [(result.subagent_id, result)]
+
+    written_payloads: list[str] = []
+    setattr(
+        agent.backend,
+        "write_post_tool_use_hook",
+        lambda content, tool_matcher="*", ttl_seconds=30.0: written_payloads.append(content),
+    )
+
+    async def _fake_get_pending_subagent_results(_aid):
+        return []
+
+    monkeypatch.setattr(
+        orchestrator,
+        "_get_pending_subagent_results_async",
+        _fake_get_pending_subagent_results,
+    )
+    monkeypatch.setattr(
+        "massgen.subagent.result_formatter.format_batch_results",
+        lambda results: ("BACKGROUND SUBAGENT RESULTS\n" f"{results[0][0]} -> {results[0][1].answer}"),
+    )
+
+    await orchestrator._flush_codex_hook_payloads(agent_id, agent, {})
+
+    assert len(written_payloads) == 1
+    assert "BACKGROUND SUBAGENT RESULTS" in written_payloads[0]
+    assert "trace_analyzer_agent_a_r2" in written_payloads[0]
+    assert "Run tests now" in written_payloads[0]
+    assert orchestrator._pending_subagent_results.get(agent_id) in (None, [])
+
+
+def test_setup_hook_manager_for_codex_hybrid_sets_native_and_mcp(mock_orchestrator, tmp_path: Path):
+    """Codex hybrid setup should configure native Bash hooks without losing MCP delivery."""
+    from massgen.mcp_tools.native_hook_adapters.codex_adapter import (
+        CodexNativeHookAdapter,
+    )
+
+    orchestrator = mock_orchestrator(num_agents=1)
+    agent_id = "agent_a"
+    agent = orchestrator.agents[agent_id]
+
+    captured: dict[str, object] = {}
+    adapter = CodexNativeHookAdapter(hook_dir=tmp_path / ".codex")
+
+    agent.backend._provider_name = "codex"
+    agent.backend.supports_native_hooks = lambda: True
+    agent.backend.supports_mcp_server_hooks = lambda: True
+    agent.backend.get_native_hook_adapter = lambda: adapter
+    agent.backend.set_native_hooks_config = lambda config: captured.setdefault("native_config", config)
+    agent.backend.set_background_wait_interrupt_provider = lambda provider: captured.setdefault(
+        "wait_provider",
+        provider,
+    )
+
+    orchestrator._setup_hook_manager_for_agent(agent_id, agent, {})
+
+    native_config = captured.get("native_config")
+    assert isinstance(native_config, dict)
+    assert "hooks" in native_config
+    assert "PreToolUse" not in native_config["hooks"]
+    assert "PostToolUse" in native_config["hooks"]
+    assert native_config["hooks"]["PostToolUse"][0]["matcher"] == "Bash"
+    assert agent_id in orchestrator._codex_mcp_hook_agents
+    assert callable(captured.get("wait_provider"))
+
+
 # =============================================================================
 # Hookless delivery event emissions (MAS-308)
 # =============================================================================

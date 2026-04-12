@@ -532,7 +532,7 @@ export function HeaderControls({
 
       {/* Quickstart Wizard */}
       <button
-        onClick={openWizard}
+        onClick={() => openWizard()}
         className="flex items-center gap-1.5 px-2.5 py-1.5 bg-gradient-to-r from-blue-500 to-purple-500
                  hover:from-blue-600 hover:to-purple-600 rounded-lg text-sm text-white transition-all"
         title="Open Quickstart Wizard"

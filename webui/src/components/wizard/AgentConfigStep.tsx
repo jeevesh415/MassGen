@@ -2,12 +2,13 @@
  * Agent Config Step Component
  *
  * Fourth step - configure provider and model for each agent.
- * Full-page scrollable layout with large, visible cards for easy selection.
+ * Compact layout: agent tabs show inline selection, provider/model columns
+ * fill all available vertical space, options integrated at bottom of model column.
  */
 
-import { useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { motion } from 'framer-motion';
-import { Bot, AlertCircle, Check, Search, Sparkles, X, Globe, Code, MessageSquare } from 'lucide-react';
+import { Bot, AlertCircle, Check, Search, Sparkles, X, Globe } from 'lucide-react';
 import { useWizardStore, ProviderInfo, ProviderCapabilities, ReasoningEffort } from '../../stores/wizardStore';
 import {
   buildQuickstartReasoningProfileKey,
@@ -22,7 +23,7 @@ interface ProviderCardProps {
   disabled?: boolean;
 }
 
-const AGENT_FRAMEWORK_PROVIDER_IDS = new Set(['claude_code', 'codex', 'copilot']);
+const AGENT_FRAMEWORK_PROVIDER_IDS = new Set(['claude_code', 'codex', 'copilot', 'gemini_cli']);
 
 function isAgentFrameworkProvider(provider: ProviderInfo): boolean {
   return provider.is_agent_framework || AGENT_FRAMEWORK_PROVIDER_IDS.has(provider.id);
@@ -35,38 +36,37 @@ function ProviderCard({ provider, isSelected, onSelect, disabled }: ProviderCard
     <button
       onClick={onSelect}
       disabled={disabled}
-      className={`w-full p-4 rounded-xl border-2 text-left transition-all ${
+      className={`w-full px-3 py-2.5 text-left transition-all ${
         disabled
-          ? 'opacity-50 cursor-not-allowed border-gray-300 dark:border-gray-700 bg-gray-100 dark:bg-gray-800/50'
+          ? 'opacity-50 cursor-not-allowed'
           : isSelected
-          ? 'border-blue-500 bg-blue-50 dark:bg-blue-900/30 ring-2 ring-blue-500/20'
-          : 'border-gray-200 dark:border-gray-700 hover:border-blue-300 dark:hover:border-blue-600 hover:bg-gray-50 dark:hover:bg-gray-800'
+          ? 'bg-indigo-50 dark:bg-indigo-900/20'
+          : 'hover:bg-gray-50 dark:hover:bg-gray-800/60'
       }`}
     >
-      <div className="flex items-start justify-between">
+      <div className="flex items-center justify-between">
         <div className="flex items-center gap-2">
-          <div className="font-semibold text-gray-800 dark:text-gray-200">
+          <span className="text-sm font-medium text-gray-800 dark:text-gray-200">
             {provider.name}
-          </div>
+          </span>
           {isAgentFramework && (
-            <div className="inline-flex items-center gap-1 rounded-full bg-amber-100 px-2 py-0.5 text-xs font-medium text-amber-800 dark:bg-amber-900/40 dark:text-amber-200">
-              <Bot className="h-3 w-3" />
+            <span className="inline-flex items-center gap-0.5 rounded-full bg-amber-100 px-1.5 py-0.5 text-[10px] font-medium text-amber-800 dark:bg-amber-900/40 dark:text-amber-200">
+              <Bot className="h-2.5 w-2.5" />
               Agent
-            </div>
+            </span>
+          )}
+          {disabled && (
+            <span className="text-[10px] text-red-500">
+              Needs {provider.env_var}
+            </span>
           )}
         </div>
         {isSelected && (
-          <div className="flex-shrink-0 w-6 h-6 bg-blue-500 rounded-full flex items-center justify-center">
-            <Check className="w-4 h-4 text-white" />
+          <div className="flex-shrink-0 w-5 h-5 bg-indigo-500 rounded-full flex items-center justify-center">
+            <Check className="w-3 h-3 text-white" />
           </div>
         )}
       </div>
-
-      {disabled && (
-        <div className="mt-1 text-xs text-red-500">
-          Needs {provider.env_var}
-        </div>
-      )}
     </button>
   );
 }
@@ -82,27 +82,27 @@ function ModelCard({ model, isSelected, isDefault, onSelect }: ModelCardProps) {
   return (
     <button
       onClick={onSelect}
-      className={`w-full p-3 rounded-lg border-2 text-left transition-all ${
+      className={`w-full px-3 py-2 text-left transition-all ${
         isSelected
-          ? 'border-green-500 bg-green-50 dark:bg-green-900/30 ring-2 ring-green-500/20'
-          : 'border-gray-200 dark:border-gray-700 hover:border-green-300 dark:hover:border-green-600 hover:bg-gray-50 dark:hover:bg-gray-800'
+          ? 'bg-emerald-50 dark:bg-emerald-900/20'
+          : 'hover:bg-gray-50 dark:hover:bg-gray-800/60'
       }`}
     >
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-2">
-          <span className="font-medium text-gray-800 dark:text-gray-200 text-sm">
+          <span className="text-[13px] font-mono text-gray-700 dark:text-gray-300">
             {model}
           </span>
           {isDefault && (
-            <span className="inline-flex items-center gap-1 text-xs px-2 py-0.5 bg-green-100 dark:bg-green-900/40 text-green-700 dark:text-green-300 rounded-full">
-              <Sparkles className="w-3 h-3" />
+            <span className="inline-flex items-center gap-0.5 text-[10px] px-1.5 py-0.5 bg-green-100 dark:bg-green-900/40 text-green-700 dark:text-green-300 rounded-full">
+              <Sparkles className="w-2.5 h-2.5" />
               Recommended
             </span>
           )}
         </div>
         {isSelected && (
-          <div className="flex-shrink-0 w-5 h-5 bg-green-500 rounded-full flex items-center justify-center">
-            <Check className="w-3 h-3 text-white" />
+          <div className="flex-shrink-0 w-4 h-4 bg-green-500 rounded-full flex items-center justify-center">
+            <Check className="w-2.5 h-2.5 text-white" />
           </div>
         )}
       </div>
@@ -111,38 +111,9 @@ function ModelCard({ model, isSelected, isDefault, onSelect }: ModelCardProps) {
 }
 
 // Per-agent option toggle component
-interface OptionToggleProps {
-  enabled: boolean;
-  onChange: (enabled: boolean) => void;
-  icon: React.ReactNode;
-  label: string;
-  description?: string;
-}
-
-function OptionToggle({ enabled, onChange, icon, label, description }: OptionToggleProps) {
-  return (
-    <label className="flex items-center justify-between p-3 bg-gray-50 dark:bg-gray-800/50 rounded-lg cursor-pointer hover:bg-gray-100 dark:hover:bg-gray-800 transition-colors">
-      <div className="flex items-center gap-3">
-        <div className="text-gray-500 dark:text-gray-400">{icon}</div>
-        <div>
-          <span className="text-sm font-medium text-gray-700 dark:text-gray-300">{label}</span>
-          {description && (
-            <p className="text-xs text-gray-500 dark:text-gray-400">{description}</p>
-          )}
-        </div>
-      </div>
-      <div className="relative">
-        <input
-          type="checkbox"
-          checked={enabled}
-          onChange={(e) => onChange(e.target.checked)}
-          className="sr-only peer"
-        />
-        <div className="w-10 h-6 bg-gray-200 dark:bg-gray-700 rounded-full peer-checked:bg-blue-500 transition-colors" />
-        <div className="absolute top-0.5 left-0.5 w-5 h-5 bg-white rounded-full shadow peer-checked:translate-x-4 transition-transform" />
-      </div>
-    </label>
-  );
+/** Truncate a string to maxLen chars, appending ellipsis if needed. */
+function truncate(s: string, maxLen: number): string {
+  return s.length <= maxLen ? s : s.slice(0, maxLen - 1) + '\u2026';
 }
 
 export function AgentConfigStep() {
@@ -155,8 +126,6 @@ export function AgentConfigStep() {
   const setAgentReasoningEffort = useWizardStore((s) => s.setAgentReasoningEffort);
   const setAllAgentsReasoningEffort = useWizardStore((s) => s.setAllAgentsReasoningEffort);
   const setAgentWebSearch = useWizardStore((s) => s.setAgentWebSearch);
-  const setAgentCodeExecution = useWizardStore((s) => s.setAgentCodeExecution);
-  const setAgentSystemMessage = useWizardStore((s) => s.setAgentSystemMessage);
   const dynamicModels = useWizardStore((s) => s.dynamicModels);
   const loadingModels = useWizardStore((s) => s.loadingModels);
   const fetchDynamicModels = useWizardStore((s) => s.fetchDynamicModels);
@@ -172,10 +141,8 @@ export function AgentConfigStep() {
   const [loadingReasoningProfile, setLoadingReasoningProfile] = useState(false);
   const lastAppliedReasoningProfileKeysRef = useRef<Record<string, string | null | undefined>>({});
 
+
   // System message mode for "same" setup mode: 'skip' | 'same' | 'different'
-  const [systemMessageMode, setSystemMessageMode] = useState<'skip' | 'same' | 'different'>('skip');
-  // Track which agent we're editing system message for (in 'different' mode)
-  const [editingSystemMsgAgent, setEditingSystemMsgAgent] = useState<number | null>(null);
 
   // For multi-agent different config, track which agent we're configuring
   const [activeAgentIndex, setActiveAgentIndex] = useState(0);
@@ -289,6 +256,28 @@ export function AgentConfigStep() {
     setupMode,
   ]);
 
+  // Keyboard shortcut: press A/B/C etc. to switch agents (when in 'different' mode)
+  const handleAgentKeySwitch = useCallback(
+    (e: KeyboardEvent) => {
+      if (setupMode !== 'different' || agents.length <= 1) return;
+      // Don't trigger when typing in inputs/textareas
+      const tag = (e.target as HTMLElement)?.tagName?.toLowerCase();
+      if (tag === 'input' || tag === 'textarea' || tag === 'select') return;
+
+      const key = e.key.toLowerCase();
+      const letterIndex = key.charCodeAt(0) - 'a'.charCodeAt(0);
+      if (letterIndex >= 0 && letterIndex < agents.length) {
+        setActiveAgentIndex(letterIndex);
+      }
+    },
+    [setupMode, agents.length],
+  );
+
+  useEffect(() => {
+    window.addEventListener('keydown', handleAgentKeySwitch);
+    return () => window.removeEventListener('keydown', handleAgentKeySwitch);
+  }, [handleAgentKeySwitch]);
+
   // Get current provider's capabilities
   const currentCapabilities: ProviderCapabilities | null = currentAgent?.provider
     ? providerCapabilities[currentAgent.provider] || null
@@ -347,58 +336,12 @@ export function AgentConfigStep() {
     }
   };
 
-  // Handle code execution toggle
-  const handleCodeExecutionToggle = (enabled: boolean) => {
-    if (setupMode === 'same') {
-      // Update all agents
-      agents.forEach((_, index) => {
-        setAgentCodeExecution(index, enabled);
-      });
-    } else {
-      setAgentCodeExecution(activeAgentIndex, enabled);
-    }
-  };
-
   const handleReasoningEffortChange = (value: string) => {
     const normalized = value === '' ? undefined : value as ReasoningEffort;
     if (setupMode === 'same') {
       setAllAgentsReasoningEffort(normalized);
     } else {
       setAgentReasoningEffort(activeAgentIndex, normalized);
-    }
-  };
-
-  // Handle system message change
-  const handleSystemMessageChange = (message: string, agentIndex?: number) => {
-    if (setupMode === 'same') {
-      if (systemMessageMode === 'same') {
-        // Update all agents with same message
-        agents.forEach((_, index) => {
-          setAgentSystemMessage(index, message);
-        });
-      } else if (systemMessageMode === 'different' && agentIndex !== undefined) {
-        // Update only the specific agent
-        setAgentSystemMessage(agentIndex, message);
-      }
-    } else {
-      setAgentSystemMessage(activeAgentIndex, message);
-    }
-  };
-
-  // Handle system message mode change
-  const handleSystemMessageModeChange = (mode: 'skip' | 'same' | 'different') => {
-    setSystemMessageMode(mode);
-    if (mode === 'skip') {
-      // Clear all system messages
-      agents.forEach((_, index) => {
-        setAgentSystemMessage(index, '');
-      });
-      setEditingSystemMsgAgent(null);
-    } else if (mode === 'same') {
-      setEditingSystemMsgAgent(null);
-    } else if (mode === 'different') {
-      // Start editing first agent
-      setEditingSystemMsgAgent(0);
     }
   };
 
@@ -411,6 +354,83 @@ export function AgentConfigStep() {
     }
   };
 
+  // Determine whether the options section has any content to show
+  const hasOptions = currentAgent?.model && (
+    reasoningProfile ||
+    loadingReasoningProfile ||
+    isLoadingCapabilities ||
+    currentCapabilities?.supports_web_search ||
+    (!useDocker && currentCapabilities?.supports_code_execution)
+  );
+
+  // Render options inline below the selected model
+  const renderInlineOptions = () => (
+    <div className="mt-1 ml-1 pl-3 border-l-2 border-blue-500/30 space-y-1.5 py-1.5">
+      {isLoadingCapabilities ? (
+        <div className="flex items-center gap-2 text-gray-400 text-xs p-1">
+          <div className="w-3 h-3 border-2 border-gray-300 border-t-transparent rounded-full animate-spin" />
+          <span>Loading options...</span>
+        </div>
+      ) : (
+        <>
+          {loadingReasoningProfile && currentAgent?.model && (
+            <div className="flex items-center gap-2 text-gray-400 text-xs">
+              <div className="w-3 h-3 border-2 border-gray-300 border-t-transparent rounded-full animate-spin" />
+              <span>Loading reasoning options...</span>
+            </div>
+          )}
+
+          {reasoningProfile && (
+            <div className="flex items-center gap-2">
+              <Sparkles className="w-3 h-3 text-gray-500 flex-shrink-0" />
+              <span className="text-[11px] text-gray-500 flex-shrink-0">Reasoning</span>
+              <select
+                value={currentAgent?.reasoning_effort ?? reasoningProfile.default_effort}
+                onChange={(e) => handleReasoningEffortChange(e.target.value)}
+                className="flex-1 px-1.5 py-0.5 bg-white dark:bg-gray-900 border border-gray-300 dark:border-gray-600
+                         rounded text-gray-800 dark:text-gray-200 text-[11px]
+                         focus:outline-none focus:ring-1 focus:ring-blue-500"
+              >
+                {reasoningProfile.choices.map(([label, value]) => (
+                  <option key={value} value={value}>{label}</option>
+                ))}
+              </select>
+            </div>
+          )}
+
+          {currentCapabilities?.supports_web_search && (
+            <div className="flex items-center gap-2">
+              <Globe className="w-3 h-3 text-gray-500 flex-shrink-0" />
+              <span className="text-[11px] text-gray-500">Web Search</span>
+              <button
+                onClick={() => handleWebSearchToggle(!(currentAgent?.enable_web_search ?? false))}
+                className={`ml-auto relative w-7 h-4 rounded-full transition-colors ${
+                  currentAgent?.enable_web_search ? 'bg-blue-500' : 'bg-gray-300 dark:bg-gray-600'
+                }`}
+              >
+                <div className={`absolute top-0.5 w-3 h-3 rounded-full bg-white transition-transform ${
+                  currentAgent?.enable_web_search ? 'translate-x-3.5' : 'translate-x-0.5'
+                }`} />
+              </button>
+            </div>
+          )}
+        </>
+      )}
+    </div>
+  );
+
+  // Build agent tab label: "A: Provider / model" or "A: unconfigured"
+  const buildAgentTabLabel = (agent: typeof agents[0]) => {
+    const letter = agent.id.replace('agent_', '').toUpperCase();
+    if (!agent.provider || !agent.model) {
+      return `${letter}: unconfigured`;
+    }
+    const prov = providers.find((p) => p.id === agent.provider);
+    const provName = prov ? truncate(prov.name, 14) : agent.provider;
+    const modelName = truncate(agent.model, 16);
+    return `${letter}: ${provName} / ${modelName}`;
+  };
+
   if (availableProviders.length === 0) {
     return (
       <motion.div
@@ -419,20 +439,20 @@ export function AgentConfigStep() {
         exit={{ opacity: 0, x: -20 }}
         className="space-y-6"
       >
-        <div className="bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-800 rounded-lg p-6">
-          <div className="flex items-center gap-3 mb-3">
-            <AlertCircle className="w-6 h-6 text-amber-500" />
-            <h3 className="text-lg font-semibold text-amber-700 dark:text-amber-400">
+        <div className="bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-800 rounded-lg p-4">
+          <div className="flex items-center gap-2 mb-2">
+            <AlertCircle className="w-5 h-5 text-amber-500" />
+            <h3 className="text-base font-semibold text-amber-700 dark:text-amber-400">
               No API Keys Found
             </h3>
           </div>
-          <p className="text-sm text-amber-600 dark:text-amber-400 mb-4">
-            Please set up API keys for at least one provider. You can do this by:
+          <p className="text-sm text-amber-600 dark:text-amber-400 mb-2">
+            Set up API keys for at least one provider:
           </p>
-          <ul className="text-sm text-amber-600 dark:text-amber-400 list-disc list-inside space-y-1">
-            <li>Setting environment variables (e.g., OPENAI_API_KEY)</li>
-            <li>Running <code className="bg-amber-100 dark:bg-amber-900/40 px-1 rounded">massgen --setup</code> in terminal</li>
-            <li>Creating a <code className="bg-amber-100 dark:bg-amber-900/40 px-1 rounded">~/.massgen/.env</code> file</li>
+          <ul className="text-xs text-amber-600 dark:text-amber-400 list-disc list-inside space-y-0.5">
+            <li>Set environment variables (e.g., OPENAI_API_KEY)</li>
+            <li>Run <code className="bg-amber-100 dark:bg-amber-900/40 px-1 rounded">massgen --setup</code></li>
+            <li>Create <code className="bg-amber-100 dark:bg-amber-900/40 px-1 rounded">~/.massgen/.env</code></li>
           </ul>
         </div>
       </motion.div>
@@ -444,139 +464,90 @@ export function AgentConfigStep() {
       initial={{ opacity: 0, x: 20 }}
       animate={{ opacity: 1, x: 0 }}
       exit={{ opacity: 0, x: -20 }}
-      className="space-y-6"
+      className="flex-1 flex flex-col min-h-0 gap-2"
     >
-      {/* Header */}
-      <div>
-        <h2 className="text-xl font-semibold text-gray-800 dark:text-gray-200 mb-2">
-          {setupMode === 'same' ? 'Configure All Agents' : 'Configure Each Agent'}
-        </h2>
-        <p className="text-sm text-gray-600 dark:text-gray-400">
-          {setupMode === 'same'
-            ? `All ${agents.length} agents will use the same provider and model.`
-            : 'Select a provider and model for each agent.'}
-        </p>
+      {/* Compact agent tabs bar */}
+      <div className="flex items-center gap-2 flex-wrap">
+        {setupMode === 'different' && agents.length > 1 ? (
+          <>
+            {agents.map((agent, index) => {
+              const isConfigured = !!(agent.provider && agent.model);
+              return (
+                <button
+                  key={agent.id}
+                  onClick={() => setActiveAgentIndex(index)}
+                  className={`px-2.5 py-1 rounded-md font-medium text-xs transition-all flex items-center gap-1 whitespace-nowrap ${
+                    activeAgentIndex === index
+                      ? 'bg-blue-500 text-white'
+                      : isConfigured
+                      ? 'bg-green-50 dark:bg-green-900/20 text-green-700 dark:text-green-300 border border-green-300 dark:border-green-700'
+                      : 'bg-gray-100 dark:bg-gray-800 text-gray-600 dark:text-gray-400 border border-gray-300 dark:border-gray-700'
+                  }`}
+                >
+                  {buildAgentTabLabel(agent)}
+                  {isConfigured && activeAgentIndex !== index && (
+                    <Check className="w-3 h-3 flex-shrink-0" />
+                  )}
+                </button>
+              );
+            })}
+            <span className="text-[10px] text-gray-400 dark:text-gray-500 ml-1">
+              Press {agents.map((_, i) => String.fromCharCode(65 + i)).join('/')}
+            </span>
+          </>
+        ) : (
+          <div className="flex items-center gap-2">
+            <span className="text-sm font-semibold text-gray-800 dark:text-gray-200">
+              {setupMode === 'same'
+                ? `All ${agents.length} agents`
+                : 'Configure agent'}
+            </span>
+            {currentAgent?.provider && currentAgent?.model && (
+              <span className="text-xs text-gray-500 dark:text-gray-400">
+                {selectedProvider?.name || currentAgent.provider} / {currentAgent.model}
+              </span>
+            )}
+          </div>
+        )}
       </div>
 
-      {/* Agent tabs for different config mode */}
-      {setupMode === 'different' && agents.length > 1 && (
-        <div className="flex gap-2 flex-wrap">
-          {agents.map((agent, index) => {
-            const letter = agent.id.replace('agent_', '').toUpperCase();
-            const isConfigured = agent.provider && agent.model;
-            return (
-              <button
-                key={agent.id}
-                onClick={() => setActiveAgentIndex(index)}
-                className={`px-4 py-2 rounded-lg font-medium text-sm transition-all flex items-center gap-2 ${
-                  activeAgentIndex === index
-                    ? 'bg-blue-500 text-white'
-                    : isConfigured
-                    ? 'bg-green-100 dark:bg-green-900/30 text-green-700 dark:text-green-300 border border-green-300 dark:border-green-700'
-                    : 'bg-gray-100 dark:bg-gray-800 text-gray-700 dark:text-gray-300 border border-gray-300 dark:border-gray-700'
-                }`}
-              >
-                <Bot className="w-4 h-4" />
-                Agent {letter}
-                {isConfigured && activeAgentIndex !== index && (
-                  <Check className="w-4 h-4" />
-                )}
-              </button>
-            );
-          })}
-        </div>
-      )}
-
-      {/* Current selection summary */}
-      {currentAgent?.provider && (
-        <div className="bg-gray-100 dark:bg-gray-800 rounded-lg p-4 flex items-center justify-between">
-          <div className="flex items-center gap-3">
-            <Bot className="w-5 h-5 text-blue-500" />
-            <div>
-              <span className="text-sm text-gray-500 dark:text-gray-400">Current selection: </span>
-              <span className="font-medium text-gray-800 dark:text-gray-200">
-                {selectedProvider?.name || currentAgent.provider}
-              </span>
-              {currentAgent.model && (
-                <>
-                  <span className="text-gray-400 mx-2">/</span>
-                  <span className="font-medium text-green-600 dark:text-green-400">
-                    {currentAgent.model}
-                  </span>
-                </>
-              )}
-              {currentAgent.enable_web_search && (
-                <span className="ml-2 inline-flex items-center gap-1 text-xs px-2 py-0.5 bg-blue-100 dark:bg-blue-900/40 text-blue-700 dark:text-blue-300 rounded-full">
-                  <Globe className="w-3 h-3" />
-                  Web Search
-                </span>
-              )}
-              {currentAgent.enable_code_execution && (
-                <span className="ml-2 inline-flex items-center gap-1 text-xs px-2 py-0.5 bg-purple-100 dark:bg-purple-900/40 text-purple-700 dark:text-purple-300 rounded-full">
-                  <Code className="w-3 h-3" />
-                  Code Execution
-                </span>
-              )}
-              {currentAgent.system_message && (
-                <span className="ml-2 inline-flex items-center gap-1 text-xs px-2 py-0.5 bg-amber-100 dark:bg-amber-900/40 text-amber-700 dark:text-amber-300 rounded-full">
-                  <MessageSquare className="w-3 h-3" />
-                  Custom Instructions
-                </span>
-              )}
-              {currentAgent.reasoning_effort && (
-                <span className="ml-2 inline-flex items-center gap-1 text-xs px-2 py-0.5 bg-indigo-100 dark:bg-indigo-900/40 text-indigo-700 dark:text-indigo-300 rounded-full">
-                  <Sparkles className="w-3 h-3" />
-                  Reasoning {currentAgent.reasoning_effort}
-                </span>
-              )}
-            </div>
-          </div>
-          {currentAgent.provider && currentAgent.model && (
-            <div className="flex items-center gap-1 text-green-500">
-              <Check className="w-5 h-5" />
-              <span className="text-sm font-medium">Ready</span>
-            </div>
-          )}
-        </div>
-      )}
-
-      {/* Two-column layout: Providers | Models */}
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-        {/* Providers Column */}
-        <div className="space-y-4">
+      {/* Two-column layout: Providers | Models+Options - fills all remaining space */}
+      <div className="flex gap-3 flex-1 min-h-0">
+        {/* Providers Column - 40% width */}
+        <div className="flex flex-col gap-1.5 min-h-0 w-[40%] flex-shrink-0 pr-3 border-r border-gray-300 dark:border-gray-600">
           <div className="flex items-center justify-between">
-            <h3 className="font-semibold text-gray-800 dark:text-gray-200">
-              1. Select Provider
+            <h3 className="text-xs font-semibold text-indigo-600 dark:text-indigo-400 uppercase tracking-wide">
+              Provider
             </h3>
-            <span className="text-xs text-gray-500">
+            <span className="text-[10px] text-indigo-400 dark:text-indigo-500">
               {availableProviders.length} available
             </span>
           </div>
 
           {/* Provider search */}
           <div className="relative">
-            <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400" />
+            <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-gray-400" />
             <input
               type="text"
               value={providerSearch}
               onChange={(e) => setProviderSearch(e.target.value)}
-              placeholder="Search providers..."
-              className="w-full pl-10 pr-10 py-2.5 bg-white dark:bg-gray-800 border border-gray-300 dark:border-gray-600
-                       rounded-lg text-gray-800 dark:text-gray-200 text-sm
+              placeholder="Search..."
+              className="w-full pl-8 pr-7 py-1.5 bg-white dark:bg-gray-800 border border-gray-300 dark:border-gray-600
+                       rounded-md text-gray-800 dark:text-gray-200 text-xs
                        focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
             />
             {providerSearch && (
               <button
                 onClick={() => setProviderSearch('')}
-                className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-600"
+                className="absolute right-2 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-600"
               >
-                <X className="w-4 h-4" />
+                <X className="w-3 h-3" />
               </button>
             )}
           </div>
 
-          {/* Provider list - scrollable */}
-          <div className="space-y-2 max-h-[400px] overflow-y-auto pr-2">
+          {/* Provider list - scrollable, fills remaining height */}
+          <div className="flex-1 overflow-y-auto pr-1 v2-scrollbar divide-y divide-gray-200 dark:divide-gray-600">
             {filteredAvailableProviders.map((provider) => (
               <ProviderCard
                 key={provider.id}
@@ -588,8 +559,8 @@ export function AgentConfigStep() {
 
             {filteredUnavailableProviders.length > 0 && (
               <>
-                <div className="text-xs text-gray-500 uppercase tracking-wide pt-4 pb-2">
-                  Unavailable (need API key)
+                <div className="text-[10px] text-red-400 dark:text-red-500 uppercase tracking-wide pt-3 pb-1 border-t border-gray-200 dark:border-gray-700 mt-1">
+                  Needs API key
                 </div>
                 {filteredUnavailableProviders.map((provider) => (
                   <ProviderCard
@@ -604,48 +575,47 @@ export function AgentConfigStep() {
             )}
 
             {filteredAvailableProviders.length === 0 && filteredUnavailableProviders.length === 0 && (
-              <div className="text-center py-8 text-gray-500">
-                No providers match "{providerSearch}"
+              <div className="text-center py-8 text-gray-500 text-xs">
+                No providers match &quot;{providerSearch}&quot;
               </div>
             )}
           </div>
         </div>
 
-        {/* Models Column */}
-        <div className="space-y-4">
+        {/* Models + Options Column - 60% width */}
+        <div className="flex flex-col gap-1.5 min-h-0 flex-1">
           <div className="flex items-center justify-between">
-            <h3 className="font-semibold text-gray-800 dark:text-gray-200">
-              2. Select Model
+            <h3 className="text-xs font-semibold text-emerald-600 dark:text-emerald-400 uppercase tracking-wide">
+              Model
             </h3>
             {availableModels.length > 0 && (
-              <span className="text-xs text-gray-500">
+              <span className="text-[10px] text-emerald-400 dark:text-emerald-500">
                 {availableModels.length} models
               </span>
             )}
           </div>
 
           {!currentAgent?.provider ? (
-            <div className="flex flex-col items-center justify-center py-12 text-gray-500 bg-gray-50 dark:bg-gray-800/50 rounded-lg border-2 border-dashed border-gray-300 dark:border-gray-700">
-              <Bot className="w-12 h-12 mb-3 opacity-50" />
+            <div className="flex items-center justify-center flex-1 text-gray-500 bg-gray-50 dark:bg-gray-800/50 rounded-lg border border-dashed border-gray-300 dark:border-gray-700">
               <p className="text-sm">Select a provider first</p>
             </div>
           ) : loadingModels[currentAgent.provider] ? (
-            <div className="flex flex-col items-center justify-center py-12 text-gray-500 bg-gray-50 dark:bg-gray-800/50 rounded-lg">
-              <div className="w-8 h-8 border-2 border-blue-500 border-t-transparent rounded-full animate-spin mb-3" />
+            <div className="flex items-center justify-center gap-2 flex-1 text-gray-500 bg-gray-50 dark:bg-gray-800/50 rounded-lg">
+              <div className="w-5 h-5 border-2 border-blue-500 border-t-transparent rounded-full animate-spin" />
               <p className="text-sm">Loading models...</p>
             </div>
           ) : (
             <>
               {/* Model search */}
               <div className="relative">
-                <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400" />
+                <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-gray-400" />
                 <input
                   type="text"
                   value={modelSearch}
                   onChange={(e) => setModelSearch(e.target.value)}
-                  placeholder="Search models or type custom name..."
-                  className="w-full pl-10 pr-10 py-2.5 bg-white dark:bg-gray-800 border border-gray-300 dark:border-gray-600
-                           rounded-lg text-gray-800 dark:text-gray-200 text-sm
+                  placeholder="Search or type custom model..."
+                  className="w-full pl-8 pr-7 py-1.5 bg-white dark:bg-gray-800 border border-gray-300 dark:border-gray-600
+                           rounded-md text-gray-800 dark:text-gray-200 text-xs
                            focus:outline-none focus:ring-2 focus:ring-green-500 focus:border-transparent"
                   onKeyDown={(e) => {
                     if (e.key === 'Enter' && modelSearch.trim()) {
@@ -656,9 +626,9 @@ export function AgentConfigStep() {
                 {modelSearch && (
                   <button
                     onClick={() => setModelSearch('')}
-                    className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-600"
+                    className="absolute right-2 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-600"
                   >
-                    <X className="w-4 h-4" />
+                    <X className="w-3 h-3" />
                   </button>
                 )}
               </div>
@@ -667,12 +637,12 @@ export function AgentConfigStep() {
               {modelSearch && !filteredModels.includes(modelSearch) && (
                 <button
                   onClick={() => handleModelSelect(modelSearch.trim())}
-                  className="w-full p-3 rounded-lg border-2 border-dashed border-blue-300 dark:border-blue-700
+                  className="w-full px-3 py-1.5 rounded-md border border-dashed border-blue-300 dark:border-blue-700
                            bg-blue-50 dark:bg-blue-900/20 text-left hover:bg-blue-100 dark:hover:bg-blue-900/30 transition-all"
                 >
-                  <div className="flex items-center gap-2">
-                    <span className="text-blue-600 dark:text-blue-400 text-sm">
-                      Press Enter or click to use custom model:
+                  <div className="flex items-center gap-2 text-xs">
+                    <span className="text-blue-600 dark:text-blue-400">
+                      Enter to use custom:
                     </span>
                     <span className="font-medium text-blue-700 dark:text-blue-300">
                       {modelSearch}
@@ -681,233 +651,31 @@ export function AgentConfigStep() {
                 </button>
               )}
 
-              {/* Model list - scrollable */}
-              <div className="space-y-2 max-h-[350px] overflow-y-auto pr-2">
-                {filteredModels.map((model) => (
-                  <ModelCard
-                    key={model}
-                    model={model}
-                    isSelected={currentAgent?.model === model}
-                    isDefault={model === selectedProvider?.default_model}
-                    onSelect={() => handleModelSelect(model)}
-                  />
-                ))}
+              {/* Model list - scrollable, fills remaining height */}
+              <div className="flex-1 overflow-y-auto pr-1 v2-scrollbar divide-y divide-gray-100 dark:divide-gray-700">
+                {filteredModels.map((model) => {
+                  const isSelected = currentAgent?.model === model;
+                  return (
+                    <div key={model}>
+                      <ModelCard
+                        model={model}
+                        isSelected={isSelected}
+                        isDefault={model === selectedProvider?.default_model}
+                        onSelect={() => handleModelSelect(model)}
+                      />
+                      {/* Render options inline right after the selected model */}
+                      {isSelected && hasOptions && renderInlineOptions()}
+                    </div>
+                  );
+                })}
 
                 {filteredModels.length === 0 && modelSearch && (
-                  <div className="text-center py-4 text-gray-500 text-sm">
-                    No models match "{modelSearch}"
+                  <div className="text-center py-4 text-gray-500 text-xs">
+                    No models match &quot;{modelSearch}&quot;
                   </div>
                 )}
               </div>
 
-              {/* Per-agent options - show after model is selected */}
-              {currentAgent?.model && (
-                <div className="mt-4 pt-4 border-t border-gray-200 dark:border-gray-700">
-                  <h4 className="text-sm font-medium text-gray-700 dark:text-gray-300 mb-3">
-                    3. Agent Options
-                  </h4>
-                  {isLoadingCapabilities ? (
-                    <div className="flex items-center gap-2 text-gray-400 text-sm p-3">
-                      <div className="w-4 h-4 border-2 border-gray-300 border-t-transparent rounded-full animate-spin" />
-                      <span>Loading options...</span>
-                    </div>
-                  ) : (
-                    <div className="space-y-3">
-                      {loadingReasoningProfile && currentAgent.model && (
-                        <div className="p-3 bg-gray-50 dark:bg-gray-800/50 rounded-lg">
-                          <div className="flex items-center gap-2 text-gray-400 text-sm">
-                            <div className="w-4 h-4 border-2 border-gray-300 border-t-transparent rounded-full animate-spin" />
-                            <span>Loading reasoning options...</span>
-                          </div>
-                        </div>
-                      )}
-
-                      {reasoningProfile && (
-                        <div className="p-3 bg-gray-50 dark:bg-gray-800/50 rounded-lg">
-                          <div className="flex items-center gap-2 mb-2">
-                            <Sparkles className="w-4 h-4 text-gray-500 dark:text-gray-400" />
-                            <span className="text-sm font-medium text-gray-700 dark:text-gray-300">
-                              Reasoning Effort
-                            </span>
-                          </div>
-                          <select
-                            value={currentAgent.reasoning_effort ?? reasoningProfile.default_effort}
-                            onChange={(e) => handleReasoningEffortChange(e.target.value)}
-                            className="w-full px-3 py-2 bg-white dark:bg-gray-900 border border-gray-300 dark:border-gray-600
-                                     rounded-lg text-gray-800 dark:text-gray-200 text-sm
-                                     focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
-                          >
-                            {reasoningProfile.choices.map(([label, value]) => (
-                              <option key={value} value={value}>
-                                {label}
-                              </option>
-                            ))}
-                          </select>
-                          <p className="text-xs text-gray-500 dark:text-gray-400 mt-2">
-                            {reasoningProfile.description}
-                          </p>
-                        </div>
-                      )}
-
-                      {/* Tool toggles - code execution only shown when Docker is NOT enabled */}
-                      {(currentCapabilities?.supports_web_search || (!useDocker && currentCapabilities?.supports_code_execution)) && (
-                        <div className="space-y-2">
-                          {currentCapabilities?.supports_web_search && (
-                            <OptionToggle
-                              enabled={currentAgent.enable_web_search ?? false}
-                              onChange={handleWebSearchToggle}
-                              icon={<Globe className="w-4 h-4" />}
-                              label="Web Search"
-                              description="Search the web for up-to-date information"
-                            />
-                          )}
-                          {/* Only show code execution when Docker is NOT enabled - Docker mode has its own code execution */}
-                          {!useDocker && currentCapabilities?.supports_code_execution && (
-                            <OptionToggle
-                              enabled={currentAgent.enable_code_execution ?? false}
-                              onChange={handleCodeExecutionToggle}
-                              icon={<Code className="w-4 h-4" />}
-                              label="Code Execution"
-                              description="Run code in provider's cloud sandbox"
-                            />
-                          )}
-                        </div>
-                      )}
-
-                      {/* System message */}
-                      <div className="p-3 bg-gray-50 dark:bg-gray-800/50 rounded-lg">
-                        <div className="flex items-center gap-2 mb-2">
-                          <MessageSquare className="w-4 h-4 text-gray-500 dark:text-gray-400" />
-                          <span className="text-sm font-medium text-gray-700 dark:text-gray-300">
-                            System Message
-                          </span>
-                          <span className="text-xs text-gray-400">(optional)</span>
-                        </div>
-
-                        {/* In "same" setup mode with multiple agents, show mode selector */}
-                        {setupMode === 'same' && agents.length > 1 ? (
-                          <div className="space-y-3">
-                            {/* Mode selector */}
-                            <div className="flex gap-2 flex-wrap">
-                              <button
-                                onClick={() => handleSystemMessageModeChange('skip')}
-                                className={`px-3 py-1.5 text-xs font-medium rounded-lg transition-colors ${
-                                  systemMessageMode === 'skip'
-                                    ? 'bg-blue-500 text-white'
-                                    : 'bg-gray-200 dark:bg-gray-700 text-gray-700 dark:text-gray-300 hover:bg-gray-300 dark:hover:bg-gray-600'
-                                }`}
-                              >
-                                Skip
-                              </button>
-                              <button
-                                onClick={() => handleSystemMessageModeChange('same')}
-                                className={`px-3 py-1.5 text-xs font-medium rounded-lg transition-colors ${
-                                  systemMessageMode === 'same'
-                                    ? 'bg-blue-500 text-white'
-                                    : 'bg-gray-200 dark:bg-gray-700 text-gray-700 dark:text-gray-300 hover:bg-gray-300 dark:hover:bg-gray-600'
-                                }`}
-                              >
-                                Same for all
-                              </button>
-                              <button
-                                onClick={() => handleSystemMessageModeChange('different')}
-                                className={`px-3 py-1.5 text-xs font-medium rounded-lg transition-colors ${
-                                  systemMessageMode === 'different'
-                                    ? 'bg-blue-500 text-white'
-                                    : 'bg-gray-200 dark:bg-gray-700 text-gray-700 dark:text-gray-300 hover:bg-gray-300 dark:hover:bg-gray-600'
-                                }`}
-                              >
-                                Different per agent
-                              </button>
-                            </div>
-
-                            {/* Content based on mode */}
-                            {systemMessageMode === 'same' && (
-                              <textarea
-                                value={agents[0]?.system_message ?? ''}
-                                onChange={(e) => handleSystemMessageChange(e.target.value)}
-                                placeholder="Add custom instructions for all agents..."
-                                rows={3}
-                                className="w-full px-3 py-2 bg-white dark:bg-gray-900 border border-gray-300 dark:border-gray-600
-                                         rounded-lg text-gray-800 dark:text-gray-200 text-sm
-                                         focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent
-                                         resize-none placeholder-gray-400 dark:placeholder-gray-500"
-                              />
-                            )}
-
-                            {systemMessageMode === 'different' && (
-                              <div className="space-y-2">
-                                {/* Agent tabs */}
-                                <div className="flex gap-1 flex-wrap">
-                                  {agents.map((agent, index) => {
-                                    const letter = agent.id.replace('agent_', '').toUpperCase();
-                                    const hasMessage = !!agent.system_message;
-                                    return (
-                                      <button
-                                        key={agent.id}
-                                        onClick={() => setEditingSystemMsgAgent(index)}
-                                        className={`px-2 py-1 text-xs font-medium rounded transition-colors flex items-center gap-1 ${
-                                          editingSystemMsgAgent === index
-                                            ? 'bg-blue-500 text-white'
-                                            : hasMessage
-                                            ? 'bg-green-100 dark:bg-green-900/30 text-green-700 dark:text-green-300'
-                                            : 'bg-gray-200 dark:bg-gray-700 text-gray-600 dark:text-gray-400'
-                                        }`}
-                                      >
-                                        Agent {letter}
-                                        {hasMessage && editingSystemMsgAgent !== index && (
-                                          <Check className="w-3 h-3" />
-                                        )}
-                                      </button>
-                                    );
-                                  })}
-                                </div>
-
-                                {/* Textarea for selected agent */}
-                                {editingSystemMsgAgent !== null && (
-                                  <textarea
-                                    value={agents[editingSystemMsgAgent]?.system_message ?? ''}
-                                    onChange={(e) => handleSystemMessageChange(e.target.value, editingSystemMsgAgent)}
-                                    placeholder={`Instructions for Agent ${agents[editingSystemMsgAgent]?.id.replace('agent_', '').toUpperCase()}...`}
-                                    rows={3}
-                                    className="w-full px-3 py-2 bg-white dark:bg-gray-900 border border-gray-300 dark:border-gray-600
-                                             rounded-lg text-gray-800 dark:text-gray-200 text-sm
-                                             focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent
-                                             resize-none placeholder-gray-400 dark:placeholder-gray-500"
-                                  />
-                                )}
-                              </div>
-                            )}
-
-                            {systemMessageMode === 'skip' && (
-                              <p className="text-xs text-gray-500 dark:text-gray-400">
-                                No custom instructions will be added to agents
-                              </p>
-                            )}
-                          </div>
-                        ) : (
-                          /* Single agent or "different" setup mode - simple textarea */
-                          <>
-                            <textarea
-                              value={currentAgent.system_message ?? ''}
-                              onChange={(e) => handleSystemMessageChange(e.target.value)}
-                              placeholder="Add custom instructions for this agent..."
-                              rows={3}
-                              className="w-full px-3 py-2 bg-white dark:bg-gray-900 border border-gray-300 dark:border-gray-600
-                                       rounded-lg text-gray-800 dark:text-gray-200 text-sm
-                                       focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent
-                                       resize-none placeholder-gray-400 dark:placeholder-gray-500"
-                            />
-                            <p className="text-xs text-gray-500 dark:text-gray-400 mt-1">
-                              Custom instructions to guide the agent's behavior and responses
-                            </p>
-                          </>
-                        )}
-                      </div>
-                    </div>
-                  )}
-                </div>
-              )}
             </>
           )}
         </div>

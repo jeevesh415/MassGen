@@ -1,0 +1,687 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>MassGen WebUI — Message Display Design Options</title>
+<style>
+  :root {
+    --bg: #ffffff;
+    --surface: #f8f9fa;
+    --surface-raised: #ffffff;
+    --border: #e3e5e8;
+    --border-subtle: #f2f3f5;
+    --text: #2e3338;
+    --text-secondary: #4f5660;
+    --text-muted: #80848e;
+    --accent: #5865f2;
+    --online: #23a559;
+    --tool-bg: rgba(88, 101, 242, 0.06);
+    --tool-border: rgba(88, 101, 242, 0.15);
+    --think-bg: rgba(139, 92, 246, 0.05);
+    --think-border: rgba(139, 92, 246, 0.15);
+    --answer-bg: rgba(234, 179, 8, 0.06);
+    --answer-border: rgba(234, 179, 8, 0.25);
+    --vote-bg: rgba(139, 92, 246, 0.05);
+    --vote-border: rgba(139, 92, 246, 0.2);
+  }
+
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
+    background: #f2f3f5;
+    color: var(--text);
+    padding: 32px;
+  }
+
+  h1 { font-size: 24px; font-weight: 600; margin-bottom: 8px; }
+  h2 { font-size: 18px; font-weight: 600; margin: 40px 0 6px; color: var(--accent); }
+  h3 { font-size: 13px; font-weight: 600; margin: 24px 0 8px; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.5px; }
+  .subtitle { color: var(--text-muted); font-size: 14px; margin-bottom: 32px; max-width: 700px; line-height: 1.5; }
+
+  .design-label {
+    display: inline-block;
+    font-size: 11px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 1px;
+    padding: 3px 10px;
+    border-radius: 4px;
+    margin-bottom: 12px;
+  }
+  .design-label.a { background: #5865f2; color: white; }
+  .design-label.b { background: #23a559; color: white; }
+  .design-label.c { background: #eb459e; color: white; }
+
+  .channel {
+    background: var(--bg);
+    border-radius: 12px;
+    border: 1px solid var(--border);
+    max-width: 900px;
+    overflow: hidden;
+    margin-bottom: 48px;
+  }
+
+  .channel-header {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 10px 16px;
+    border-bottom: 1px solid var(--border);
+    background: var(--surface);
+  }
+
+  .agent-badge {
+    width: 20px; height: 20px;
+    border-radius: 4px;
+    background: #5865f2;
+    color: white;
+    font-size: 11px;
+    font-weight: 700;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+
+  .agent-name { font-weight: 500; font-size: 14px; }
+  .model-badge {
+    font-size: 11px;
+    color: var(--text-muted);
+    background: var(--surface-raised);
+    padding: 2px 8px;
+    border-radius: 4px;
+    border: 1px solid var(--border-subtle);
+  }
+
+  .messages { padding: 4px 0; }
+
+  /* Round divider */
+  .round-divider {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 12px 16px;
+  }
+  .round-divider .line { flex: 1; height: 1px; background: var(--border); }
+  .round-divider .label {
+    font-size: 11px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 1px;
+    color: var(--text-muted);
+  }
+
+  /* Shared */
+  .mono { font-family: 'SF Mono', 'Fira Code', 'Cascadia Code', 'Consolas', monospace; }
+  .chevron {
+    width: 12px; height: 12px;
+    color: var(--text-muted);
+    transition: transform 0.15s;
+    flex-shrink: 0;
+  }
+  .chevron.open { transform: rotate(90deg); }
+
+  .status-dot {
+    width: 6px; height: 6px;
+    border-radius: 50%;
+    flex-shrink: 0;
+  }
+  .status-dot.success { background: var(--online); }
+  .status-dot.pending { background: #5865f2; }
+  .status-dot.error { background: #ed4245; }
+
+  .elapsed {
+    font-size: 11px;
+    color: var(--text-muted);
+    flex-shrink: 0;
+  }
+
+  .note {
+    font-size: 12px;
+    color: var(--text-muted);
+    margin-top: 12px;
+    padding: 8px 12px;
+    background: var(--surface);
+    border-radius: 6px;
+    border: 1px solid var(--border);
+    line-height: 1.5;
+  }
+  .note strong { color: var(--text-secondary); }
+
+  .comparison {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 24px;
+    margin-bottom: 48px;
+  }
+  @media (max-width: 1200px) {
+    .comparison { grid-template-columns: 1fr; }
+  }
+
+  .pros-cons {
+    font-size: 12px;
+    color: var(--text-secondary);
+    line-height: 1.6;
+    margin-top: 8px;
+  }
+  .pros-cons li { margin: 2px 0; list-style: none; }
+  .pros-cons .pro::before { content: "✓ "; color: var(--online); font-weight: 700; }
+  .pros-cons .con::before { content: "✗ "; color: #ed4245; font-weight: 700; }
+</style>
+</head>
+<body>
+
+<h1>Message Display Design Options</h1>
+<p class="subtitle">
+  Three approaches for displaying tool calls, thinking/reasoning, and content in the MassGen WebUI agent channel.
+  Each optimizes for different tradeoffs between information density, progressive disclosure, and scanability.
+</p>
+
+<!-- ============================================================ -->
+<!-- OPTION A: TIMELINE LANE -->
+<!-- ============================================================ -->
+
+<h2>Option A — "Timeline Lane"</h2>
+<p class="subtitle" style="margin-bottom:16px;">
+  Inspired by: GitHub Actions, CI/CD pipelines.<br>
+  All messages flow in a continuous vertical lane with a subtle left-border timeline.
+  Tool calls are minimal single-line items. Content/thinking gets visual weight through indentation and color.
+  Everything is scannable at a glance — no nested trees.
+</p>
+
+<div class="channel">
+  <div class="channel-header">
+    <div class="agent-badge">1</div>
+    <span class="agent-name">agent a</span>
+    <span class="model-badge">gpt-5.4</span>
+  </div>
+  <div class="messages">
+    <!-- Round divider -->
+    <div class="round-divider">
+      <div class="line"></div>
+      <span class="label">Round 1</span>
+      <div class="line"></div>
+    </div>
+
+    <!-- Content (thinking/reasoning) -->
+    <div style="padding: 2px 16px;">
+      <div style="border-left: 2px solid rgba(139,92,246,0.4); padding: 8px 12px; background: var(--think-bg); border-radius: 0 6px 6px 0; margin: 4px 0;">
+        <div style="display: flex; align-items: center; gap: 6px; margin-bottom: 4px;">
+          <span style="font-size: 10px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.5px; color: rgba(124,58,237,0.7);">Reasoning</span>
+        </div>
+        <p style="font-size: 13px; color: var(--text-muted); font-style: italic; line-height: 1.5;">
+          I need to create a decision journal first, then handle the plan items. Let me start by setting up the workspace structure...
+        </p>
+      </div>
+    </div>
+
+    <!-- Tool calls — flush left, status dot + badge + command -->
+    <div style="padding: 0 16px;">
+      <!-- Tool 1 -->
+      <div style="display: flex; align-items: center; gap: 8px; padding: 3px 0;">
+        <div style="width: 6px; height: 6px; border-radius: 50%; background: var(--online); flex-shrink: 0;"></div>
+        <span class="mono" style="font-size: 12px; color: #4752c4; background: rgba(88,101,242,0.1); padding: 1px 6px; border-radius: 3px;">codex_shell</span>
+        <span class="mono" style="font-size: 11px; color: var(--text-muted); flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">mkdir -p tasks && cat > tasks/changedoc.md</span>
+        <span class="elapsed">2ms</span>
+      </div>
+      <!-- Tool 2 -->
+      <div style="display: flex; align-items: center; gap: 8px; padding: 3px 0;">
+        <div style="width: 6px; height: 6px; border-radius: 50%; background: var(--online); flex-shrink: 0;"></div>
+        <span class="mono" style="font-size: 12px; color: #4752c4; background: rgba(88,101,242,0.1); padding: 1px 6px; border-radius: 3px;">codex_shell</span>
+        <span class="mono" style="font-size: 11px; color: var(--text-muted); flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">mkdir -p memory/short_term && ls -la memory</span>
+        <span class="elapsed">2ms</span>
+      </div>
+      <!-- Collapsed earlier -->
+      <div style="display: flex; align-items: center; gap: 8px; padding: 3px 0; cursor: pointer;">
+        <div style="width: 6px; height: 6px; border-radius: 50%; background: var(--border); flex-shrink: 0;"></div>
+        <span style="font-size: 11px; color: var(--text-muted);">+3 more tool calls</span>
+      </div>
+    </div>
+
+    <!-- Content (regular output) — left accent bar, flush -->
+    <div style="padding: 6px 16px;">
+      <div style="border-left: 2px solid var(--border); padding-left: 10px;">
+        <p style="font-size: 14px; color: var(--text); line-height: 1.6;">
+          Step 3: I'm checking whether any prior memory context exists, then I'll save the verification trail and final poem.
+        </p>
+      </div>
+    </div>
+
+    <!-- Answer card -->
+    <div style="padding: 4px 16px;">
+      <div style="border-left: 3px solid rgba(234,179,8,0.6); padding: 10px 14px; background: var(--answer-bg); border-radius: 0 8px 8px 0; cursor: pointer;">
+        <div style="display: flex; align-items: center; gap: 8px; margin-bottom: 6px;">
+          <span style="color: #b45309;">★</span>
+          <span style="font-size: 11px; font-weight: 600; color: #b45309; background: rgba(180,83,9,0.12); padding: 2px 8px; border-radius: 4px;">agent1.1</span>
+          <span style="font-size: 12px; color: var(--text-muted);">submitted</span>
+          <div style="flex: 1;"></div>
+          <span style="font-size: 11px; color: var(--text-muted);">▸ click to expand</span>
+        </div>
+        <p style="font-size: 13px; color: var(--text-secondary); display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden;">
+          Love is the hush between two storms, a candle cupped in careful hands, a door left open in the cold, a name said softly in an empty room, a quiet choosing, a gentle becoming...
+        </p>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="note">
+  <strong>Design A — Timeline Lane</strong><br>
+  • Tool calls are flat single-line items with timeline dots — no nested tree/chevrons<br>
+  • Thinking/reasoning uses a left-border accent stripe (purple) — visually distinct from content<br>
+  • Content sits inside the same timeline lane (left-border continuation) — stays in flow<br>
+  • Answers/votes use left-border accent + background tint<br>
+  • "+N more" replaces both the tree and the header chevron
+</div>
+<ul class="pros-cons">
+  <li class="pro">Extremely scannable — one vertical flow, no nesting</li>
+  <li class="pro">Timeline dots give a sense of progress/chronology</li>
+  <li class="pro">Content chunks stand out because they're NOT in boxes</li>
+  <li class="con">Less information per tool call (no args preview in collapsed state)</li>
+  <li class="con">Many tool calls can still get long without grouping</li>
+</ul>
+
+<!-- ============================================================ -->
+<!-- OPTION B: COMPACT CARDS -->
+<!-- ============================================================ -->
+
+<h2>Option B — "Compact Cards"</h2>
+<p class="subtitle" style="margin-bottom:16px;">
+  Inspired by: Windsurf cascade panel, Slack message blocks.<br>
+  Each message type gets a distinct card shape. Tool batches are a single summary card that expands inline.
+  Content gets proper markdown-style rendering. Maximum visual hierarchy through card differentiation.
+</p>
+
+<div class="channel">
+  <div class="channel-header">
+    <div class="agent-badge">1</div>
+    <span class="agent-name">agent a</span>
+    <span class="model-badge">gpt-5.4</span>
+  </div>
+  <div class="messages">
+    <div class="round-divider">
+      <div class="line"></div>
+      <span class="label">Round 1</span>
+      <div class="line"></div>
+    </div>
+
+    <!-- Thinking — floating aside -->
+    <div style="padding: 4px 16px;">
+      <div style="display: flex; gap: 10px; align-items: flex-start;">
+        <div style="width: 3px; border-radius: 2px; background: rgba(139,92,246,0.5); align-self: stretch; flex-shrink: 0;"></div>
+        <div style="flex: 1;">
+          <div style="display: flex; align-items: center; gap: 6px; margin-bottom: 2px;">
+            <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="rgba(124,58,237,0.7)" stroke-width="1.5">
+              <circle cx="8" cy="8" r="6"/>
+              <path d="M6 6.5c0-1.1.9-2 2-2s2 .9 2 2c0 .7-.4 1.4-1 1.7V9" stroke-linecap="round"/>
+              <circle cx="8" cy="11" r="0.5" fill="rgba(124,58,237,0.7)"/>
+            </svg>
+            <span style="font-size: 11px; font-weight: 500; color: rgba(124,58,237,0.7);">Thinking</span>
+          </div>
+          <p style="font-size: 12px; color: var(--text-muted); font-style: italic; line-height: 1.5;">
+            I need to create a decision journal first, then handle the plan items. Let me start by setting up the workspace structure...
+          </p>
+        </div>
+      </div>
+    </div>
+
+    <!-- Tool batch — single compact card -->
+    <div style="padding: 4px 16px;">
+      <div style="background: var(--surface); border: 1px solid var(--border-subtle); border-radius: 8px; overflow: hidden;">
+        <!-- Summary bar -->
+        <div style="display: flex; align-items: center; gap: 8px; padding: 7px 12px; cursor: pointer; border-bottom: 1px solid var(--border);">
+          <svg class="chevron open" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.5">
+            <path d="M4 2l4 4-4 4" stroke-linecap="round" stroke-linejoin="round"/>
+          </svg>
+          <div class="status-dot success"></div>
+          <span class="mono" style="font-size: 12px; color: #4752c4;">codex_shell</span>
+          <span style="font-size: 11px; color: var(--text-muted);">× 5 calls</span>
+          <div style="flex: 1;"></div>
+          <span class="elapsed">8ms total</span>
+        </div>
+        <!-- Expanded list (last 3 shown) -->
+        <div style="padding: 2px 0;">
+          <div style="padding: 0 12px;">
+            <div style="font-size: 11px; color: var(--text-muted); padding: 4px 0; cursor: pointer;">
+              ↑ 2 earlier calls
+            </div>
+          </div>
+          <!-- Tool row -->
+          <div style="display: flex; align-items: center; gap: 6px; padding: 4px 12px; font-size: 12px;">
+            <div class="status-dot success"></div>
+            <span class="mono" style="color: var(--text-secondary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1;">cat tasks/changedoc.md</span>
+            <span class="elapsed">1ms</span>
+          </div>
+          <div style="display: flex; align-items: center; gap: 6px; padding: 4px 12px; font-size: 12px;">
+            <div class="status-dot success"></div>
+            <span class="mono" style="color: var(--text-secondary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1;">find memory -maxdepth 2 -type f | sort</span>
+            <span class="elapsed">1ms</span>
+          </div>
+          <div style="display: flex; align-items: center; gap: 6px; padding: 4px 12px; font-size: 12px;">
+            <div class="status-dot success"></div>
+            <span class="mono" style="color: var(--text-secondary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1;">mkdir -p deliverable tasks/evolving_skill</span>
+            <span class="elapsed">1ms</span>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Content — left accent bar -->
+    <div style="padding: 6px 16px;">
+      <div style="border-left: 2px solid var(--accent); padding-left: 10px;">
+        <p style="font-size: 14px; color: var(--text); line-height: 1.65;">
+          Step 3: I'm checking whether any prior memory context exists, then I'll save the verification trail and final poem.
+        </p>
+      </div>
+    </div>
+
+    <!-- Vote card -->
+    <div style="padding: 4px 16px;">
+      <div style="background: var(--vote-bg); border: 1px solid var(--vote-border); border-radius: 8px; padding: 10px 14px; cursor: pointer;">
+        <div style="display: flex; align-items: center; gap: 8px;">
+          <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="#7c3aed" stroke-width="1.5">
+            <rect x="2" y="3" width="12" height="10" rx="1.5"/>
+            <path d="M2 7h12"/>
+            <path d="M5.5 9.5l1.5 1.5 3-3" stroke-linecap="round" stroke-linejoin="round"/>
+          </svg>
+          <span style="font-size: 11px; font-weight: 600; color: #7c3aed; background: rgba(124,58,237,0.1); padding: 2px 8px; border-radius: 4px;">vote1.1</span>
+          <span style="font-size: 13px; color: var(--text-secondary);">Voted for <strong style="color: var(--text);">agent_a (gpt-5.4)</strong></span>
+          <div style="flex: 1;"></div>
+          <svg class="chevron" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.5">
+            <path d="M4 2l4 4-4 4" stroke-linecap="round" stroke-linejoin="round"/>
+          </svg>
+        </div>
+        <p style="font-size: 12px; color: var(--text-muted); font-style: italic; margin-top: 6px; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden;">
+          agent1 directly answers the original request with a polished, evocative love poem. It is concise, emotionally resonant, and no iteration is needed.
+        </p>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="note">
+  <strong>Design B — Compact Cards</strong><br>
+  • Tool batch is a single bordered card with summary header + flat list inside (no tree connectors)<br>
+  • "↑ N earlier calls" instead of tree-branch notation — cleaner<br>
+  • Tool rows show only: status dot + command + elapsed. No tool name repetition inside batch<br>
+  • Thinking uses a thin left bar (3px) without a background fill — lighter visual weight<br>
+  • Content text is larger (14px) and unstyled — the "main" thing you're reading
+</div>
+<ul class="pros-cons">
+  <li class="pro">Clear visual hierarchy: content > cards > tool batch</li>
+  <li class="pro">Tool batch card is self-contained, clean</li>
+  <li class="pro">No redundant tool name in batch rows (header already shows it)</li>
+  <li class="con">Cards add visual weight — could feel busy with many message types</li>
+  <li class="con">Bordered card for thinking might be too prominent for secondary info</li>
+</ul>
+
+<!-- ============================================================ -->
+<!-- OPTION C: DENSITY-FIRST / TERMINAL HYBRID -->
+<!-- ============================================================ -->
+
+<h2>Option C — "Terminal Hybrid"</h2>
+<p class="subtitle" style="margin-bottom:16px;">
+  Inspired by: Claude Code CLI, terminal output, VS Code debug console.<br>
+  Maximum information density. Tool calls use an inline "command prompt" look.
+  Thinking is de-emphasized (dimmed, indented). Content stands alone.
+  Everything is flat — no cards, no boxes, just typography and color.
+</p>
+
+<div class="channel">
+  <div class="channel-header">
+    <div class="agent-badge">1</div>
+    <span class="agent-name">agent a</span>
+    <span class="model-badge">gpt-5.4</span>
+  </div>
+  <div class="messages">
+    <div class="round-divider">
+      <div class="line"></div>
+      <span class="label">Round 1</span>
+      <div class="line"></div>
+    </div>
+
+    <!-- Thinking — extremely subtle -->
+    <div style="padding: 1px 16px 1px 28px;">
+      <p style="font-size: 12px; color: var(--text-muted); opacity: 0.7; font-style: italic; line-height: 1.5; border-left: 1px solid rgba(139,92,246,0.3); padding-left: 10px;">
+        I need to create a decision journal first, then handle the plan items...
+      </p>
+    </div>
+
+    <!-- Tool calls — terminal prompt style -->
+    <div style="padding: 4px 16px;">
+      <div style="font-size: 12px;">
+        <!-- Individual tool calls as prompt lines -->
+        <div style="display: flex; align-items: baseline; gap: 0; padding: 1px 0;">
+          <span style="color: var(--online); margin-right: 6px; font-size: 10px;">●</span>
+          <span class="mono" style="color: #4752c4; margin-right: 4px; font-size: 11px;">$</span>
+          <span class="mono" style="color: var(--text-secondary); flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px;">mkdir -p tasks && cat > tasks/changedoc.md &lt;&lt;'EOF' # Change Document...</span>
+          <span class="elapsed" style="margin-left: 8px;">2ms</span>
+        </div>
+        <div style="display: flex; align-items: baseline; gap: 0; padding: 1px 0;">
+          <span style="color: var(--online); margin-right: 6px; font-size: 10px;">●</span>
+          <span class="mono" style="color: #4752c4; margin-right: 4px; font-size: 11px;">$</span>
+          <span class="mono" style="color: var(--text-secondary); flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px;">mkdir -p memory/short_term .massgen_scratch/verification && ls -la memory</span>
+          <span class="elapsed" style="margin-left: 8px;">2ms</span>
+        </div>
+        <!-- Collapsed batch -->
+        <div style="display: flex; align-items: center; gap: 0; padding: 1px 0; cursor: pointer;">
+          <span style="color: var(--text-muted); margin-right: 6px; font-size: 10px;">●</span>
+          <span class="mono" style="color: #4752c4; margin-right: 4px; font-size: 11px;">$</span>
+          <span style="font-size: 11px; color: var(--text-muted);">... 3 more calls (cat, find, mkdir)</span>
+          <div style="flex: 1;"></div>
+          <span class="elapsed">4ms</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- Content — small dot marker -->
+    <div style="padding: 6px 16px;">
+      <div style="display: flex; gap: 10px; align-items: baseline;">
+        <div style="width: 5px; height: 5px; border-radius: 50%; background: var(--text-muted); flex-shrink: 0; margin-top: 7px;"></div>
+        <p style="font-size: 14px; color: var(--text); line-height: 1.6;">
+          Step 3: I'm checking whether any prior memory context exists, then I'll save the verification trail and final poem.
+        </p>
+      </div>
+    </div>
+
+    <!-- Another batch — fully collapsed -->
+    <div style="padding: 2px 16px;">
+      <div style="display: flex; align-items: center; gap: 6px; padding: 4px 8px; border-radius: 4px; cursor: pointer; font-size: 12px;"
+           onmouseover="this.style.background='rgba(79,84,92,0.08)'" onmouseout="this.style.background='transparent'">
+        <span style="color: var(--online); font-size: 10px;">●</span>
+        <span class="mono" style="color: #4752c4;">codex_shell</span>
+        <span style="color: var(--text-muted);">× 2</span>
+        <span class="mono" style="color: var(--text-muted); flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">cat tasks/changedoc.md, find memory -maxdepth 2</span>
+        <span class="elapsed">2ms</span>
+      </div>
+    </div>
+
+    <!-- Answer — minimal card -->
+    <div style="padding: 6px 16px;">
+      <div style="padding: 10px 14px; border-radius: 6px; background: var(--answer-bg); border: 1px solid var(--answer-border); cursor: pointer;">
+        <div style="display: flex; align-items: center; gap: 8px; margin-bottom: 4px;">
+          <span style="color: #b45309; font-size: 14px;">★</span>
+          <span style="font-size: 12px; font-weight: 600; color: #b45309;">agent1.1</span>
+          <span style="font-size: 12px; color: var(--text-muted);">submitted answer</span>
+        </div>
+        <p style="font-size: 13px; color: var(--text-secondary); display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; line-height: 1.5;">
+          Love is the hush between two storms, a candle cupped in careful hands, a door left open in the cold, a name said softly in an empty room...
+        </p>
+      </div>
+    </div>
+
+    <!-- Vote — inline, no card -->
+    <div style="padding: 4px 16px;">
+      <div style="display: flex; align-items: center; gap: 8px; padding: 6px 10px; border-radius: 6px; cursor: pointer;"
+           onmouseover="this.style.background='rgba(124,58,237,0.06)'" onmouseout="this.style.background='transparent'">
+        <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="#7c3aed" stroke-width="1.5">
+          <rect x="2" y="3" width="12" height="10" rx="1.5"/>
+          <path d="M2 7h12"/>
+          <path d="M5.5 9.5l1.5 1.5 3-3" stroke-linecap="round" stroke-linejoin="round"/>
+        </svg>
+        <span style="font-size: 12px; color: #7c3aed; font-weight: 500;">vote1.1</span>
+        <span style="font-size: 13px; color: var(--text-secondary);">→ <strong style="color: var(--text);">agent_a</strong></span>
+        <span style="font-size: 12px; color: var(--text-muted); font-style: italic; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">polished, evocative love poem — no iteration needed</span>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="note">
+  <strong>Design C — Terminal Hybrid</strong><br>
+  • Tool calls look like terminal commands: <code>● $ command...</code> — no badges, no boxes<br>
+  • Thinking is <em>extremely</em> de-emphasized: small, dimmed, with a 1px left border<br>
+  • Collapsed batches show a comma-separated summary of tool names<br>
+  • Vote is a single inline row — no card at all, just icon + target + truncated reason<br>
+  • Maximum vertical density — more content visible per screen
+</div>
+<ul class="pros-cons">
+  <li class="pro">Maximum density — fits 2-3x more on screen</li>
+  <li class="pro">Thinking doesn't distract from the actual work</li>
+  <li class="pro">Terminal metaphor familiar to developer audience</li>
+  <li class="pro">Collapsed batch inline summary is very space-efficient</li>
+  <li class="con">Less visual distinction between message types at quick glance</li>
+  <li class="con">Vote row might be too compressed for important decisions</li>
+</ul>
+
+<!-- ============================================================ -->
+<!-- SIDE-BY-SIDE COMPARISON -->
+<!-- ============================================================ -->
+
+<h2>Side-by-Side: Tool Batch Comparison</h2>
+<p class="subtitle" style="margin-bottom: 16px;">
+  The same 5-tool batch shown in all three styles to compare density and readability.
+</p>
+
+<div class="comparison">
+  <!-- A -->
+  <div>
+    <span class="design-label a">A — Timeline</span>
+    <div style="background: var(--bg); border-radius: 8px; border: 1px solid var(--border); padding: 12px 16px;">
+      <div style="border-left: 2px solid var(--border); padding-left: 14px;">
+        <div style="display: flex; align-items: center; gap: 8px; padding: 3px 0; position: relative;">
+          <div style="position: absolute; left: -19px; top: 50%; transform: translateY(-50%); width: 8px; height: 8px; border-radius: 50%; background: var(--online); border: 2px solid var(--surface);"></div>
+          <span class="mono" style="font-size: 11px; color: var(--text-secondary); flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">mkdir -p tasks && cat > tasks/changedoc.md</span>
+          <span class="elapsed">2ms</span>
+        </div>
+        <div style="display: flex; align-items: center; gap: 8px; padding: 3px 0; position: relative;">
+          <div style="position: absolute; left: -19px; top: 50%; transform: translateY(-50%); width: 8px; height: 8px; border-radius: 50%; background: var(--online); border: 2px solid var(--surface);"></div>
+          <span class="mono" style="font-size: 11px; color: var(--text-secondary); flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">mkdir -p memory/short_term && ls -la memory</span>
+          <span class="elapsed">2ms</span>
+        </div>
+        <div style="display: flex; align-items: center; gap: 8px; padding: 3px 0; position: relative;">
+          <div style="position: absolute; left: -19px; top: 50%; transform: translateY(-50%); width: 8px; height: 8px; border-radius: 50%; background: var(--online); border: 2px solid var(--surface);"></div>
+          <span class="mono" style="font-size: 11px; color: var(--text-secondary); flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">cat tasks/changedoc.md</span>
+          <span class="elapsed">1ms</span>
+        </div>
+        <div style="padding: 3px 0; position: relative;">
+          <div style="position: absolute; left: -19px; top: 50%; transform: translateY(-50%); width: 8px; height: 8px; border-radius: 50%; background: var(--border); border: 2px solid var(--surface);"></div>
+          <span style="font-size: 11px; color: var(--text-muted);">+2 more calls</span>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- B -->
+  <div>
+    <span class="design-label b">B — Card</span>
+    <div style="background: var(--bg); border-radius: 8px; border: 1px solid var(--border); padding: 12px 16px;">
+      <div style="background: var(--surface); border: 1px solid var(--border-subtle); border-radius: 8px; overflow: hidden;">
+        <div style="display: flex; align-items: center; gap: 8px; padding: 7px 12px; border-bottom: 1px solid var(--border);">
+          <div class="status-dot success"></div>
+          <span class="mono" style="font-size: 12px; color: #4752c4;">codex_shell</span>
+          <span style="font-size: 11px; color: var(--text-muted);">× 5</span>
+          <div style="flex: 1;"></div>
+          <span class="elapsed">8ms</span>
+        </div>
+        <div style="padding: 4px 12px; font-size: 11px; color: var(--text-muted);">↑ 2 earlier</div>
+        <div style="display: flex; align-items: center; gap: 6px; padding: 3px 12px; font-size: 12px;">
+          <div class="status-dot success"></div>
+          <span class="mono" style="color: var(--text-secondary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1;">cat tasks/changedoc.md</span>
+          <span class="elapsed">1ms</span>
+        </div>
+        <div style="display: flex; align-items: center; gap: 6px; padding: 3px 12px; font-size: 12px;">
+          <div class="status-dot success"></div>
+          <span class="mono" style="color: var(--text-secondary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1;">find memory -maxdepth 2 -type f</span>
+          <span class="elapsed">1ms</span>
+        </div>
+        <div style="display: flex; align-items: center; gap: 6px; padding: 3px 12px 6px; font-size: 12px;">
+          <div class="status-dot success"></div>
+          <span class="mono" style="color: var(--text-secondary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1;">mkdir -p deliverable tasks/evolving_skill</span>
+          <span class="elapsed">1ms</span>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- C -->
+  <div>
+    <span class="design-label c">C — Terminal</span>
+    <div style="background: var(--bg); border-radius: 8px; border: 1px solid var(--border); padding: 12px 16px;">
+      <div style="font-size: 12px;">
+        <div style="display: flex; align-items: baseline; gap: 0; padding: 2px 0;">
+          <span style="color: var(--online); margin-right: 6px; font-size: 10px;">●</span>
+          <span class="mono" style="color: #4752c4; margin-right: 4px; font-size: 11px;">$</span>
+          <span class="mono" style="color: var(--text-secondary); flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">mkdir -p tasks && cat > tasks/changedoc.md</span>
+          <span class="elapsed" style="margin-left: 8px;">2ms</span>
+        </div>
+        <div style="display: flex; align-items: baseline; gap: 0; padding: 2px 0;">
+          <span style="color: var(--online); margin-right: 6px; font-size: 10px;">●</span>
+          <span class="mono" style="color: #4752c4; margin-right: 4px; font-size: 11px;">$</span>
+          <span class="mono" style="color: var(--text-secondary); flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">mkdir -p memory/short_term && ls -la memory</span>
+          <span class="elapsed" style="margin-left: 8px;">2ms</span>
+        </div>
+        <div style="display: flex; align-items: baseline; gap: 0; padding: 2px 0;">
+          <span style="color: var(--online); margin-right: 6px; font-size: 10px;">●</span>
+          <span class="mono" style="color: #4752c4; margin-right: 4px; font-size: 11px;">$</span>
+          <span class="mono" style="color: var(--text-secondary); flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">cat tasks/changedoc.md</span>
+          <span class="elapsed" style="margin-left: 8px;">1ms</span>
+        </div>
+        <div style="display: flex; align-items: baseline; gap: 0; padding: 2px 0;">
+          <span style="color: var(--text-muted); margin-right: 6px; font-size: 10px;">●</span>
+          <span class="mono" style="color: #4752c4; margin-right: 4px; font-size: 11px;">$</span>
+          <span style="font-size: 11px; color: var(--text-muted);">... 2 more (find, mkdir)</span>
+          <div style="flex: 1;"></div>
+          <span class="elapsed">2ms</span>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Current (for comparison) -->
+  <div>
+    <span class="design-label" style="background: var(--text-muted); color: var(--bg);">Current</span>
+    <div style="background: var(--bg); border-radius: 8px; border: 1px solid var(--border); padding: 12px 16px;">
+      <div style="display: flex; align-items: center; gap: 8px; padding: 4px 8px; border-radius: 4px; cursor: pointer; font-size: 13px;">
+        <svg class="chevron open" viewBox="0 0 12 12" fill="none" stroke="var(--text-muted)" stroke-width="1.5" style="width:12px;height:12px;">
+          <path d="M4 2l4 4-4 4" stroke-linecap="round" stroke-linejoin="round"/>
+        </svg>
+        <div class="status-dot success"></div>
+        <span class="mono" style="font-size: 12px; color: #4752c4; background: rgba(88,101,242,0.1); padding: 1px 6px; border-radius: 3px; border: 1px solid rgba(88,101,242,0.2);">codex_shell</span>
+        <span style="font-size: 12px; color: var(--text-muted);">×5</span>
+        <div style="flex: 1;"></div>
+        <span class="elapsed">8ms</span>
+      </div>
+      <div style="margin-left: 20px; border-left: 1px solid var(--border-subtle); padding-left: 12px; font-size: 12px;">
+        <div style="padding: 2px 0; color: var(--text-muted);">├─ (+2 earlier)</div>
+        <div style="display: flex; gap: 6px; padding: 2px 0;"><span style="color: var(--text-muted);">├─</span><div class="status-dot success" style="margin-top: 4px;"></div><span class="mono" style="color: var(--text-secondary);">codex_shell</span><span class="mono" style="color: var(--text-muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1;">cat tasks/changedoc.md</span><span class="elapsed">1ms</span></div>
+        <div style="display: flex; gap: 6px; padding: 2px 0;"><span style="color: var(--text-muted);">├─</span><div class="status-dot success" style="margin-top: 4px;"></div><span class="mono" style="color: var(--text-secondary);">codex_shell</span><span class="mono" style="color: var(--text-muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1;">find memory -maxdepth 2</span><span class="elapsed">1ms</span></div>
+        <div style="display: flex; gap: 6px; padding: 2px 0;"><span style="color: var(--text-muted);">└─</span><div class="status-dot success" style="margin-top: 4px;"></div><span class="mono" style="color: var(--text-secondary);">codex_shell</span><span class="mono" style="color: var(--text-muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1;">mkdir -p deliverable</span><span class="elapsed">1ms</span></div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<h2>Recommendation</h2>
+<div class="note" style="max-width: 900px; font-size: 13px; line-height: 1.7;">
+  <strong>Suggested approach: Mix of B + C</strong><br><br>
+  <strong>Tool calls</strong> → Use <strong>C's terminal style</strong> (<code>● $ command</code>) for individual tools and single calls.
+  For batches (2+), use <strong>B's compact card</strong> with the summary header but <strong>C's flat rows inside</strong> (no tree connectors, no repeated tool name).<br><br>
+  <strong>Thinking/reasoning</strong> → Use <strong>C's minimal style</strong>: dimmed italic with a thin 1px left border. Thinking is secondary — it shouldn't take more visual space than the content it produces. Always start collapsed.<br><br>
+  <strong>Content</strong> → Use <strong>B's clean text</strong>: 14px, full text color, no wrapper. This is what the user is here to read.<br><br>
+  <strong>Answers</strong> → Keep the current yellow-tinted card (works well). Add click-to-expand as implemented.<br><br>
+  <strong>Votes</strong> → Use <strong>C's inline row</strong> for most cases (more compact). Only use a card if the reason is very long.
+</div>
+
+</body>
+</html>

@@ -82,6 +82,12 @@ class SubagentLaunchWatcher:
         self._active_tasks: dict[str, asyncio.Task] = {}  # subagent_id -> task
         self._seen_requests: set[str] = set()  # subagent_ids already processing or done
 
+    def add_allowed_root(self, root: Path) -> None:
+        """Add an additional allowed workspace root (idempotent)."""
+        resolved = Path(root).resolve()
+        if resolved not in self.allowed_workspace_roots:
+            self.allowed_workspace_roots.append(resolved)
+
     # -------------------------------------------------------------------------
     # Public API
     # -------------------------------------------------------------------------

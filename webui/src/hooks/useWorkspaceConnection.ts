@@ -20,6 +20,8 @@ import type { WorkspaceWSEvent } from '../types';
 
 const MAX_RECONNECT_ATTEMPTS = 5;
 const RECONNECT_BASE_INTERVAL = 1000; // ms
+const WORKSPACE_POLL_INTERVAL = 5000; // ms — re-poll watch_session until data arrives
+const COMPLETION_EMPTY_POLL_GRACE_ATTEMPTS = 3;
 
 /**
  * Always-on workspace WebSocket connection hook.
@@ -29,6 +31,12 @@ const RECONNECT_BASE_INTERVAL = 1000; // ms
 export function useWorkspaceConnection() {
   // Get session ID from agent store
   const sessionId = useAgentStore((s) => s.sessionId);
+  const isComplete = useAgentStore((s) => s.isComplete);
+  const agentCount = useAgentStore((s) => s.agentOrder.length);
+  const answerCount = useAgentStore((s) => s.answers.length);
+  const fileChangeCount = useAgentStore((s) =>
+    Object.values(s.agents).reduce((total, agent) => total + agent.files.length, 0)
+  );
 
   // Workspace store actions
   const setConnectionStatus = useWorkspaceStore((s) => s.setConnectionStatus);
@@ -51,10 +59,18 @@ export function useWorkspaceConnection() {
   const intentionalDisconnectRef = useRef(false);
   const sessionIdRef = useRef(sessionId);
   const reconnectAttemptsRef = useRef(0);
+  const completionEmptyPollsRef = useRef(0);
+  const liveRefreshSignatureRef = useRef({
+    sessionId: '',
+    answerCount: 0,
+    fileChangeCount: 0,
+    isComplete: false,
+  });
 
   // Keep sessionId ref updated
   useEffect(() => {
     sessionIdRef.current = sessionId;
+    completionEmptyPollsRef.current = 0;
   }, [sessionId]);
 
   // Build WebSocket URL
@@ -76,7 +92,8 @@ export function useWorkspaceConnection() {
             if (data.initial_files) {
               for (const [wsPath, files] of Object.entries(data.initial_files)) {
                 const fileList = files as WorkspaceFileInfo[];
-                setInitialFiles(wsPath, fileList);
+                const agentId = data.workspace_metadata?.[wsPath]?.agent_id;
+                setInitialFiles(wsPath, fileList, agentId);
               }
             }
             break;
@@ -84,7 +101,7 @@ export function useWorkspaceConnection() {
           case 'workspace_refresh':
             // Full refresh - replace all files for this workspace
             if (data.workspace_path && data.files) {
-              setInitialFiles(data.workspace_path, data.files);
+              setInitialFiles(data.workspace_path, data.files, data.agent_id);
             }
             break;
 
@@ -242,7 +259,7 @@ export function useWorkspaceConnection() {
       wsRef.current.send(
         JSON.stringify({
           action: 'refresh',
-          workspace_path: workspacePath,
+          path: workspacePath,
         })
       );
     }
@@ -266,6 +283,73 @@ export function useWorkspaceConnection() {
     setRefreshSessionFn(refreshSession);
     return () => setRefreshSessionFn(null);
   }, [refreshSession, setRefreshSessionFn]);
+
+  useEffect(() => {
+    const previous = liveRefreshSignatureRef.current;
+    const sessionChanged = previous.sessionId !== sessionId;
+    const answerAdvanced = !sessionChanged && answerCount > previous.answerCount;
+    const fileChanged = !sessionChanged && fileChangeCount > previous.fileChangeCount;
+    const completedNow = !sessionChanged && isComplete && !previous.isComplete;
+
+    liveRefreshSignatureRef.current = {
+      sessionId: sessionId || '',
+      answerCount,
+      fileChangeCount,
+      isComplete,
+    };
+
+    if (!sessionId || !(answerAdvanced || fileChanged || completedNow)) {
+      return;
+    }
+
+    if (wsRef.current?.readyState === WebSocket.OPEN) {
+      wsRef.current.send(JSON.stringify({ action: 'watch_session' }));
+    }
+  }, [answerCount, fileChangeCount, isComplete, sessionId]);
+
+  // Auto-poll: re-send watch_session while workspaces are still missing
+  // or discovered workspaces are still empty. This covers the race where
+  // status.json exposes the workspace path before the agent has written
+  // any visible files, which would otherwise leave the UI stuck on an
+  // empty snapshot for the rest of the run.
+  const workspaces = useWorkspaceStore((s) => s.workspaces);
+  const workspaceEntries = Object.values(workspaces);
+  const hasNoWorkspaces = workspaceEntries.length === 0;
+  const missingAgentWorkspaces =
+    agentCount > 0 && workspaceEntries.length < agentCount;
+  const hasEmptyWorkspace = workspaceEntries.some(
+    (workspace) => workspace.files.length === 0
+  );
+  const shouldPollForWorkspaceFiles =
+    (hasNoWorkspaces || missingAgentWorkspaces || hasEmptyWorkspace);
+
+  useEffect(() => {
+    if (!shouldPollForWorkspaceFiles) {
+      completionEmptyPollsRef.current = 0;
+    }
+  }, [shouldPollForWorkspaceFiles]);
+
+  useEffect(() => {
+    if (!shouldPollForWorkspaceFiles || !sessionId) return;
+
+    const id = setInterval(() => {
+      if (wsRef.current?.readyState === WebSocket.OPEN) {
+        if (
+          isComplete &&
+          completionEmptyPollsRef.current >=
+            COMPLETION_EMPTY_POLL_GRACE_ATTEMPTS
+        ) {
+          return;
+        }
+        wsRef.current.send(JSON.stringify({ action: 'watch_session' }));
+        if (isComplete) {
+          completionEmptyPollsRef.current += 1;
+        }
+      }
+    }, WORKSPACE_POLL_INTERVAL);
+
+    return () => clearInterval(id);
+  }, [sessionId, shouldPollForWorkspaceFiles, isComplete]);
 
   return {
     connect,

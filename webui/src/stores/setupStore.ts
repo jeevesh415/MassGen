@@ -70,6 +70,11 @@ export interface DockerPullProgress {
 export type SetupStep = 'apiKeys' | 'docker' | 'skills';
 
 interface SetupState {
+  // Overlay open/close (for v2)
+  isOpen: boolean;
+  openSetup: () => void;
+  closeSetup: () => void;
+
   // Current step
   currentStep: SetupStep;
 
@@ -131,6 +136,7 @@ interface SetupState {
 const stepOrder: SetupStep[] = ['apiKeys', 'docker', 'skills'];
 
 const initialState = {
+  isOpen: false,
   currentStep: 'apiKeys' as SetupStep,
   isLoading: false,
   error: null,
@@ -158,6 +164,14 @@ const initialState = {
 
 export const useSetupStore = create<SetupState>()((set, get) => ({
   ...initialState,
+
+  openSetup: () => {
+    set({ isOpen: true, currentStep: 'apiKeys' });
+  },
+
+  closeSetup: () => {
+    set({ isOpen: false });
+  },
 
   setStep: (step: SetupStep) => {
     set({ currentStep: step });
@@ -411,6 +425,7 @@ export const useSetupStore = create<SetupState>()((set, get) => ({
 }));
 
 // Selectors
+export const selectIsOpen = (state: SetupState) => state.isOpen;
 export const selectCurrentStep = (state: SetupState) => state.currentStep;
 export const selectIsLoading = (state: SetupState) => state.isLoading;
 export const selectError = (state: SetupState) => state.error;

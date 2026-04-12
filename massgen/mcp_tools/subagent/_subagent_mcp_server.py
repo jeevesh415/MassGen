@@ -55,6 +55,17 @@ _specialized_subagents: dict[str, dict[str, Any]] = {}  # name -> type config di
 _subagent_types_loaded: bool = False  # set to True after first lazy scan
 _next_subagent_index: int = 0  # auto-increment counter for default subagent IDs
 
+# Deferred config file paths — loaded lazily at first spawn_subagents call
+# rather than at MCP server startup.  This avoids FileNotFoundError when the
+# MCP server process starts inside Docker before the orchestrator has flushed
+# all config files (race on bind-mount visibility) or when workspace branch
+# switches between rounds remove .massgen/subagent_mcp/*.
+_deferred_agent_configs_file: str | None = None
+_deferred_orchestrator_config_file: str | None = None
+_deferred_context_paths_file: str | None = None
+_deferred_coordination_config_file: str | None = None
+_deferred_configs_loaded: bool = False
+
 
 def _normalize_context_paths_arg(value: Any) -> list[str] | Any:
     """Accept a single string path as shorthand for a one-item context_paths list."""
@@ -103,6 +114,105 @@ def _load_json_with_temp_workspace_fallback(path_str: str) -> tuple[Any, Path]:
             raise primary_err
         with open(fallback) as f:
             return json.load(f), fallback
+
+
+def _load_deferred_configs() -> None:
+    """Load config files that were deferred from MCP server startup.
+
+    Called lazily from ``_get_manager()`` the first time a tool needs the
+    SubagentManager.  By this point the orchestrator has definitely written
+    the JSON config files and the Docker bind-mount has had time to reflect
+    them, so FileNotFoundError is far less likely than at process start.
+    """
+    global _deferred_configs_loaded
+    global _parent_agent_configs, _subagent_orchestrator_config
+    global _parent_context_paths, _parent_coordination_config
+
+    if _deferred_configs_loaded:
+        return
+    _deferred_configs_loaded = True
+
+    # --- agent configs ---
+    if _deferred_agent_configs_file:
+        try:
+            loaded, loaded_path = _load_json_with_temp_workspace_fallback(
+                _deferred_agent_configs_file,
+            )
+            if not isinstance(loaded, list):
+                loaded = [loaded]
+            _parent_agent_configs = loaded
+            if loaded_path != Path(_deferred_agent_configs_file):
+                logger.info(
+                    "[SubagentMCP] Loaded agent configs via temp workspace " "fallback: %s",
+                    loaded_path,
+                )
+        except (json.JSONDecodeError, FileNotFoundError, OSError) as e:
+            logger.warning(
+                "Failed to load agent configs from %s: %s",
+                _deferred_agent_configs_file,
+                e,
+            )
+            _parent_agent_configs = []
+
+    # --- orchestrator config ---
+    if _deferred_orchestrator_config_file:
+        try:
+            loaded_orch, _ = _load_json_with_temp_workspace_fallback(
+                _deferred_orchestrator_config_file,
+            )
+            if isinstance(loaded_orch, dict) and loaded_orch:
+                _subagent_orchestrator_config = SubagentOrchestratorConfig.from_dict(loaded_orch)
+        except (json.JSONDecodeError, FileNotFoundError, OSError) as e:
+            logger.warning(
+                "[SubagentMCP] Failed to load orchestrator config from " "%s: %s",
+                _deferred_orchestrator_config_file,
+                e,
+            )
+
+    # --- context paths ---
+    if _deferred_context_paths_file:
+        try:
+            loaded_ctx, loaded_ctx_path = _load_json_with_temp_workspace_fallback(
+                _deferred_context_paths_file,
+            )
+            if isinstance(loaded_ctx, list):
+                _parent_context_paths = loaded_ctx
+            if loaded_ctx_path != Path(_deferred_context_paths_file):
+                logger.info(
+                    "[SubagentMCP] Loaded parent context paths via temp " "workspace fallback: %s",
+                    loaded_ctx_path,
+                )
+            logger.info(
+                "[SubagentMCP] Loaded %d parent context paths",
+                len(_parent_context_paths),
+            )
+        except (json.JSONDecodeError, FileNotFoundError, OSError) as e:
+            logger.warning(
+                "Failed to load context paths from %s: %s",
+                _deferred_context_paths_file,
+                e,
+            )
+
+    # --- coordination config ---
+    if _deferred_coordination_config_file:
+        try:
+            loaded_coord, loaded_coord_path = _load_json_with_temp_workspace_fallback(
+                _deferred_coordination_config_file,
+            )
+            if isinstance(loaded_coord, dict):
+                _parent_coordination_config = loaded_coord
+            if loaded_coord_path != Path(_deferred_coordination_config_file):
+                logger.info(
+                    "[SubagentMCP] Loaded parent coordination config via " "temp workspace fallback: %s",
+                    loaded_coord_path,
+                )
+            logger.info("[SubagentMCP] Loaded parent coordination config")
+        except (json.JSONDecodeError, FileNotFoundError, OSError) as e:
+            logger.warning(
+                "Failed to load coordination config from %s: %s",
+                _deferred_coordination_config_file,
+                e,
+            )
 
 
 def _parse_orchestrator_config_arg(raw_value: str) -> dict[str, Any] | None:
@@ -198,6 +308,9 @@ def _get_manager() -> SubagentManager:
     """Get or create the SubagentManager instance."""
     global _manager
     if _manager is None:
+        # Load deferred config files now — the agent has made a tool call,
+        # so the orchestrator has definitely written the JSON files to disk.
+        _load_deferred_configs()
         if _workspace_path is None:
             raise RuntimeError("Subagent server not properly configured: workspace_path is None")
         _manager = SubagentManager(
@@ -298,7 +411,20 @@ _DIRECT_SPAWN_GLOBALS = [
     "_max_timeout",
     "_specialized_subagents",
     "_subagent_types_loaded",
+    "_deferred_configs_loaded",
 ]
+
+# Lock to serialise concurrent _direct_spawn_subagents calls.  Lazy-init
+# because the module may be imported before an event loop exists.
+_direct_spawn_lock: asyncio.Lock | None = None
+
+
+def _get_direct_spawn_lock() -> asyncio.Lock:
+    """Return (and lazily create) the direct-spawn asyncio lock."""
+    global _direct_spawn_lock
+    if _direct_spawn_lock is None:
+        _direct_spawn_lock = asyncio.Lock()
+    return _direct_spawn_lock
 
 
 def configure_direct_spawn(
@@ -335,6 +461,7 @@ def configure_direct_spawn(
     global _agent_temporary_workspace, _parent_context_paths
     global _parent_coordination_config, _default_timeout, _max_timeout
     global _specialized_subagents, _subagent_types_loaded
+    global _deferred_configs_loaded
 
     _manager = None  # Force fresh SubagentManager
     _workspace_path = workspace_path
@@ -350,6 +477,7 @@ def configure_direct_spawn(
     _max_timeout = max_timeout
     _specialized_subagents = {}
     _subagent_types_loaded = False  # Force rescan from new workspace
+    _deferred_configs_loaded = True  # Direct spawn provides configs inline
 
     return saved
 
@@ -605,6 +733,13 @@ async def spawn_subagents_direct(
         )
         result_payloads = [_attach_timeout_seconds(r.to_dict(), effective_timeout) for r in results]
 
+        # Write registry so list_subagents can discover direct-spawned
+        # subagents (trace analyzer, round evaluator, etc.).
+        try:
+            _save_subagents_to_filesystem()
+        except Exception:
+            logger.debug("[SubagentMCP] Registry write after direct spawn failed", exc_info=True)
+
         completed = sum(1 for r in results if r.status in ("completed", "completed_but_timeout", "partial"))
         failed = sum(1 for r in results if r.status == "error")
         timeout = sum(1 for r in results if r.status in ("timeout", "completed_but_timeout"))
@@ -639,6 +774,9 @@ async def create_server() -> fastmcp.FastMCP:
     global _subagent_runtime_mode, _subagent_runtime_fallback_mode, _subagent_host_launch_prefix
     global _delegation_directory
     global _parent_coordination_config, _specialized_subagents, _agent_temporary_workspace
+    global _deferred_agent_configs_file, _deferred_orchestrator_config_file
+    global _deferred_context_paths_file, _deferred_coordination_config_file
+    global _deferred_configs_loaded
 
     parser = argparse.ArgumentParser(description="Subagent MCP Server")
     parser.add_argument(
@@ -774,107 +912,31 @@ async def create_server() -> fastmcp.FastMCP:
     _parent_agent_id = args.agent_id
     _orchestrator_id = args.orchestrator_id
 
-    # Parse agent configs from file (avoids command line / env var length limits)
-    _parent_agent_configs = []
-    if args.agent_configs_file:
-        try:
-            _agent_configs_loaded_path: Path | None = None
-            _parent_agent_configs, _agent_configs_loaded_path = _load_json_with_temp_workspace_fallback(
-                args.agent_configs_file,
-            )
-            if not isinstance(_parent_agent_configs, list):
-                _parent_agent_configs = [_parent_agent_configs]
-            if _agent_configs_loaded_path and _agent_configs_loaded_path != Path(args.agent_configs_file):
-                logger.info(
-                    "[SubagentMCP] Loaded agent configs via temp workspace fallback: %s",
-                    _agent_configs_loaded_path,
-                )
-            # Do NOT delete the file here. The MCP server process may start
-            # after a delay (Docker, lazy launch) or be restarted, and early
-            # deletion causes a race where the file is gone before it can be
-            # read. The orchestrator owns cleanup via mcp_temp_dir.
-        except (json.JSONDecodeError, FileNotFoundError, OSError) as e:
-            logger.warning(f"Failed to load agent configs from {args.agent_configs_file}: {e}")
-            _parent_agent_configs = []
+    # Defer config file loading until the first tool call (spawn_subagents).
+    # The MCP server process may start inside Docker before the orchestrator
+    # has flushed all JSON config files, or workspace branch switches between
+    # rounds may temporarily remove .massgen/subagent_mcp/*.  By loading
+    # lazily in _get_manager() we guarantee the files exist when read.
+    _deferred_agent_configs_file = args.agent_configs_file or None
+    _deferred_orchestrator_config_file = args.orchestrator_config_file or None
+    _deferred_context_paths_file = args.context_paths_file or None
+    _deferred_coordination_config_file = args.coordination_config_file or None
+    _deferred_configs_loaded = False
 
-    # Parse subagent orchestrator config (prefer file payload over inline JSON).
+    # Parse inline orchestrator config (not file-based — always available).
     _subagent_orchestrator_config = None
-    orch_cfg_data: dict[str, Any] | None = None
-    if args.orchestrator_config_file:
-        try:
-            loaded_orch_cfg, _orch_cfg_loaded_path = _load_json_with_temp_workspace_fallback(
-                args.orchestrator_config_file,
-            )
-            if isinstance(loaded_orch_cfg, dict):
-                orch_cfg_data = loaded_orch_cfg
-            else:
-                logger.warning(
-                    "[SubagentMCP] Ignoring non-dict orchestrator config from %s",
-                    args.orchestrator_config_file,
-                )
-        except (json.JSONDecodeError, FileNotFoundError, OSError) as e:
-            logger.warning(
-                "[SubagentMCP] Failed to load orchestrator config from %s: %s",
-                args.orchestrator_config_file,
-                e,
-            )
-
-    if orch_cfg_data is None and args.orchestrator_config:
+    if not _deferred_orchestrator_config_file and args.orchestrator_config:
         parsed_inline = _parse_orchestrator_config_arg(args.orchestrator_config)
         if parsed_inline is None and args.orchestrator_config.strip() not in ("", "{}"):
             logger.warning("[SubagentMCP] Failed to parse --orchestrator-config payload; using defaults")
-        orch_cfg_data = parsed_inline
-
-    if isinstance(orch_cfg_data, dict) and orch_cfg_data:
-        try:
-            _subagent_orchestrator_config = SubagentOrchestratorConfig.from_dict(orch_cfg_data)
-        except (TypeError, ValueError) as e:
-            logger.warning(f"[SubagentMCP] Invalid orchestrator config payload: {e}")
+        if isinstance(parsed_inline, dict) and parsed_inline:
+            try:
+                _subagent_orchestrator_config = SubagentOrchestratorConfig.from_dict(parsed_inline)
+            except (TypeError, ValueError) as e:
+                logger.warning(f"[SubagentMCP] Invalid orchestrator config payload: {e}")
 
     # Set log directory
     _log_directory = args.log_directory if args.log_directory else None
-
-    # Parse context paths from file (similar to agent configs, avoids length limits)
-    _parent_context_paths = []
-    if args.context_paths_file:
-        try:
-            _context_paths_loaded_path: Path | None = None
-            _parent_context_paths, _context_paths_loaded_path = _load_json_with_temp_workspace_fallback(
-                args.context_paths_file,
-            )
-            if not isinstance(_parent_context_paths, list):
-                _parent_context_paths = []
-            # Do NOT delete — see agent_configs_file comment above.
-            if _context_paths_loaded_path and _context_paths_loaded_path != Path(args.context_paths_file):
-                logger.info(
-                    "[SubagentMCP] Loaded parent context paths via temp workspace fallback: %s",
-                    _context_paths_loaded_path,
-                )
-            logger.info(f"[SubagentMCP] Loaded {len(_parent_context_paths)} parent context paths")
-        except (json.JSONDecodeError, FileNotFoundError, OSError) as e:
-            logger.warning(f"Failed to load context paths from {args.context_paths_file}: {e}")
-            _parent_context_paths = []
-
-    # Parse coordination config from file (similar to context paths)
-    _parent_coordination_config = {}
-    if args.coordination_config_file:
-        try:
-            _coord_cfg_loaded_path: Path | None = None
-            _parent_coordination_config, _coord_cfg_loaded_path = _load_json_with_temp_workspace_fallback(
-                args.coordination_config_file,
-            )
-            if not isinstance(_parent_coordination_config, dict):
-                _parent_coordination_config = {}
-            # Do NOT delete — see agent_configs_file comment above.
-            if _coord_cfg_loaded_path and _coord_cfg_loaded_path != Path(args.coordination_config_file):
-                logger.info(
-                    "[SubagentMCP] Loaded parent coordination config via temp workspace fallback: %s",
-                    _coord_cfg_loaded_path,
-                )
-            logger.info("[SubagentMCP] Loaded parent coordination config")
-        except (json.JSONDecodeError, FileNotFoundError, OSError) as e:
-            logger.warning(f"Failed to load coordination config from {args.coordination_config_file}: {e}")
-            _parent_coordination_config = {}
 
     # Specialized subagent types are loaded lazily on first spawn_subagents call
     # by _ensure_specialized_types_loaded() scanning workspace/.massgen/subagent_types/.

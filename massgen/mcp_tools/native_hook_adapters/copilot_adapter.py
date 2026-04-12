@@ -94,9 +94,15 @@ class CopilotNativeHookAdapter(NativeHookAdapter):
             if tool_result is not None:
                 ctx["tool_output"] = tool_result
 
-            # Serialize tool args for MassGen hook interface
+            # Normalize tool args for MassGen hook interface.
+            # The Copilot CLI sends toolArgs as a JSON *string* (e.g.
+            # '{"command":"ls"}'), not a parsed dict.  If it's already a
+            # string, pass it through; otherwise serialize it.
             tool_args = input_data.get("toolArgs", {})
-            arguments_str = json.dumps(tool_args) if tool_args else "{}"
+            if isinstance(tool_args, str):
+                arguments_str = tool_args if tool_args else "{}"
+            else:
+                arguments_str = json.dumps(tool_args) if tool_args else "{}"
 
             try:
                 result = await hook.execute(tool_name, arguments_str, ctx)

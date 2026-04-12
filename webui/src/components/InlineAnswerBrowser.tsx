@@ -10,6 +10,10 @@ import { motion, AnimatePresence } from 'framer-motion';
 import { FileText, User, Clock, ChevronDown, Trophy, Folder, File, ChevronRight, RefreshCw, History, ExternalLink } from 'lucide-react';
 import { useAgentStore, selectAnswers, selectAgentOrder, selectSelectedAgent } from '../stores/agentStore';
 import type { Answer, AnswerWorkspace } from '../types';
+import {
+  getAgentWorkspaceLabel,
+  getAnswerWorkspaceLabel,
+} from '../utils/workspaceBrowser';
 
 // Types for workspace API responses
 interface WorkspaceInfo {
@@ -517,9 +521,9 @@ export function InlineAnswerBrowser() {
                               ? 'bg-gray-200 dark:bg-gray-700 text-gray-700 dark:text-gray-300 hover:bg-gray-300 dark:hover:bg-gray-600'
                               : 'bg-gray-100 dark:bg-gray-800 text-gray-400 dark:text-gray-600 cursor-not-allowed'
                         }`}
-                        title={`${agentId}${hasCurrent ? ' (current)' : ''}${hasHistorical ? ` + ${agentWs.historical.length} historical` : ''}`}
+                        title={`${getAgentWorkspaceLabel(agentId, agentOrder)}${hasCurrent ? ' (live)' : ''}${hasHistorical ? ` + ${agentWs.historical.length} historical` : ''}`}
                       >
-                        {agentId}
+                        {getAgentWorkspaceLabel(agentId, agentOrder)}
                       </button>
                     );
                   })}
@@ -539,12 +543,13 @@ export function InlineAnswerBrowser() {
                     }}
                     className="text-xs bg-white dark:bg-gray-700 border border-gray-300 dark:border-gray-600 rounded px-2 py-0.5 text-gray-700 dark:text-gray-200"
                   >
-                    <option value="current">Current</option>
+                    <option value="current">Live</option>
                     {answerWorkspaces
                       .filter(w => w.agentId === selectedAgentWorkspace)
+                      .sort((left, right) => (right.answerNumber || 0) - (left.answerNumber || 0))
                       .map((ws) => (
                         <option key={ws.answerId} value={ws.answerLabel}>
-                          {ws.answerLabel}
+                          {getAnswerWorkspaceLabel(ws.answerNumber)}
                         </option>
                       ))}
                   </select>
@@ -603,7 +608,9 @@ export function InlineAnswerBrowser() {
               ) : !activeWorkspace ? (
                 <div className="flex flex-col items-center justify-center h-full text-gray-500">
                   <Folder className="w-8 h-8 mb-2 opacity-50" />
-                  <p className="text-sm">No workspace for {selectedAgentWorkspace}</p>
+                  <p className="text-sm">
+                    No workspace for {selectedAgentWorkspace ? getAgentWorkspaceLabel(selectedAgentWorkspace, agentOrder) : 'this agent'}
+                  </p>
                 </div>
               ) : workspaceFiles.length === 0 ? (
                 <div className="flex flex-col items-center justify-center h-full text-gray-500">
@@ -613,7 +620,15 @@ export function InlineAnswerBrowser() {
               ) : (
                 <div>
                   <div className="mb-2 text-xs text-gray-500 dark:text-gray-400">
-                    {selectedAgentWorkspace} - {activeWorkspace.name} - {workspaceFiles.length} files
+                    {selectedAgentWorkspace ? getAgentWorkspaceLabel(selectedAgentWorkspace, agentOrder) : 'Agent'}
+                    {' - '}
+                    {selectedAnswerLabel === 'current'
+                      ? 'Live'
+                      : getAnswerWorkspaceLabel(
+                          answerWorkspaces.find((workspace) => workspace.answerLabel === selectedAnswerLabel)?.answerNumber ?? 0
+                        )}
+                    {' - '}
+                    {workspaceFiles.length} files
                   </div>
                   {fileTree.map((node) => (
                     <FileNode key={node.path} node={node} depth={0} />

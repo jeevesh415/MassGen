@@ -967,7 +967,7 @@ class TestNormalizeTaskExecution:
             normalize_task_execution({}, default_mode="delegate")
 
     def test_unknown_mode_raises(self):
-        with pytest.raises(ValueError, match="mode must be either"):
+        with pytest.raises(ValueError, match="execution.mode must be"):
             normalize_task_execution({"mode": "parallel"})
 
     def test_inline_with_subagent_type_raises(self):

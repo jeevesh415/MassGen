@@ -261,20 +261,42 @@ Keyboard Shortcuts
 Automation Mode
 ---------------
 
-Combine ``--web`` with ``--automation`` for a streamlined automation view:
+Combine ``--web`` with ``--automation`` to auto-start a run and watch it in the
+full Web UI:
 
 .. code-block:: bash
 
    uv run massgen --web --automation --config config.yaml "Your question"
 
-The automation view provides:
+When ``--automation`` is combined with ``--web``, a question, and a config:
 
-* Minimal status header with phase, elapsed time, and status.json path
-* Timeline visualization of agent progress
-* Auto-polls for active sessions when no coordination is running
-* Designed for LLM agents monitoring MassGen executions
+* The coordination **auto-starts** as soon as the server is ready — no browser
+  interaction needed to kick off the run.
+* The **full Web UI** is available at the printed URL for monitoring progress,
+  browsing answers, viewing the workspace, and inspecting votes.
+* Server logs are suppressed to keep stdout clean.
+* If no ``--config`` is specified, the default config is auto-resolved
+  (same as running without ``--web``).
 
-Use ``--no-browser`` to prevent auto-opening the browser (useful for servers).
+Use ``--no-browser`` to prevent auto-opening the browser (useful for servers
+or when driving MassGen from another process).
+
+**CLI flags work with --web:**
+
+Flags like ``--eval-criteria`` and ``--checklist-criteria-preset`` are forwarded
+to the WebUI run, so this works as expected:
+
+.. code-block:: bash
+
+   # Custom evaluation criteria with WebUI monitoring
+   uv run massgen --web --automation --no-browser \
+     --eval-criteria criteria.json \
+     --config config.yaml "Your question"
+
+   # Use a built-in criteria preset
+   uv run massgen --web --automation \
+     --checklist-criteria-preset evaluation \
+     --config config.yaml "Your question"
 
 CLI Options
 -----------
@@ -292,14 +314,26 @@ CLI Options
    * - ``--web-host HOST``
      - Server host (default: 127.0.0.1)
    * - ``--no-browser``
-     - Don't auto-open browser when using ``--web`` with a question
+     - Don't auto-open browser
+   * - ``--eval-criteria FILE``
+     - Path to JSON file with custom evaluation criteria (works with ``--web``)
+   * - ``--checklist-criteria-preset NAME``
+     - Use a built-in criteria preset (works with ``--web``)
+   * - ``--orchestrator-timeout SECONDS``
+     - Set orchestrator timeout (works with ``--web``)
 
 **Examples:**
 
 .. code-block:: bash
 
-   # Default settings (localhost:8000)
+   # Interactive — opens browser, enter question in UI
    massgen --web --config @examples/basic/multi/three_agents_default
+
+   # Auto-start — run begins immediately, open URL to watch
+   massgen --web --automation --config config.yaml "Your question"
+
+   # Headless auto-start — no browser, monitor via URL or status.json
+   massgen --web --automation --no-browser --config config.yaml "Your question"
 
    # Custom port
    massgen --web --web-port 3000 --config config.yaml

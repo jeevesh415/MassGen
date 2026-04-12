@@ -28,6 +28,7 @@ from massgen.system_prompt_sections import (
     FilesystemOperationsSection,
     GPT5GuidanceSection,
     GrokGuidanceSection,
+    MainAgentCheckpointSection,
     MemorySection,
     MultimodalToolsSection,
     NoveltyPressureSection,
@@ -205,7 +206,11 @@ class SystemMessageBuilder:
         custom_checklist_items: list[str] | None = None,
         item_categories: dict[str, str] | None = None,
         item_verify_by: dict[str, str] | None = None,
+        item_anti_patterns: dict[str, list[str]] | None = None,
+        item_score_anchors: dict[str, dict[str, str]] | None = None,
         builder_enabled: bool = True,
+        regression_guard_enabled: bool = False,
+        essential_files_active: bool = False,
     ) -> str:
         """Build system message for coordination phase.
 
@@ -266,8 +271,24 @@ class SystemMessageBuilder:
 
         # PRIORITY 1 (HIGH): Output-First Verification - verify outcomes, not implementations
         is_decomposition = coordination_mode == "decomposition"
-        builder.add_section(OutputFirstVerificationSection(decomposition_mode=is_decomposition))
+        builder.add_section(
+            OutputFirstVerificationSection(
+                decomposition_mode=is_decomposition,
+                fast_iteration_mode=getattr(
+                    getattr(self.config, "coordination_config", None),
+                    "fast_iteration_mode",
+                    False,
+                ),
+            ),
+        )
         enable_subagents = bool(getattr(getattr(self.config, "coordination_config", None), "enable_subagents", False))
+        # Check if agent-spawnable subagent types exist (None = defaults, [] = none)
+        _subagent_types_cfg = getattr(
+            getattr(self.config, "coordination_config", None),
+            "subagent_types",
+            None,
+        )
+        _has_agent_spawnable_types = _subagent_types_cfg is None or bool(_subagent_types_cfg)
 
         # PRIORITY 1 (CRITICAL): MassGen Coordination - vote/new_answer or decomposition primitives
         changedoc_enabled = self._changedoc_enabled
@@ -286,6 +307,13 @@ class SystemMessageBuilder:
                     custom_checklist_items=custom_checklist_items,
                     item_categories=item_categories,
                     item_verify_by=item_verify_by,
+                    item_anti_patterns=item_anti_patterns,
+                    item_score_anchors=item_score_anchors,
+                    fast_iteration_mode=getattr(
+                        getattr(self.config, "coordination_config", None),
+                        "fast_iteration_mode",
+                        False,
+                    ),
                 ),
             )
         else:
@@ -317,8 +345,11 @@ class SystemMessageBuilder:
                     custom_checklist_items=custom_checklist_items,
                     item_categories=item_categories,
                     item_verify_by=item_verify_by,
+                    item_anti_patterns=item_anti_patterns,
+                    item_score_anchors=item_score_anchors,
                     has_existing_answers=bool(answers) or answers_used > 0,
                     builder_enabled=builder_enabled,
+                    regression_guard_enabled=regression_guard_enabled,
                     improvements_cfg=improvements_cfg,
                     round_evaluator_before_checklist=getattr(
                         getattr(self.config, "coordination_config", None),
@@ -335,7 +366,24 @@ class SystemMessageBuilder:
                         "round_evaluator_transformation_pressure",
                         "balanced",
                     ),
-                    specialized_subagents_available=bool(enable_subagents),
+                    specialized_subagents_available=bool(enable_subagents) and _has_agent_spawnable_types,
+                    evaluator_available=bool(enable_subagents)
+                    and "evaluator" in ({t.lower() for t in _subagent_types_cfg} if _subagent_types_cfg is not None else {"evaluator", "explorer", "researcher", "critic"}),
+                    enable_evaluator_personas=getattr(
+                        getattr(self.config, "coordination_config", None),
+                        "enable_evaluator_personas",
+                        False,
+                    ),
+                    auto_trace_analysis=getattr(
+                        getattr(self.config, "coordination_config", None),
+                        "auto_trace_analysis",
+                        False,
+                    ),
+                    fast_iteration_mode=getattr(
+                        getattr(self.config, "coordination_config", None),
+                        "fast_iteration_mode",
+                        False,
+                    ),
                 ),
             )
 
@@ -501,6 +549,7 @@ class SystemMessageBuilder:
                 concurrent_tool_execution=concurrent_tool_execution,
                 agent_mapping=agent_mapping,
                 decomposition_mode=is_decomposition,
+                essential_files_active=essential_files_active,
             )
 
             builder.add_section(fs_ops)
@@ -589,11 +638,30 @@ class SystemMessageBuilder:
             # specialized_subagents is only defined when enable_subagents is True;
             # ternary is safe here because Python short-circuits on the False branch.
             _tp_subagents = specialized_subagents if enable_subagents else []
+            _checkpoint_enabled = hasattr(self.config, "coordination_config") and self.config.coordination_config and getattr(self.config.coordination_config, "checkpoint_enabled", False)
             builder.add_section(
                 TaskPlanningSection(
                     filesystem_mode=filesystem_mode,
                     decomposition_mode=is_decomposition,
                     specialized_subagents=_tp_subagents,
+                    checkpoint_mode=_checkpoint_enabled,
+                    fast_iteration_mode=getattr(
+                        getattr(self.config, "coordination_config", None),
+                        "fast_iteration_mode",
+                        False,
+                    ),
+                ),
+            )
+
+        # PRIORITY 10 (MEDIUM): Checkpoint Coordination (main agent only)
+        _checkpoint_enabled = hasattr(self.config, "coordination_config") and self.config.coordination_config and getattr(self.config.coordination_config, "checkpoint_enabled", False)
+        if _checkpoint_enabled:
+            _coord = self.config.coordination_config
+            builder.add_section(
+                MainAgentCheckpointSection(
+                    checkpoint_guidance=getattr(_coord, "checkpoint_guidance", ""),
+                    gated_patterns=getattr(_coord, "checkpoint_gated_patterns", []) or [],
+                    checkpoint_mode=getattr(_coord, "checkpoint_mode", "conversation"),
                 ),
             )
 
@@ -666,6 +734,7 @@ class SystemMessageBuilder:
                         "round_evaluator_transformation_pressure",
                         "balanced",
                     ),
+                    essential_files_active=essential_files_active,
                 ),
             )
             logger.info(f"[SystemMessageBuilder] Added changedoc instructions for {agent_id} (prior_answers={has_prior_answers})")
@@ -939,6 +1008,7 @@ This makes the work reusable for similar future tasks."""
         concurrent_tool_execution: bool = False,
         agent_mapping: dict[str, str] | None = None,
         decomposition_mode: bool = False,
+        essential_files_active: bool = False,
     ) -> tuple[Any, Any, Any | None]:  # Tuple[FilesystemOperationsSection, FilesystemBestPracticesSection, Optional[CommandExecutionSection]]
         """Build filesystem-related sections.
 
@@ -997,6 +1067,7 @@ This makes the work reusable for similar future tasks."""
             enable_command_execution=enable_command_execution,
             agent_mapping=agent_mapping,
             has_native_tools=has_native_tools,
+            essential_files_active=essential_files_active,
         )
 
         # Build filesystem best practices section

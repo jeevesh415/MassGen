@@ -18,6 +18,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
+from massgen.coordination_tracker import CoordinationTracker
 from massgen.subagent.manager import SubagentManager
 from massgen.subagent.models import SpecializedSubagentConfig
 
@@ -166,6 +167,10 @@ class TestSubagentMcpConfigEnv:
         coord_cfg.task_planning_filesystem_mode = True
         orch.config = MagicMock(spec=[])
         orch.config.coordination_config = coord_cfg
+
+        # Coordination tracker for anonymous path tokens
+        orch.coordination_tracker = CoordinationTracker()
+        orch.coordination_tracker.initialize_session(["test_agent"])
 
         # Use a real dict wrapper that MagicMock won't intercept
         mock_agent = MagicMock()
@@ -619,6 +624,10 @@ class TestPlanningMcpConfigHooks:
         orch.config = MagicMock(spec=[])
         orch.config.coordination_config = coord_cfg
         orch.config.skip_final_presentation = False
+
+        # Coordination tracker for anonymous path tokens
+        orch.coordination_tracker = CoordinationTracker()
+        orch.coordination_tracker.initialize_session(["agent_a"])
 
         agent = MagicMock()
         agent.backend = MagicMock(spec=[])

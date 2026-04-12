@@ -68,7 +68,7 @@ This project started with the "threads of thought" and "iterative refinement" id
 <details open>
 <summary><h3>🆕 Latest Features</h3></summary>
 
-- [v0.1.65 Features](#-latest-features-v0165)
+- [v0.1.75 Features](#-latest-features-v0175)
 </details>
 
 <details open>
@@ -121,15 +121,15 @@ This project started with the "threads of thought" and "iterative refinement" id
 <details open>
 <summary><h3>🗺️ Roadmap</h3></summary>
 
-- [Recent Achievements (v0.1.65)](#recent-achievements-v0165)
-- [Previous Achievements (v0.0.3 - v0.1.64)](#previous-achievements-v003---v0164)
+- [Recent Achievements (v0.1.75)](#recent-achievements-v0175)
+- [Previous Achievements (v0.0.3 - v0.1.74)](#previous-achievements-v003---v0174)
 - [Key Future Enhancements](#key-future-enhancements)
   - Bug Fixes & Backend Improvements
   - Advanced Agent Collaboration
   - Expanded Model, Tool & Agent Integrations
   - Improved Performance & Scalability
   - Enhanced Developer Experience
-- [v0.1.66 Roadmap](#v0166-roadmap)
+- [v0.1.76 Roadmap](#v0176-roadmap)
 </details>
 
 <details open>
@@ -154,20 +154,19 @@ This project started with the "threads of thought" and "iterative refinement" id
 
 ---
 
-## 🆕 Latest Features (v0.1.65)
+## 🆕 Latest Features (v0.1.75)
 
-**🎉 Released: March 18, 2026**
+**🎉 Released: April 10, 2026**
 
-**What's New in v0.1.65:**
-- **🔧 MassGen Refinery Plugin** - Standalone MCP servers (quality, workflow, media) bring MassGen's checklist-based evaluation to Claude Code. Single-agent refinement working; multi-agent experimental.
-- **✅ Quality Server** - Session-based checklist evaluation with scoring thresholds and improvement proposals.
-- **📋 Workflow Server** - Multi-round answer submission with automatic deliverable snapshots.
+**What's New in v0.1.75:**
+- **🪝 Codex Native Hooks** - Hybrid hook system for Codex backend combining native and MCP capabilities.
+- **🛡️ Checkpoint WebUI Auto-Launch** - Checkpoint workflows auto-launch the WebUI for visual monitoring.
+- **📖 Standalone MCP Server Docs** - Guide for `massgen-checkpoint-mcp` with safety policy integration.
 
-**Try v0.1.65 Features:**
+**Try v0.1.75 Features:**
 ```bash
-pip install massgen==0.1.65
-# The standalone MCP servers are available for the massgen-refinery Claude Code plugin
-# https://github.com/massgen/massgen-refinery
+pip install massgen==0.1.75
+uv run massgen --config @examples/features/fast_iteration.yaml "Create an svg of an AI agent coding."
 ```
 
 → [See full release history and examples](massgen/configs/README.md#release-history--examples)
@@ -1239,16 +1238,36 @@ MassGen is currently in its foundational stage, with a focus on parallel, asynch
 
 ⚠️ **Early Stage Notice:** As MassGen is in active development, please expect upcoming breaking architecture changes as we continue to refine and improve the system.
 
-### Recent Achievements (v0.1.65)
+### Recent Achievements (v0.1.75)
 
-**🎉 Released: March 18, 2026**
+**🎉 Released: April 10, 2026**
 
-#### MassGen Refinery Plugin
-- **Quality Server** ([#1007](https://github.com/massgen/MassGen/pull/1007)): Standalone `massgen_quality_tools` MCP server with session-based checklist evaluation, scoring thresholds, and improvement proposals
-- **Workflow Server** ([#1007](https://github.com/massgen/MassGen/pull/1007)): Standalone `massgen_workflow_tools` MCP server with multi-round answer submission and deliverable snapshots
-- **Media Server** ([#1007](https://github.com/massgen/MassGen/pull/1007)): Standalone `massgen_media_tools` MCP server with image/video/audio generation and media analysis
+#### Codex Hooks & Checkpoint WebUI
+- **Codex Native Hooks** ([#1053](https://github.com/massgen/MassGen/pull/1053)): Hybrid hook system for Codex backend combining native hooks and MCP capabilities
+- **Checkpoint WebUI Auto-Launch** ([#1053](https://github.com/massgen/MassGen/pull/1053)): Checkpoint workflows auto-launch WebUI with configurable host/port for visual monitoring
+- **Standalone MCP Server Docs**: Guide for `massgen-checkpoint-mcp` with safety policy integration
 
-### Previous Achievements (v0.0.3 - v0.1.64)
+### Previous Achievements (v0.0.3 - v0.1.74)
+
+✅ **Checkpoint Improvements & Tool Call Fixes (v0.1.74)**: Major improvements to standalone checkpoint MCP server. Fix for duplicate tool calls in ChatCompletions and Response API backends.
+
+✅ **Eval Criteria Evolver & Checkpoint Objectives (v0.1.73)**: New eval criteria evolver subagent that evolves criteria across rounds. Initial draft of checkpoint objective mode for safety planning of irreversible actions.
+
+✅ **Grok Backend Update & Circuit Breaker Phase 2 (v0.1.72)**: Grok backend update with latest improvements. LLM API circuit breaker extended to ChatCompletions, Response API, and Gemini backends (was Claude-only).
+
+✅ **Trace Memory & Evaluation Polish (v0.1.71)**: Trace analyzer subagents launch in background after each round to write insights from execution traces into memory. Improved evaluation criteria generation and system prompt tuning.
+
+✅ **Evaluation Criteria Redesign (v0.1.70)**: Redesigned three-tier evaluation criteria with anti-pattern definitions and aspiration statements. Improved checklist-gated evaluation. Fast iteration mode, WebUI review modal, and background trace analysis.
+
+✅ **WebUI Automation & Improved Skill (v0.1.69)**: WebUI automation auto-starts without browser interaction. MassGen skill redesign for increased usability and WebUI integration. Quickstart Wizard rework and Workspace Browser expansion.
+
+✅ **Checkpoint Mode (v0.1.68)**: New checkpoint coordination mode with delegator pattern — main agent plans solo then delegates to team via `checkpoint()` tool. LLM API circuit breaker for 429 handling. WebUI checkpoint support. LiteLLM supply chain fix.
+
+✅ **Modernized WebUI (v0.1.67)**: Complete WebUI redesign with inline final answers, keyboard shortcuts, and Zustand state management. RoundBudgetGuardHook for per-round cost control. Unified parallel pre-collab phases. Regression guard.
+
+✅ **Step Mode (v0.1.66)**: New `--step` CLI mode for external orchestrators. Powers massgen-refinery plugin step mode. Codex Windows UTF-8 fixes and console text sanitization.
+
+✅ **MassGen Refinery Plugin (v0.1.65)**: Standalone MCP servers (quality, workflow, media) bring MassGen's checklist-based evaluation to Claude Code through the massgen-refinery plugin. Single-agent refinement working; multi-agent experimental.
 
 ✅ **Gemini CLI Backend (v0.1.64)**: Gemini CLI as a first-class backend with session persistence, MCP tools, and Docker support. WebSocket streaming for OpenAI Response API. Execution trace analyzer subagent. Copilot Docker mode.
 
@@ -1523,12 +1542,12 @@ MassGen is currently in its foundational stage, with a focus on parallel, asynch
 
 We welcome community contributions to achieve these goals.
 
-### v0.1.66 Roadmap
+### v0.1.76 Roadmap
 
-Version 0.1.66 focuses on cloud execution:
+Version 0.1.76 focuses on cloud execution:
 
 #### Planned Features
-- **Cloud Modal MVP** ([#982](https://github.com/massgen/MassGen/issues/982)): Run MassGen as a cloud job on Modal
+- **Cloud Modal MVP** ([#982](https://github.com/massgen/MassGen/issues/982)): Run MassGen as a cloud job on Modal — progress streams to terminal, results saved locally under `.massgen/cloud_jobs/`
 
 ---
 

@@ -10,8 +10,6 @@ from pathlib import Path
 
 from massgen.system_prompt_sections import (
     NoveltyPressureSection,
-    _build_changedoc_checklist_analysis,
-    _build_checklist_analysis,
     _build_checklist_gated_decision,
     _build_checklist_scored_decision,
 )
@@ -57,6 +55,30 @@ class TestScoreCalibration:
         )
         assert "MUST be consistent with" in result
 
+    def test_scored_decision_displays_score_anchors(self):
+        """Score anchors should appear in the scored decision prompt."""
+        items = ["Visual craft: Design feels authored", "Content depth"]
+        anchors = {
+            "E1": {
+                "3": "Generic template with no custom styling",
+                "5": "Some custom colors but layout is cookie-cutter",
+                "7": "Cohesive color system and typography",
+                "9": "Every visual choice is intentional",
+            },
+        }
+        result = _build_checklist_scored_decision(
+            threshold=5,
+            remaining=3,
+            total=5,
+            checklist_items=items,
+            item_score_anchors=anchors,
+        )
+        assert "Score anchors:" in result
+        assert "3/10: Generic template" in result
+        assert "9/10: Every visual choice is intentional" in result
+        # E2 has no anchors, should not show anchor section for it
+        assert result.count("Score anchors:") == 1
+
     def test_gated_decision_has_recalibrated_anchors(self):
         """Gated decision also has recalibrated score anchors."""
         items = ["E1 criterion", "E2 criterion"]
@@ -87,35 +109,6 @@ class TestScoreCalibration:
         assert "publish this as-is" in result
 
 
-class TestApproachChallenge:
-    """Change 2: Fresh Approach → Approach Challenge."""
-
-    def test_checklist_analysis_has_approach_challenge(self):
-        """_build_checklist_analysis contains Approach Challenge section."""
-        result = _build_checklist_analysis()
-        assert "### Approach Challenge" in result
-
-    def test_checklist_analysis_no_fresh_approach(self):
-        """Old 'Fresh Approach Consideration' is replaced."""
-        result = _build_checklist_analysis()
-        assert "Fresh Approach Consideration" not in result
-
-    def test_approach_challenge_demands_alternative(self):
-        """Approach Challenge asks for a fundamentally different way."""
-        result = _build_checklist_analysis()
-        assert "fundamentally different way to solve this problem" in result
-
-    def test_changedoc_analysis_has_approach_challenge(self):
-        """Changedoc analysis also has Approach Challenge."""
-        result = _build_changedoc_checklist_analysis()
-        assert "### Approach Challenge" in result
-
-    def test_changedoc_analysis_no_fresh_approach(self):
-        """Changedoc analysis replaces Fresh Approach."""
-        result = _build_changedoc_checklist_analysis()
-        assert "Fresh Approach Consideration" not in result
-
-
 class TestPriorAnswerReframing:
     """Change 3: Reframe prior answers as benchmarks."""
 
@@ -135,35 +128,6 @@ class TestPriorAnswerReframing:
         section = ChangedocSection(has_prior_answers=True)
         content = section.build_content()
         assert 'do not pick one as your "base" and refine it' not in content
-
-
-class TestPreScoreAudit:
-    """Change 4: Strengthened Pre-Score Audit."""
-
-    def test_checklist_analysis_has_mandatory_audit(self):
-        """Pre-Score Audit is marked MANDATORY."""
-        result = _build_checklist_analysis()
-        assert "### Pre-Score Audit (MANDATORY)" in result
-
-    def test_checklist_analysis_has_consistency_check(self):
-        """Pre-Score Audit has concrete consistency check."""
-        result = _build_checklist_analysis()
-        assert "contradicts your own Failure Patterns" in result
-
-    def test_changedoc_analysis_has_mandatory_audit(self):
-        """Changedoc Pre-Score Audit is also MANDATORY."""
-        result = _build_changedoc_checklist_analysis()
-        assert "### Pre-Score Audit (MANDATORY)" in result
-
-    def test_changedoc_analysis_has_consistency_check(self):
-        """Changedoc Pre-Score Audit has consistency check."""
-        result = _build_changedoc_checklist_analysis()
-        assert "contradicts your own Failure Patterns" in result
-
-    def test_score_above_5_justification(self):
-        """Audit mentions score above 5 needing justification."""
-        result = _build_checklist_analysis()
-        assert "above 5 needs strong justification" in result
 
 
 class TestProactiveNovelty:
@@ -390,91 +354,95 @@ class TestCriteriaTierSystem:
         c = GeneratedCriterion(id="E1", text="test", category="could")
         assert c.category == "could"
 
-    def test_backward_compat_core_maps_to_must(self):
-        """Parsing 'core' and 'stretch' both map to 'must'."""
+    def test_backward_compat_core_maps_to_standard(self):
+        """Parsing 'core' maps to 'standard' and 'stretch' maps to 'stretch'."""
         from massgen.evaluation_criteria_generator import _parse_criteria_response
 
         response = '{"criteria": [' '{"text": "t1", "category": "core"},' '{"text": "t2", "category": "core"},' '{"text": "t3", "category": "core"},' '{"text": "t4", "category": "stretch"}' "]}"
-        result = _parse_criteria_response(response)
-        assert result is not None
-        for c in result:
-            assert c.category == "must"
+        criteria, aspiration = _parse_criteria_response(response)
+        assert criteria is not None
+        for c in criteria:
+            assert c.category in ("standard", "stretch")
 
-    def test_new_categories_parsed_all_must(self):
-        """All input categories (must/should/could) are promoted to must."""
+    def test_new_categories_parsed_to_standard(self):
+        """Input categories (must/should/could) are mapped to standard/standard/stretch."""
         from massgen.evaluation_criteria_generator import _parse_criteria_response
 
         response = '{"criteria": [' '{"text": "t1", "category": "must"},' '{"text": "t2", "category": "must"},' '{"text": "t3", "category": "should"},' '{"text": "t4", "category": "could"}' "]}"
-        result = _parse_criteria_response(response)
-        assert result is not None
-        for c in result:
-            assert c.category == "must"
+        criteria, aspiration = _parse_criteria_response(response)
+        assert criteria is not None
+        for c in criteria:
+            assert c.category in ("primary", "standard", "stretch")
 
 
 class TestDefaultCriteriaTiers:
     """Tests for default criteria using new tier names."""
 
-    def test_default_categories_all_must(self):
-        """Default categories are all 'must'."""
-        from massgen.evaluation_criteria_generator import _DEFAULT_CATEGORIES
+    def test_default_categories_have_one_primary(self):
+        """Default categories have exactly one 'primary' (E3 per-part depth)."""
+        from massgen.evaluation_criteria_generator import _DEFAULT_CRITERIA
 
-        assert all(c == "must" for c in _DEFAULT_CATEGORIES)
+        categories = [c.category for c in _DEFAULT_CRITERIA]
+        assert categories.count("primary") == 1
+        assert categories[2] == "primary"  # E3
+        assert all(c == "standard" for i, c in enumerate(categories) if i != 2)
 
-    def test_default_criteria_all_must(self):
-        """get_default_criteria returns criteria all with category 'must'."""
+    def test_default_criteria_have_one_primary(self):
+        """get_default_criteria returns criteria with E3 as primary."""
         from massgen.evaluation_criteria_generator import get_default_criteria
 
         criteria = get_default_criteria(has_changedoc=False)
-        for c in criteria:
-            assert c.category == "must", f"{c.id} has category '{c.category}'"
+        primary = [c for c in criteria if c.category == "primary"]
+        assert len(primary) == 1
+        assert primary[0].id == "E3"
 
-    def test_default_criteria_include_quality_craft(self):
-        """Default criteria always include a quality/craft criterion."""
+    def test_default_criteria_include_intentional_craft(self):
+        """Default criteria include an intentional craft criterion."""
         from massgen.evaluation_criteria_generator import get_default_criteria
 
         criteria = get_default_criteria(has_changedoc=False)
         craft = [c for c in criteria if "intentional" in c.text or "craft" in c.text]
         assert len(craft) == 1
-        assert craft[0].category == "must"
+        assert craft[0].id == "E4"
 
 
 class TestPresetsTiers:
     """Tests for presets using new tier names."""
 
     def test_persona_preset_uses_new_tiers(self):
-        """Persona preset uses must/should/could."""
+        """Persona preset uses standard/primary only."""
         from massgen.evaluation_criteria_generator import _CRITERIA_PRESETS
 
-        categories = {cat for _, cat in _CRITERIA_PRESETS["persona"]}
+        categories = {c.category for c in _CRITERIA_PRESETS["persona"]}
         assert "core" not in categories
         assert "stretch" not in categories
 
     def test_decomposition_preset_uses_new_tiers(self):
-        """Decomposition preset uses must/should/could."""
+        """Decomposition preset uses standard/primary only."""
         from massgen.evaluation_criteria_generator import _CRITERIA_PRESETS
 
-        categories = {cat for _, cat in _CRITERIA_PRESETS["decomposition"]}
+        categories = {c.category for c in _CRITERIA_PRESETS["decomposition"]}
         assert "core" not in categories
 
     def test_evaluation_preset_uses_new_tiers(self):
-        """Evaluation preset uses must/should/could."""
+        """Evaluation preset uses standard/primary only."""
         from massgen.evaluation_criteria_generator import _CRITERIA_PRESETS
 
-        categories = {cat for _, cat in _CRITERIA_PRESETS["evaluation"]}
+        categories = {c.category for c in _CRITERIA_PRESETS["evaluation"]}
         assert "core" not in categories
 
     def test_prompt_preset_uses_new_tiers(self):
-        """Prompt preset uses must/should/could."""
+        """Prompt preset uses standard/primary only."""
         from massgen.evaluation_criteria_generator import _CRITERIA_PRESETS
 
-        categories = {cat for _, cat in _CRITERIA_PRESETS["prompt"]}
+        categories = {c.category for c in _CRITERIA_PRESETS["prompt"]}
         assert "core" not in categories
 
     def test_analysis_preset_uses_new_tiers(self):
-        """Analysis preset uses must/should/could."""
+        """Analysis preset uses standard/primary only."""
         from massgen.evaluation_criteria_generator import _CRITERIA_PRESETS
 
-        categories = {cat for _, cat in _CRITERIA_PRESETS["analysis"]}
+        categories = {c.category for c in _CRITERIA_PRESETS["analysis"]}
         assert "core" not in categories
 
 
@@ -534,8 +502,8 @@ class TestGenerationPromptTiers:
         # Must have a GOOD example about per-part/per-section criteria
         assert "per-part" in lower or "per-section" in lower
 
-    def test_propose_improvements_example_not_incremental(self):
-        """System prompt propose_improvements example shows substantial improvements."""
+    def test_draft_approach_example_not_incremental(self):
+        """System prompt draft_approach example shows substantial improvements."""
         from massgen.system_prompt_sections import _build_checklist_gated_decision
 
         prompt = _build_checklist_gated_decision(
@@ -544,10 +512,10 @@ class TestGenerationPromptTiers:
         # The example should NOT contain trivially incremental fixes
         assert "fix font sizes" not in prompt.lower()
         # The example should show rethinking, not pixel tweaks
-        assert "propose_improvements" in prompt
+        assert "draft_approach" in prompt
 
-    def test_propose_improvements_example_includes_preserve(self):
-        """System prompt propose_improvements example includes preserve parameter."""
+    def test_draft_approach_example_includes_preserve(self):
+        """System prompt draft_approach example includes preserve parameter."""
         from massgen.system_prompt_sections import _build_checklist_gated_decision
 
         prompt = _build_checklist_gated_decision(
@@ -556,8 +524,8 @@ class TestGenerationPromptTiers:
         # preserve should appear in the example call
         assert "preserve" in prompt
 
-    def test_propose_improvements_example_has_sources(self):
-        """System prompt propose_improvements example includes sources."""
+    def test_draft_approach_example_has_sources(self):
+        """System prompt draft_approach example includes sources."""
         from massgen.system_prompt_sections import _build_checklist_gated_decision
 
         prompt = _build_checklist_gated_decision(
@@ -655,21 +623,24 @@ class TestPerAnswerAnalysis:
         assert "each existing answer" in result2.lower()
         assert "from scratch" not in result2.lower()
 
-    def test_checklist_flow_per_answer_before_propose(self):
-        """Checklist gated prompt has per-answer review before propose_improvements."""
+    def test_checklist_flow_elevation_prompt_before_propose(self):
+        """Checklist gated prompt has vision-first elevation prompt before draft_approach call."""
         from massgen.system_prompt_sections import _build_checklist_gated_decision
 
         prompt = _build_checklist_gated_decision(
             checklist_items=["Criterion 1", "Criterion 2"],
         )
         lower = prompt.lower()
-        # Must have a dedicated per-answer review instruction
-        assert "review each existing answer" in lower, "Must have per-answer review step before propose_improvements"
-        # The review instruction should appear BEFORE the propose_improvements
-        # call instruction (not just the first mention in verdict description)
-        review_pos = lower.find("review each existing answer")
-        propose_call_pos = lower.find("must call `propose_improvements`")
-        assert review_pos < propose_call_pos, "Per-answer review must appear before propose_improvements call"
+        # Must have a vision-first elevation prompt
+        assert "what would great look like" in lower, "Must have elevation prompt before draft_approach"
+        # The elevation prompt should appear BEFORE the detailed draft_approach
+        # call instruction (the "you must call" block, not the verdict mention)
+        elevation_pos = lower.find("what would great look like")
+        propose_call_pos = lower.find("you must call `draft_approach`")
+        assert propose_call_pos > 0, "Must have detailed draft_approach call instruction"
+        assert elevation_pos < propose_call_pos, "Elevation prompt must appear before draft_approach call"
+        # Must mention "fresh" as a valid source option
+        assert "fresh" in lower, "Must mention 'fresh' as a valid source for new ideas"
 
     def test_evaluating_prior_answers_per_answer(self):
         """Changedoc section has per-answer independent analysis."""
@@ -728,22 +699,6 @@ class TestRefinementReframing:
         )
         lower = prompt.lower()
         assert "rebuild" in lower or "discard" in lower or "start fresh" in lower
-
-
-class TestSubstantivenessRebuildExample:
-    """STRUCTURAL examples include rebuilding sections from scratch."""
-
-    def test_structural_definition_includes_rebuild(self):
-        """STRUCTURAL definition explicitly mentions rebuilding as an example."""
-        prompt = _build_checklist_gated_decision(
-            checklist_items=["E1 criterion"],
-        )
-        lower = prompt.lower()
-        # Find the STRUCTURAL section (between **STRUCTURAL** and **INCREMENTAL**)
-        structural_pos = lower.find("**structural**")
-        incremental_pos = lower.find("**incremental**")
-        structural_section = lower[structural_pos:incremental_pos]
-        assert "rebuild" in structural_section or "from scratch" in structural_section
 
 
 class TestTaskPlanDetail:

@@ -1,6 +1,6 @@
 """Standalone MCP server exposing MassGen quality tools.
 
-Tools: generate_eval_criteria (storage), submit_checklist, propose_improvements,
+Tools: generate_eval_criteria (storage), submit_checklist, draft_approach,
 reset_evaluation.
 
 State is stored per-session in `.massgen-quality/sessions/{session_id}/`.
@@ -173,7 +173,7 @@ async def _generate_eval_criteria_impl(
             {
                 "id": str(c["id"]),
                 "text": str(c["text"]),
-                "category": str(c.get("category", "must")),
+                "category": str(c.get("category", "standard")),
                 "rationale": str(c.get("rationale", "")),
             },
         )
@@ -268,7 +268,7 @@ async def _submit_checklist_impl(
                 plateau_str = ", ".join(f"{p['id']} (scores: {' -> '.join(str(s) for s in p['score_history'])})" for p in plateaued)
                 explanation += f" Plateaued criteria: {plateau_str}. " "Consider a different approach for these."
 
-        explanation += " NEXT STEP: Call propose_improvements with specific " "improvements for each failing criterion."
+        explanation += " NEXT STEP: Call draft_approach with specific " "improvements for each failing criterion."
 
     # Build result
     result = {
@@ -332,9 +332,10 @@ def _find_plateaued(
     return plateaued
 
 
-async def _propose_improvements_impl(
+async def _draft_approach_impl(
     improvements: dict[str, Any],
     preserve: dict[str, Any] | None = None,
+    vision: str | None = None,
 ) -> str:
     """Validate improvement coverage against last checklist result (core logic)."""
     session_dir = _get_session_dir()
@@ -353,7 +354,7 @@ async def _propose_improvements_impl(
         return json.dumps(
             {
                 "status": "error",
-                "error": "propose_improvements is only available after an iterate verdict.",
+                "error": "draft_approach is only available after an iterate verdict.",
             },
         )
 
@@ -464,7 +465,7 @@ async def init_session(label: str = "") -> str:
     description=(
         "Store evaluation criteria for the current session. The agent generates "
         "criteria itself, then calls this tool to register them so that "
-        "submit_checklist and propose_improvements can reference them. "
+        "submit_checklist and draft_approach can reference them. "
         "Input: a list of criteria objects with id, text, and optional category."
     ),
 )
@@ -487,20 +488,21 @@ async def submit_checklist(scores: dict[str, Any], report_path: str = "") -> str
 
 
 @mcp.tool(
-    name="propose_improvements",
+    name="draft_approach",
     description=(
-        "Validate that proposed improvements cover all failing criteria. "
+        "Propose what to build for your next answer. "
         "Call after submit_checklist returns an iterate verdict. "
-        "Input: a dict mapping criterion IDs to lists of improvement entries. "
+        "Input: a dict mapping criterion IDs to lists of entries. "
         "Each entry should have 'plan' (str) and optional 'impact' "
         "(transformative/structural/incremental)."
     ),
 )
-async def propose_improvements(
+async def draft_approach(
     improvements: dict[str, Any],
     preserve: dict[str, Any] | None = None,
+    vision: str | None = None,
 ) -> str:
-    return await _propose_improvements_impl(improvements, preserve)
+    return await _draft_approach_impl(improvements, preserve, vision=vision)
 
 
 @mcp.tool(

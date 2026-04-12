@@ -227,11 +227,17 @@ def test_subagent_view_adds_terminal_status_note_when_events_absent() -> None:
             self.entries.append((content, style, text_class, round_number))
 
     class _PanelStub:
-        def __init__(self, timeline: _TimelineStub) -> None:
+        def __init__(self, timeline: _TimelineStub, subagent_id: str = "") -> None:
             self._timeline = timeline
+            self._id_prefix = subagent_id
+
+        def _timeline_id(self, agent_id: str) -> str:
+            if self._id_prefix:
+                return f"subagent-timeline-{self._id_prefix}-{agent_id}"
+            return f"subagent-timeline-{agent_id}"
 
         def query_one(self, selector: str, _cls):  # noqa: ANN001 - Textual query compat
-            if selector == "#subagent-timeline-inner_a":
+            if selector == f"#{self._timeline_id('inner_a')}":
                 return self._timeline
             raise LookupError(selector)
 
@@ -242,7 +248,7 @@ def test_subagent_view_adds_terminal_status_note_when_events_absent() -> None:
     view.__init__(subagent=subagent)
     view._round_number = 1
     timeline = _TimelineStub()
-    view._panel = _PanelStub(timeline)
+    view._panel = _PanelStub(timeline, "sub_1")
 
     view._ensure_terminal_status_note("inner_a", event_count=0)
     view._ensure_terminal_status_note("inner_a", event_count=0)
@@ -275,11 +281,17 @@ def test_subagent_view_avoids_redundant_cancel_reason_in_terminal_note() -> None
             self.entries.append((content, style, text_class, round_number))
 
     class _PanelStub:
-        def __init__(self, timeline: _TimelineStub) -> None:
+        def __init__(self, timeline: _TimelineStub, subagent_id: str = "") -> None:
             self._timeline = timeline
+            self._id_prefix = subagent_id
+
+        def _timeline_id(self, agent_id: str) -> str:
+            if self._id_prefix:
+                return f"subagent-timeline-{self._id_prefix}-{agent_id}"
+            return f"subagent-timeline-{agent_id}"
 
         def query_one(self, selector: str, _cls):  # noqa: ANN001 - Textual query compat
-            if selector == "#subagent-timeline-inner_a":
+            if selector == f"#{self._timeline_id('inner_a')}":
                 return self._timeline
             raise LookupError(selector)
 
@@ -290,10 +302,43 @@ def test_subagent_view_avoids_redundant_cancel_reason_in_terminal_note() -> None
     view.__init__(subagent=subagent)
     view._round_number = 1
     timeline = _TimelineStub()
-    view._panel = _PanelStub(timeline)
+    view._panel = _PanelStub(timeline, "sub_1")
 
     view._ensure_terminal_status_note("inner_a", event_count=0)
 
     assert len(timeline.entries) == 1
     message, _style, _text_class, _round_number = timeline.entries[0]
     assert message == "Subagent canceled."
+
+
+def test_subagent_panel_timeline_ids_namespaced_by_prefix() -> None:
+    """Regression: pre-collab tabs with same inner agent IDs must not collide.
+
+    When switching between pre-collab tabs (e.g., criteria_generation →
+    prompt_improvement), both have inner agents named agent_a/b/c. Without
+    namespacing, Textual's async Widget.remove() leaves old widgets in the
+    DOM, causing the new mount to be skipped and all content silently dropped.
+    """
+    from massgen.frontend.displays.textual_widgets.subagent_screen import (
+        SubagentPanel,
+    )
+
+    panel = SubagentPanel.__new__(SubagentPanel)
+    panel._id_prefix = ""
+
+    # Without prefix — backward compat
+    assert panel._timeline_id("agent_a") == "subagent-timeline-agent_a"
+    assert panel._task_plan_id("agent_a") == "subagent-task-plan-agent_a"
+
+    # With prefix — namespaced IDs for pre-collab tabs
+    panel._id_prefix = "criteria_generation"
+    crit_id = panel._timeline_id("agent_a")
+    assert crit_id == "subagent-timeline-criteria_generation-agent_a"
+    assert panel._task_plan_id("agent_a") == "subagent-task-plan-criteria_generation-agent_a"
+
+    panel._id_prefix = "prompt_improvement"
+    prompt_id = panel._timeline_id("agent_a")
+    assert prompt_id == "subagent-timeline-prompt_improvement-agent_a"
+
+    # Critical: the two prefixed IDs must be distinct
+    assert crit_id != prompt_id

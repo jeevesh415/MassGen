@@ -526,16 +526,22 @@ class TestSubagentRuntimeQueueBanner:
                 )
 
         class _PanelStub:
-            def __init__(self, timeline):
+            def __init__(self, timeline, subagent_id):
                 self._timeline = timeline
+                self._id_prefix = subagent_id
+
+            def _timeline_id(self, agent_id):
+                if self._id_prefix:
+                    return f"subagent-timeline-{self._id_prefix}-{agent_id}"
+                return f"subagent-timeline-{agent_id}"
 
             def query_one(self, selector, _cls=None):
-                if selector == "#subagent-timeline-agent_a":
+                if selector == f"#{self._timeline_id('agent_a')}":
                     return self._timeline
                 raise LookupError(selector)
 
         timeline = _TimelineStub()
-        view._panel = _PanelStub(timeline)
+        view._panel = _PanelStub(timeline, view._subagent.id)
         view._current_inner_agent = "agent_a"
         view._round_number = 1
         view._set_runtime_queue_region_visible = lambda _visible: None
@@ -621,16 +627,22 @@ class TestSubagentRuntimeQueueBanner:
                 )
 
         class _PanelStub:
-            def __init__(self, timeline):
+            def __init__(self, timeline, subagent_id):
                 self._timeline = timeline
+                self._id_prefix = subagent_id
+
+            def _timeline_id(self, agent_id):
+                if self._id_prefix:
+                    return f"subagent-timeline-{self._id_prefix}-{agent_id}"
+                return f"subagent-timeline-{agent_id}"
 
             def query_one(self, selector, _cls=None):
-                if selector in {"#subagent-timeline-agent_a", "#subagent-timeline-agent_b"}:
+                if selector in {f"#{self._timeline_id('agent_a')}", f"#{self._timeline_id('agent_b')}"}:
                     return self._timeline
                 raise LookupError(selector)
 
         timeline = _TimelineStub()
-        view._panel = _PanelStub(timeline)
+        view._panel = _PanelStub(timeline, view._subagent.id)
         view._round_number = 1
         view._subagent.workspace_path = str(workspace)
         view._runtime_inbox_dir = None

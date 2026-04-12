@@ -38,12 +38,12 @@ class StubHook(PatternHook):
 # ---------------------------------------------------------------------------
 # Helper: build SDK-shaped input_data dicts
 # ---------------------------------------------------------------------------
-def _pre_tool_input(tool_name: str, tool_args: dict | None = None) -> dict:
+def _pre_tool_input(tool_name: str, tool_args: dict | str | None = None) -> dict:
     return {
         "timestamp": 1234567890,
         "cwd": "/workspace",
         "toolName": tool_name,
-        "toolArgs": tool_args or {},
+        "toolArgs": tool_args if tool_args is not None else {},
     }
 
 
@@ -383,3 +383,68 @@ class TestMergeConfigs:
         merged = adapter.merge_native_configs(config)
         # Single handler should be passed through directly
         assert merged["on_pre_tool_use"] is handler
+
+
+# ---------------------------------------------------------------------------
+# toolArgs as JSON string (Copilot CLI sends stringified JSON)
+# ---------------------------------------------------------------------------
+class TestToolArgsStringHandling:
+    """Copilot CLI sends toolArgs as a JSON string, not a parsed dict.
+
+    The adapter must pass strings through as-is rather than double-encoding
+    them with json.dumps().  Previously, double-encoding caused the
+    downstream hook to json.loads() back to a Python string instead of a
+    dict, crashing PathPermissionManager with 'string indices must be
+    integers'.
+    """
+
+    @pytest.mark.asyncio
+    async def test_string_tool_args_passed_through(self, adapter):
+        """When toolArgs is already a JSON string, adapter should not re-encode."""
+        call_log = []
+
+        class SpyHook(PatternHook):
+            async def execute(self, fn_name, arguments_str, context=None, **kw):
+                call_log.append({"fn": fn_name, "args": arguments_str})
+                return HookResult(allowed=True)
+
+        wrapper = adapter.convert_hook_to_native(SpyHook(name="spy", matcher="*"), HookType.PRE_TOOL_USE)
+
+        # Simulate Copilot CLI format: toolArgs is already a JSON string
+        await wrapper(
+            _pre_tool_input("bash", '{"command":"ls -la"}'),
+            SDK_CONTEXT,
+        )
+
+        assert len(call_log) == 1
+        # The hook should receive the JSON string directly — json.loads
+        # should produce a dict, not a string
+        import json
+
+        parsed = json.loads(call_log[0]["args"])
+        assert isinstance(parsed, dict)
+        assert parsed["command"] == "ls -la"
+
+    @pytest.mark.asyncio
+    async def test_dict_tool_args_still_serialized(self, adapter):
+        """When toolArgs is a dict (custom tools), adapter should json.dumps it."""
+        call_log = []
+
+        class SpyHook(PatternHook):
+            async def execute(self, fn_name, arguments_str, context=None, **kw):
+                call_log.append({"fn": fn_name, "args": arguments_str})
+                return HookResult(allowed=True)
+
+        wrapper = adapter.convert_hook_to_native(SpyHook(name="spy", matcher="*"), HookType.PRE_TOOL_USE)
+
+        await wrapper(
+            _pre_tool_input("custom_tool", {"key": "value"}),
+            SDK_CONTEXT,
+        )
+
+        assert len(call_log) == 1
+        import json
+
+        parsed = json.loads(call_log[0]["args"])
+        assert isinstance(parsed, dict)
+        assert parsed["key"] == "value"

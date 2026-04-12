@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 from collections import defaultdict
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
@@ -79,7 +79,8 @@ async def test_call_subagent_mcp_tool_async_uses_background_client_structured_co
         "operation": "spawn_subagents",
         "results": [{"subagent_id": "round_eval"}],
     }
-    assert captured["tool_name"] == "mcp__subagent_agent_a__spawn_subagents"
+    expected_server = orchestrator._subagent_server_name(agent_id)
+    assert captured["tool_name"] == f"mcp__{expected_server}__spawn_subagents"
     assert captured["arguments"] == {"tasks": [{"subagent_id": "round_eval", "task": "critique"}]}
 
 
@@ -135,13 +136,15 @@ async def test_call_subagent_mcp_tool_async_reconnects_stale_background_client_o
         "results": [{"subagent_id": "round_eval"}],
     }
     flaky_client.reconnect.assert_awaited_once_with(max_retries=1)
+    expected_server = orchestrator._subagent_server_name(agent_id)
+    expected_tool = f"mcp__{expected_server}__spawn_subagents"
     assert captured_calls == [
         (
-            "mcp__subagent_agent_a__spawn_subagents",
+            expected_tool,
             {"tasks": [{"subagent_id": "round_eval", "task": "critique"}]},
         ),
         (
-            "mcp__subagent_agent_a__spawn_subagents",
+            expected_tool,
             {"tasks": [{"subagent_id": "round_eval", "task": "critique"}]},
         ),
     ]
@@ -592,7 +595,7 @@ async def test_round_evaluator_auto_injects_when_next_tasks_exist_without_legacy
     assert "Critique Packet" in block
     assert "<evaluator_summary" in block
     assert "submit_checklist" in block and "do not call" in block.lower()
-    assert "propose_improvements" in block and "do not call" in block.lower()
+    assert "draft_approach" in block and "do not call" in block.lower()
     assert str(eval_workspace / "critique_packet.md") in block
     assert str(eval_workspace / "verdict.json") in block
     assert str(eval_workspace / "next_tasks.json") in block
@@ -1045,6 +1048,62 @@ async def test_new_answer_triggers_round_end_background_cleanup(mock_orchestrato
         pass
 
     cancel_background_work.assert_awaited_once_with(agent_id)
+
+
+@pytest.mark.asyncio
+async def test_new_answer_sends_snapshot_workspace_path_to_web_display(
+    mock_orchestrator,
+    monkeypatch,
+    tmp_path,
+):
+    """Web display answer events should include the answer snapshot workspace path."""
+    orchestrator = mock_orchestrator(num_agents=1)
+    orchestrator.current_task = "Submit an answer with workspace history."
+    agent_id = "agent_a"
+
+    monkeypatch.setattr("massgen.orchestrator.get_log_session_dir", lambda: tmp_path)
+    orchestrator._save_agent_snapshot = AsyncMock(return_value="snapshot-ts")
+    monkeypatch.setattr(
+        orchestrator,
+        "_cancel_running_background_work_for_agent",
+        AsyncMock(),
+    )
+
+    display = SimpleNamespace(
+        send_new_answer=MagicMock(),
+        record_answer_with_context=MagicMock(),
+    )
+    orchestrator.coordination_ui = SimpleNamespace(display=display)
+
+    call_count = {"count": 0}
+
+    async def fake_stream_agent_execution(
+        aid: str,
+        task: str,
+        answers: dict[str, str],
+        conversation_context: dict[str, object] | None = None,
+        paraphrase: str | None = None,
+    ):
+        _ = (aid, task, answers, conversation_context, paraphrase)
+        call_count["count"] += 1
+        if call_count["count"] == 1:
+            yield ("result", ("answer", "answer v1"))
+            yield ("done", None)
+            return
+
+        yield ("result", ("vote", {"agent_id": agent_id, "reason": "done"}))
+        yield ("done", None)
+
+    monkeypatch.setattr(orchestrator, "_stream_agent_execution", fake_stream_agent_execution)
+
+    votes: dict[str, dict[str, object]] = {}
+    async for _chunk in orchestrator._stream_coordination_with_agents(votes, {}):
+        pass
+
+    assert display.send_new_answer.call_count == 1
+    assert display.send_new_answer.call_args.kwargs["workspace_path"] == str(
+        tmp_path / agent_id / "snapshot-ts" / "workspace",
+    )
 
 
 @pytest.mark.asyncio
@@ -1774,3 +1833,59 @@ async def test_direct_spawn_uses_configured_timeout(mock_orchestrator, monkeypat
 
     assert captured_kwargs["default_timeout"] == 2000
     assert captured_kwargs["max_timeout"] == 3000  # 2000 * 1.5
+
+
+@pytest.mark.asyncio
+async def test_empty_active_streams_does_not_exit_when_agents_eligible(mock_orchestrator, monkeypatch):
+    """Coordination must NOT exit when active_streams is temporarily empty but agents can still run.
+
+    Regression test: when both agents finish their round simultaneously, active_streams
+    becomes empty for one iteration. The loop should re-spawn agents instead of breaking.
+    """
+    orchestrator = mock_orchestrator(num_agents=2)
+    orchestrator.current_task = "Test race condition"
+
+    monkeypatch.setattr("massgen.orchestrator.get_log_session_dir", lambda: None)
+    orchestrator._save_agent_snapshot = AsyncMock(return_value="snapshot-ts")
+
+    call_counts = defaultdict(int)
+    agent_ids = list(orchestrator.agents.keys())
+    winner_id = agent_ids[0]
+
+    async def fake_stream_agent_execution(
+        agent_id,
+        task,
+        answers,
+        conversation_context=None,
+        paraphrase=None,
+    ):
+        _ = (task, answers, conversation_context, paraphrase)
+        call_counts[agent_id] += 1
+
+        if call_counts[agent_id] == 1:
+            # Round 1: both submit answers (triggers restart for other agent)
+            yield ("result", ("answer", f"{agent_id} answer v1"))
+            yield ("done", None)
+            return
+
+        if call_counts[agent_id] == 2:
+            # Round 2: submit improved answers (another restart cycle)
+            yield ("result", ("answer", f"{agent_id} answer v2"))
+            yield ("done", None)
+            return
+
+        # Round 3: vote to finish coordination
+        yield ("result", ("vote", {"agent_id": winner_id, "reason": "Best"}))
+        yield ("done", None)
+
+    monkeypatch.setattr(orchestrator, "_stream_agent_execution", fake_stream_agent_execution)
+
+    votes: dict[str, dict] = {}
+    async for _chunk in orchestrator._stream_coordination_with_agents(votes, {}):
+        pass
+
+    # Both agents must reach round 3 (vote). If the loop exited prematurely
+    # on empty active_streams, call_counts would be stuck at 1 or 2.
+    assert call_counts[agent_ids[0]] == 3, f"agent_a only ran {call_counts[agent_ids[0]]} rounds"
+    assert call_counts[agent_ids[1]] == 3, f"agent_b only ran {call_counts[agent_ids[1]]} rounds"
+    assert all(state.has_voted for state in orchestrator.agent_states.values())

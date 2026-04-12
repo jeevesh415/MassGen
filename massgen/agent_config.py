@@ -22,6 +22,22 @@ if TYPE_CHECKING:
 
 
 @dataclass
+class StepModeConfig:
+    """Configuration for step mode execution.
+
+    Step mode runs one agent for one step (new_answer or vote), then exits.
+    Prior answers/workspaces are loaded from a session directory.
+
+    Args:
+        enabled: Whether step mode is active.
+        session_dir: Path to session directory with inputs/outputs.
+    """
+
+    enabled: bool = False
+    session_dir: str = ""
+
+
+@dataclass
 class TimeoutConfig:
     """Configuration for timeout settings in MassGen.
 
@@ -40,6 +56,18 @@ class TimeoutConfig:
     initial_round_timeout_seconds: int | None = None  # None = disabled
     subsequent_round_timeout_seconds: int | None = None  # None = disabled
     round_timeout_grace_seconds: int = 120  # Grace period before hard block
+
+
+@dataclass
+class PromptImproverConfig:
+    """Configuration for pre-collab prompt improvement.
+
+    When enabled, spawns a multi-agent consensus call before coordination
+    to rewrite the user's task prompt for clarity, specificity, and ambition.
+    """
+
+    enabled: bool = False
+    persist_across_turns: bool = False
 
 
 @dataclass
@@ -189,6 +217,9 @@ class CoordinationConfig:
     evaluation_criteria_generator: EvaluationCriteriaGeneratorConfig = field(
         default_factory=EvaluationCriteriaGeneratorConfig,
     )
+    prompt_improver: PromptImproverConfig = field(
+        default_factory=PromptImproverConfig,
+    )
     pre_collab_voting_threshold: int | None = None
     enable_subagents: bool = False
     subagent_default_timeout: int = 300
@@ -216,11 +247,25 @@ class CoordinationConfig:
     enable_quality_rethink_on_iteration: bool = False  # Auto-inject quality_rethinking spawn task on iteration 2+
     enable_novelty_on_iteration: bool = False  # Auto-inject novelty/quality spawn task on iteration 2+
     enable_execution_trace_analyzer: bool = False  # Run execution_trace_analyzer in parallel with round_evaluator
+    auto_trace_analysis: bool = False  # Auto-spawn background trace analyzer at round 2+ start
+    evolving_criteria: bool = False  # Evolve evaluation criteria between rounds based on score trends
+    evolving_criteria_score_threshold: int = 8  # Min score to flag a criterion as "too easy"
+    evolving_criteria_max_evolutions: int = 2  # Hard cap on total criteria evolutions per session
+    evolving_criteria_min_high_score_count: int = 2  # Min number of criteria at threshold to trigger evolution
+    evolving_criteria_timeout: int = 300  # Seconds for the full evolution gate (proposals + synthesis)
+    enable_evaluator_personas: bool = False  # Expose set_evaluator_personas tool for agent-driven evaluator diversity
     novelty_injection: str = "none"  # "none" | "gentle" | "moderate" | "aggressive"
-    improvements: dict[str, Any] = field(default_factory=dict)  # Quality gate config for propose_improvements
+    improvements: dict[str, Any] = field(default_factory=dict)  # Quality gate config for draft_approach
     checklist_criteria_preset: str | None = None  # "persona" | "decomposition" | "evaluation" | "prompt" | "analysis" | "planning" | "spec" | "round_evaluator"
-    checklist_criteria_inline: list[dict[str, str]] | None = None  # [{text: str, category: must|should|could}]
+    checklist_criteria_inline: list[dict[str, str]] | None = None  # [{text, category: primary|standard|stretch, anti_patterns?, verify_by?}]
     resume_from_log: dict[str, Any] | None = None  # {log_path: str, round: int}
+    # Checkpoint coordination fields
+    checkpoint_enabled: bool = False  # Enable checkpoint coordination mode
+    checkpoint_mode: str = "conversation"  # "conversation" | "task"
+    checkpoint_guidance: str = ""  # Appended to main agent system prompt
+    checkpoint_gated_patterns: list[str] = field(default_factory=list)  # fnmatch patterns for gated tools
+    web_review: bool = False  # Enable change review modal in WebUI (requires --web)
+    fast_iteration_mode: bool = False  # Streamline post-candidate phases to submit faster and iterate across rounds
 
     def __post_init__(self):
         """Validate configuration after initialization."""
@@ -634,12 +679,21 @@ class AgentConfig:
         return cls(backend_params=backend_params)
 
     @classmethod
-    def create_grok_config(cls, model: str = "grok-2-1212", enable_web_search: bool = False, **kwargs) -> "AgentConfig":
+    def create_grok_config(
+        cls,
+        model: str = "grok-2-1212",
+        enable_web_search: bool = False,
+        enable_x_search: bool = False,
+        enable_code_execution: bool = False,
+        **kwargs,
+    ) -> "AgentConfig":
         """Create xAI Grok configuration.
 
         Args:
             model: Grok model name
-            enable_web_search: Enable Live Search feature
+            enable_web_search: Enable xAI web search
+            enable_x_search: Enable xAI X search
+            enable_code_execution: Enable xAI code execution
             **kwargs: Additional backend parameters
         """
         backend_params = {"model": model, **kwargs}
@@ -647,6 +701,10 @@ class AgentConfig:
         # Add tool enablement to backend_params
         if enable_web_search:
             backend_params["enable_web_search"] = True
+        if enable_x_search:
+            backend_params["enable_x_search"] = True
+        if enable_code_execution:
+            backend_params["enable_code_execution"] = True
 
         return cls(backend_params=backend_params)
 
@@ -905,6 +963,8 @@ class AgentConfig:
         """
         if backend == "openai":
             return cls.create_openai_config(model, enable_code_interpreter=True)
+        elif backend == "grok":
+            return cls.create_grok_config(model, enable_code_execution=True)
         elif backend == "claude":
             return cls.create_claude_config(model, enable_code_execution=True)
         elif backend == "gemini":
@@ -1163,6 +1223,12 @@ class AgentConfig:
             "max_orchestration_restarts": self.coordination_config.max_orchestration_restarts,
             "drift_conflict_policy": self.coordination_config.drift_conflict_policy,
             "round_evaluator_transformation_pressure": self.coordination_config.round_evaluator_transformation_pressure,
+            "checkpoint_enabled": self.coordination_config.checkpoint_enabled,
+            "checkpoint_mode": self.coordination_config.checkpoint_mode,
+            "checkpoint_guidance": self.coordination_config.checkpoint_guidance,
+            "checkpoint_gated_patterns": self.coordination_config.checkpoint_gated_patterns,
+            "web_review": self.coordination_config.web_review,
+            "fast_iteration_mode": self.coordination_config.fast_iteration_mode,
         }
 
         # Handle debug fields

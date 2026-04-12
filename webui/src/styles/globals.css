@@ -34,6 +34,125 @@
   --shadow-indicator: rgba(17, 24, 39, 0.8);
 }
 
+/* ============================================================================
+   v2 Design System — Discord + tmux hybrid
+   Dark-first with light mode support
+   ============================================================================ */
+
+:root {
+  /* v2 Light theme */
+  --v2-sidebar: #f2f3f5;
+  --v2-sidebar-hover: #e3e5e8;
+  --v2-sidebar-active: #d4d7dc;
+  --v2-main: #ffffff;
+  --v2-surface: #f8f9fa;
+  --v2-surface-raised: #ffffff;
+  --v2-border: #e3e5e8;
+  --v2-border-subtle: #f2f3f5;
+  --v2-text: #2e3338;
+  --v2-text-secondary: #4f5660;
+  --v2-text-muted: #80848e;
+  --v2-accent: #5865f2;
+  --v2-accent-hover: #4752c4;
+  --v2-input-bg: #e3e5e8;
+  --v2-channel-hover: rgba(79, 84, 92, 0.06);
+  --v2-channel-active: rgba(79, 84, 92, 0.12);
+  --v2-resize-handle: #d4d7dc;
+  --v2-resize-handle-hover: #5865f2;
+}
+
+.dark {
+  /* v2 Dark theme — Discord-inspired charcoal */
+  --v2-sidebar: #1e1f22;
+  --v2-sidebar-hover: #35373c;
+  --v2-sidebar-active: #404249;
+  --v2-main: #313338;
+  --v2-surface: #2b2d31;
+  --v2-surface-raised: #383a40;
+  --v2-border: #1e1f22;
+  --v2-border-subtle: #2b2d31;
+  --v2-text: #f2f3f5;
+  --v2-text-secondary: #b5bac1;
+  --v2-text-muted: #80848e;
+  --v2-accent: #5865f2;
+  --v2-accent-hover: #4752c4;
+  --v2-input-bg: #383a40;
+  --v2-channel-hover: rgba(79, 84, 92, 0.32);
+  --v2-channel-active: rgba(79, 84, 92, 0.48);
+  --v2-resize-handle: #1e1f22;
+  --v2-resize-handle-hover: #5865f2;
+}
+
+/* v2 Resize handle styling */
+[data-panel-group-direction="horizontal"] > [data-resize-handle] {
+  width: 2px;
+  background: var(--v2-resize-handle);
+  transition: background 0.15s, width 0.15s;
+}
+
+[data-panel-group-direction="horizontal"] > [data-resize-handle]:hover,
+[data-panel-group-direction="horizontal"] > [data-resize-handle][data-resize-handle-active] {
+  width: 4px;
+  background: var(--v2-resize-handle-hover);
+}
+
+/* v2 Vertical resize handle styling */
+[data-panel-group-direction="vertical"] > [data-resize-handle] {
+  height: 2px;
+  background: var(--v2-resize-handle);
+  transition: background 0.15s, height 0.15s;
+}
+
+[data-panel-group-direction="vertical"] > [data-resize-handle]:hover,
+[data-panel-group-direction="vertical"] > [data-resize-handle][data-resize-handle-active] {
+  height: 4px;
+  background: var(--v2-resize-handle-hover);
+}
+
+/* v2 Scrollbar */
+.v2-scrollbar::-webkit-scrollbar {
+  width: 8px;
+  height: 3px;
+}
+
+.v2-scrollbar::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.v2-scrollbar::-webkit-scrollbar-thumb {
+  background: var(--v2-border);
+  border-radius: 4px;
+}
+
+.v2-scrollbar::-webkit-scrollbar-thumb:hover {
+  background: var(--v2-text-muted);
+}
+
+/* Horizontal scrollbar for agent config drawer */
+.agent-cards-scroll::-webkit-scrollbar {
+  height: 6px;
+}
+
+.agent-cards-scroll::-webkit-scrollbar-track {
+  background: transparent;
+  margin: 0 20px;
+}
+
+.agent-cards-scroll::-webkit-scrollbar-thumb {
+  background: var(--v2-border);
+  border-radius: 3px;
+}
+
+.agent-cards-scroll::-webkit-scrollbar-thumb:hover {
+  background: var(--v2-text-muted);
+}
+
+/* Firefox horizontal scrollbar */
+.agent-cards-scroll {
+  scrollbar-width: thin;
+  scrollbar-color: var(--v2-border) transparent;
+}
+
 /* Custom scrollbar for agent panels */
 .custom-scrollbar::-webkit-scrollbar {
   width: 6px;
@@ -131,6 +250,35 @@
   animation-delay: 0.4s;
 }
 
+/* Waiting dots — slower, subtler pulse for idle/waiting state */
+@keyframes waiting-dot {
+  0%, 30% {
+    opacity: 0.25;
+  }
+  50% {
+    opacity: 0.7;
+  }
+  70%, 100% {
+    opacity: 0.25;
+  }
+}
+
+.waiting-dot {
+  animation: waiting-dot 2s infinite ease-in-out;
+}
+
+.waiting-dot:nth-child(1) {
+  animation-delay: 0s;
+}
+
+.waiting-dot:nth-child(2) {
+  animation-delay: 0.35s;
+}
+
+.waiting-dot:nth-child(3) {
+  animation-delay: 0.7s;
+}
+
 /* Streaming ellipses animation */
 @keyframes streaming-dot {
   0%, 20% {
@@ -173,4 +321,106 @@
 
 .final-answer-glow {
   animation: final-answer-glow 1.5s ease-in-out;
+}
+
+/* v2 Launch sequence ambient glow */
+.v2-launch-glow {
+  background: radial-gradient(
+    ellipse 300px 200px at center,
+    rgba(88, 101, 242, 0.08) 0%,
+    transparent 70%
+  );
+}
+
+/* ============================================================================
+   Timeline spine
+   ============================================================================ */
+.v2-timeline-spine {
+  position: relative;
+}
+.v2-timeline-spine::before {
+  content: '';
+  position: absolute;
+  left: 32px;
+  top: 0;
+  bottom: 0;
+  width: 1px;
+  background: rgba(255,255,255,0.06);
+  pointer-events: none;
+}
+
+.v2-step-group {
+  position: relative;
+  padding-left: 50px;
+  padding-right: 12px;
+  margin-bottom: 2px;
+}
+
+.v2-step-node {
+  position: absolute;
+  left: 32px;
+  top: 13px;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--v2-text-muted, #6b6b82);
+  transform: translateX(-50%);
+  z-index: 2;
+  transition: background 0.2s;
+}
+.v2-step-group:hover .v2-step-node {
+  background: var(--v2-accent, #7b8cff);
+}
+
+.v2-reasoning-block {
+  position: relative;
+  padding-left: 50px;
+  padding-right: 12px;
+  margin-bottom: 2px;
+}
+
+.v2-reasoning-node {
+  position: absolute;
+  left: 32px;
+  top: 7px;
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: var(--v2-text-muted, #6b6b82);
+  opacity: 0.25;
+  transform: translateX(-50%);
+  z-index: 2;
+}
+
+/* Hover-reveal chevron */
+.v2-hover-chevron {
+  opacity: 0;
+  transition: opacity 0.15s ease, transform 0.15s ease;
+}
+.v2-tool-row:hover .v2-hover-chevron,
+.v2-tool-row-expanded .v2-hover-chevron {
+  opacity: 1;
+}
+.v2-tool-row-expanded .v2-hover-chevron {
+  transform: rotate(90deg);
+}
+
+.v2-reasoning-row:hover .v2-hover-chevron,
+.v2-reasoning-expanded .v2-hover-chevron {
+  opacity: 0.5;
+}
+.v2-reasoning-expanded .v2-hover-chevron {
+  transform: rotate(90deg);
+}
+
+.v2-sub-chevron {
+  opacity: 0;
+  transition: opacity 0.15s ease, transform 0.15s ease;
+}
+.v2-sub-row:hover .v2-sub-chevron,
+.v2-sub-row-expanded .v2-sub-chevron {
+  opacity: 0.5;
+}
+.v2-sub-row-expanded .v2-sub-chevron {
+  transform: rotate(90deg);
 }

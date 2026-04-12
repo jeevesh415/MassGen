@@ -1096,6 +1096,10 @@ Coordination Configuration
      - string
      - No
      - Bias on how aggressively the evaluator seeks a larger thesis change. Supported values: ``gentle``, ``balanced``, ``aggressive``. Default: ``balanced``.
+   * - ``fast_iteration_mode``
+     - boolean
+     - No
+     - Streamline post-candidate phases so agents submit faster and iterate across rounds instead of over-polishing within a single round (default: ``false``). Only applies to ``checklist_gated`` voting sensitivity. When enabled: Phase 4 (subagent spawning for plateaued criteria) is skipped, the Substantiveness Test is replaced with a Quick Impact Check, and agents are guided to submit with Known Gaps rather than fixing everything internally. Analysis depth (Phases 1-2), verification replay, essential files manifest, and changedoc are all preserved.
 
 .. note::
 

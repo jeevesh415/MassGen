@@ -8,12 +8,12 @@ from pathlib import Path
 import pytest
 
 from massgen.mcp_tools.standalone.quality_server import (
+    _draft_approach_impl,
     _extract_score,
     _find_plateaued,
     _generate_eval_criteria_impl,
     _get_session_dir,
     _init_session_impl,
-    _propose_improvements_impl,
     _read_criteria,
     _read_state,
     _reset_evaluation_impl,
@@ -321,11 +321,11 @@ async def test_submit_checklist_with_reasoning(tmp_path, monkeypatch):
 
 @pytest.mark.integration
 @pytest.mark.asyncio
-async def test_propose_improvements_valid(tmp_path, monkeypatch):
+async def test_draft_approach_valid(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     generate_eval_criteria = _generate_eval_criteria_impl
     submit_checklist = _submit_checklist_impl
-    propose_improvements = _propose_improvements_impl
+    draft_approach = _draft_approach_impl
 
     await generate_eval_criteria(
         [
@@ -337,7 +337,7 @@ async def test_propose_improvements_valid(tmp_path, monkeypatch):
     await submit_checklist(scores={"E1": 4, "E2": 8})
 
     result = json.loads(
-        await propose_improvements(
+        await draft_approach(
             improvements={
                 "E1": [{"plan": "Redesign navigation", "impact": "structural"}],
             },
@@ -349,11 +349,11 @@ async def test_propose_improvements_valid(tmp_path, monkeypatch):
 
 @pytest.mark.integration
 @pytest.mark.asyncio
-async def test_propose_improvements_missing_coverage(tmp_path, monkeypatch):
+async def test_draft_approach_missing_coverage(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     generate_eval_criteria = _generate_eval_criteria_impl
     submit_checklist = _submit_checklist_impl
-    propose_improvements = _propose_improvements_impl
+    draft_approach = _draft_approach_impl
 
     await generate_eval_criteria(
         [
@@ -366,7 +366,7 @@ async def test_propose_improvements_missing_coverage(tmp_path, monkeypatch):
 
     # Only cover E1, not E2
     result = json.loads(
-        await propose_improvements(
+        await draft_approach(
             improvements={
                 "E1": [{"plan": "Fix it", "impact": "structural"}],
             },
@@ -379,17 +379,17 @@ async def test_propose_improvements_missing_coverage(tmp_path, monkeypatch):
 
 @pytest.mark.integration
 @pytest.mark.asyncio
-async def test_propose_improvements_rejects_all_incremental(tmp_path, monkeypatch):
+async def test_draft_approach_rejects_all_incremental(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     generate_eval_criteria = _generate_eval_criteria_impl
     submit_checklist = _submit_checklist_impl
-    propose_improvements = _propose_improvements_impl
+    draft_approach = _draft_approach_impl
 
     await generate_eval_criteria([{"id": "E1", "text": "Goal alignment"}])
     await submit_checklist(scores={"E1": 4})
 
     result = json.loads(
-        await propose_improvements(
+        await draft_approach(
             improvements={
                 "E1": [{"plan": "Tweak CSS", "impact": "incremental"}],
             },

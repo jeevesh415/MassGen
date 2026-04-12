@@ -1,0 +1,749 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>ModeConfigBar v2 — Bottom Sheet Design</title>
+<style>
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+  :root {
+    --sidebar: #1e1f22;
+    --main: #313338;
+    --surface: #2b2d31;
+    --surface-raised: #383a40;
+    --border: #1e1f22;
+    --border-subtle: #3f4147;
+    --text: #f2f3f5;
+    --text-secondary: #b5bac1;
+    --text-muted: #80848e;
+    --accent: #5865f2;
+    --accent-hover: #4752c4;
+    --accent-soft: rgba(88, 101, 242, 0.15);
+    --input-bg: #1e1f22;
+    --online: #23a559;
+    --online-soft: rgba(35, 165, 89, 0.15);
+    --warning: #f0b232;
+    --warning-soft: rgba(240, 178, 50, 0.15);
+    --danger: #ed4245;
+    --channel-hover: rgba(79, 84, 92, 0.32);
+    --radius-sm: 4px;
+    --radius: 6px;
+    --radius-lg: 8px;
+    --radius-xl: 12px;
+  }
+
+  body {
+    font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
+    background: var(--main);
+    color: var(--text);
+    height: 100vh;
+    display: flex;
+    flex-direction: column;
+  }
+
+  /* ─── Main content ─── */
+  .main-area {
+    flex: 1;
+    display: flex; align-items: center; justify-content: center;
+    flex-direction: column; gap: 8px;
+  }
+  .main-area h1 { color: var(--accent); font-size: 28px; font-weight: 700; }
+  .main-area p { color: var(--text-secondary); font-size: 14px; }
+
+  /* ═══════════════════════════════════════
+     MODE BAR
+     ═══════════════════════════════════════ */
+  .mode-bar {
+    border-top: 1px solid var(--border);
+    background: var(--surface);
+    padding: 7px 16px;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    flex-wrap: wrap;
+  }
+
+  /* ─── Two-state toggle button ─── */
+  .toggle-btn {
+    display: inline-flex; align-items: center;
+    border-radius: var(--radius); overflow: hidden;
+    background: var(--input-bg);
+    border: 1px solid var(--border-subtle);
+    cursor: pointer; user-select: none;
+  }
+  .toggle-btn .opt {
+    padding: 6px 11px;
+    font-size: 12px; font-weight: 500;
+    color: var(--text-muted);
+    transition: all 0.15s;
+    border: none; background: none; cursor: pointer;
+  }
+  .toggle-btn .opt:hover { color: var(--text-secondary); }
+  .toggle-btn .opt.on {
+    background: var(--accent);
+    color: white;
+    font-weight: 600;
+    box-shadow: 0 1px 3px rgba(0,0,0,0.25);
+  }
+
+  /* ─── Dropdown token (Mode, Personas) ─── */
+  .dropdown-token {
+    display: inline-flex; align-items: center; gap: 5px;
+    padding: 6px 10px; border-radius: var(--radius);
+    font-size: 12px; font-weight: 500; cursor: pointer;
+    border: 1px solid var(--border-subtle);
+    background: var(--input-bg);
+    color: var(--text-secondary);
+    transition: all 0.15s;
+    white-space: nowrap;
+    user-select: none;
+    position: relative;
+  }
+  .dropdown-token:hover {
+    border-color: var(--accent); color: var(--text);
+  }
+  .dropdown-token .token-label {
+    color: var(--text-muted); font-size: 10px; font-weight: 600;
+    text-transform: uppercase; letter-spacing: 0.3px;
+  }
+  .dropdown-token .token-value { color: var(--text); }
+  .dropdown-token.active {
+    border-color: var(--accent);
+    background: var(--accent-soft);
+  }
+  .dropdown-token.active .token-value { color: var(--accent); font-weight: 600; }
+  .dropdown-token .arrow {
+    font-size: 8px; color: var(--text-muted); margin-left: 1px;
+  }
+
+  /* ─── Dropdown menu ─── */
+  .dropdown-menu {
+    position: absolute; top: auto; bottom: calc(100% + 6px); left: 0;
+    background: var(--surface-raised); border: 1px solid var(--border-subtle);
+    border-radius: var(--radius-lg); box-shadow: 0 8px 24px rgba(0,0,0,0.4);
+    min-width: 160px; z-index: 60; padding: 4px;
+    display: none;
+  }
+  .dropdown-menu.open { display: block; }
+  .dropdown-item {
+    display: flex; align-items: flex-start; gap: 8px;
+    padding: 8px 10px; border-radius: var(--radius-sm);
+    font-size: 12px; color: var(--text-secondary); cursor: pointer;
+    transition: all 0.1s; border: none; background: none; width: 100%; text-align: left;
+  }
+  .dropdown-item:hover { background: var(--channel-hover); color: var(--text); }
+  .dropdown-item.selected { color: var(--accent); font-weight: 600; }
+  .dropdown-item .check { width: 16px; flex-shrink: 0; text-align: center; font-size: 12px; padding-top: 1px; }
+  .dropdown-item .item-text { display: flex; flex-direction: column; gap: 1px; }
+  .dropdown-item .desc {
+    font-size: 10px; color: var(--text-muted); font-weight: 400;
+  }
+
+  /* ─── Separator ─── */
+  .sep-dot {
+    width: 3px; height: 3px; border-radius: 50%;
+    background: var(--border-subtle); flex-shrink: 0;
+  }
+
+  /* ─── Stepper ─── */
+  .stepper {
+    display: inline-flex; align-items: center; border-radius: var(--radius);
+    background: var(--input-bg); border: 1px solid var(--border-subtle);
+    overflow: hidden;
+  }
+  .stepper button {
+    width: 28px; height: 30px; border: none; background: transparent;
+    color: var(--text-muted); font-size: 14px; cursor: pointer;
+    display: flex; align-items: center; justify-content: center;
+    transition: all 0.15s;
+  }
+  .stepper button:hover { background: var(--channel-hover); color: var(--text); }
+  .stepper .value {
+    min-width: 24px; text-align: center; font-size: 13px; font-weight: 600;
+    color: var(--text); padding: 0 2px;
+  }
+
+  /* ─── Agent summary button — the preview strip ─── */
+  .agent-summary-btn {
+    display: inline-flex; align-items: center; gap: 6px;
+    padding: 4px 8px 4px 4px; border-radius: var(--radius);
+    font-size: 12px; cursor: pointer;
+    border: 1px solid var(--border-subtle);
+    background: var(--input-bg);
+    color: var(--text-secondary);
+    transition: all 0.15s;
+    white-space: nowrap;
+  }
+  .agent-summary-btn:hover {
+    border-color: var(--accent); color: var(--text);
+  }
+
+  .agent-summary-btn .model-chips {
+    display: flex; gap: 3px; align-items: center;
+  }
+
+  .model-chip {
+    display: inline-flex; align-items: center;
+    padding: 4px 8px; border-radius: var(--radius-sm);
+    font-size: 11px; font-weight: 500;
+    gap: 0;
+  }
+  .model-chip .chip-letter {
+    font-weight: 700; margin-right: 5px; opacity: 0.7;
+  }
+  .model-chip .chip-provider {
+    opacity: 0.6; margin-right: 2px;
+  }
+  .model-chip .chip-slash {
+    opacity: 0.35; margin: 0 1px;
+  }
+  .model-chip .chip-model { font-weight: 600; }
+
+  /* Provider-specific chip colors */
+  .model-chip.anthropic {
+    background: rgba(204, 120, 50, 0.12); color: #e8915a;
+  }
+  .model-chip.openai {
+    background: rgba(16, 163, 127, 0.12); color: #34d399;
+  }
+  .model-chip.google {
+    background: rgba(66, 133, 244, 0.12); color: #60a5fa;
+  }
+  .model-chip.xai {
+    background: rgba(240, 178, 50, 0.12); color: #f0b232;
+  }
+  .model-chip.default {
+    background: rgba(128, 132, 142, 0.12); color: var(--text-muted);
+  }
+
+  .agent-summary-btn .gear {
+    font-size: 14px; color: var(--text-muted); line-height: 1;
+  }
+
+  /* ─── Docker pill ─── */
+  .docker-pill {
+    display: inline-flex; align-items: center; gap: 5px;
+    padding: 6px 10px; border-radius: var(--radius);
+    font-size: 12px; font-weight: 500; cursor: pointer;
+    border: 1px solid var(--border-subtle);
+    background: var(--input-bg);
+    color: var(--text-muted);
+    transition: all 0.15s;
+    margin-left: auto;
+  }
+  .docker-pill:hover { border-color: var(--text-muted); color: var(--text-secondary); }
+  .docker-pill.on {
+    border-color: var(--online); color: var(--online);
+    background: var(--online-soft);
+  }
+  .docker-pill .dot {
+    width: 6px; height: 6px; border-radius: 50%;
+    background: currentColor; opacity: 0.6;
+  }
+
+  /* ═══════════════════════════════════════
+     INPUT BAR
+     ═══════════════════════════════════════ */
+  .input-bar {
+    display: flex; align-items: center; gap: 10px;
+    padding: 10px 16px; border-top: 1px solid var(--border);
+    background: var(--surface);
+  }
+  .input-bar .config-btn {
+    display: flex; align-items: center; gap: 6px;
+    padding: 7px 14px; border-radius: var(--radius);
+    background: var(--surface-raised); border: 1px solid var(--border-subtle);
+    color: var(--text-secondary); font-size: 13px; cursor: pointer;
+    transition: all 0.15s;
+  }
+  .input-bar .config-btn:hover { border-color: var(--accent); color: var(--text); }
+  .input-bar .config-btn svg { width: 14px; height: 14px; }
+  .input-bar .status-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--online); flex-shrink: 0; }
+  .input-bar input[type="text"] {
+    flex: 1; background: transparent; border: none; outline: none;
+    color: var(--text); font-size: 14px; padding: 8px 0;
+  }
+  .input-bar input::placeholder { color: var(--text-muted); }
+  .input-bar .send-btn {
+    padding: 8px 20px; border-radius: var(--radius);
+    background: var(--accent); border: none; color: white;
+    font-size: 13px; font-weight: 600; cursor: pointer;
+    transition: background 0.15s;
+  }
+  .input-bar .send-btn:hover { background: var(--accent-hover); }
+
+  /* ═══════════════════════════════════════
+     BOTTOM SHEET
+     ═══════════════════════════════════════ */
+  .drawer-overlay {
+    position: fixed; inset: 0; background: rgba(0,0,0,0.5);
+    z-index: 50; display: none; align-items: flex-end;
+    animation: fadeIn 0.15s ease;
+  }
+  .drawer-overlay.open { display: flex; }
+  @keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
+
+  .drawer {
+    width: 100%; max-height: 75vh; background: var(--surface);
+    border-top-left-radius: var(--radius-xl);
+    border-top-right-radius: var(--radius-xl);
+    border-top: 1px solid var(--border-subtle);
+    animation: slideUp 0.25s ease;
+    overflow-y: auto;
+    display: flex; flex-direction: column;
+  }
+  @keyframes slideUp { from { transform: translateY(100%); } to { transform: translateY(0); } }
+
+  .drawer-handle {
+    display: flex; justify-content: center; padding: 10px 0 6px;
+    cursor: grab;
+  }
+  .drawer-handle span {
+    width: 36px; height: 4px; border-radius: 2px; background: var(--border-subtle);
+  }
+
+  .drawer-header {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 0 20px 12px;
+  }
+  .drawer-header h3 { font-size: 15px; font-weight: 600; }
+  .drawer-header .close-btn {
+    width: 28px; height: 28px; border-radius: var(--radius-sm);
+    border: none; background: transparent; color: var(--text-muted);
+    cursor: pointer; font-size: 18px; display: flex; align-items: center;
+    justify-content: center; transition: all 0.15s;
+  }
+  .drawer-header .close-btn:hover { background: var(--channel-hover); color: var(--text); }
+
+  .drawer-body {
+    padding: 0 20px 20px;
+    overflow-x: auto;
+  }
+
+  /* Agent cards — equal width via flex */
+  .agent-cards-row {
+    display: flex; gap: 12px; padding-bottom: 4px;
+  }
+
+  .agent-card {
+    flex: 1 1 0;
+    min-width: 240px;
+    border-radius: var(--radius-lg);
+    border: 1px solid var(--border-subtle);
+    background: var(--main);
+    padding: 14px;
+    display: flex; flex-direction: column; gap: 10px;
+    transition: border-color 0.15s;
+  }
+  .agent-card:hover { border-color: rgba(88, 101, 242, 0.4); }
+
+  .agent-card .card-header {
+    display: flex; align-items: center; justify-content: space-between;
+  }
+  .agent-card .agent-name {
+    font-size: 13px; font-weight: 600;
+    display: flex; align-items: center; gap: 7px;
+  }
+  .agent-card .agent-letter {
+    width: 24px; height: 24px; border-radius: 50%;
+    display: inline-flex; align-items: center; justify-content: center;
+    font-size: 11px; font-weight: 700;
+    background: var(--accent-soft); color: var(--accent);
+  }
+  .agent-card .copy-btn {
+    font-size: 10px; color: var(--accent); cursor: pointer;
+    background: none; border: none; padding: 3px 8px; border-radius: var(--radius-sm);
+    transition: background 0.15s;
+  }
+  .agent-card .copy-btn:hover { background: var(--accent-soft); }
+
+  .agent-card .card-row {
+    display: flex; flex-direction: column; gap: 4px;
+  }
+  .agent-card .card-row label {
+    font-size: 10px; font-weight: 600; text-transform: uppercase;
+    letter-spacing: 0.4px; color: var(--text-muted);
+  }
+
+  .select-control {
+    padding: 7px 28px 7px 10px; border-radius: var(--radius);
+    background: var(--input-bg); border: 1px solid var(--border-subtle);
+    color: var(--text); font-size: 12px; cursor: pointer; width: 100%;
+    appearance: none;
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' fill='%2380848e' viewBox='0 0 16 16'%3E%3Cpath d='M4 6l4 4 4-4'/%3E%3C/svg%3E");
+    background-repeat: no-repeat; background-position: right 8px center;
+    transition: border-color 0.15s;
+  }
+  .select-control:hover { border-color: var(--accent); }
+  .select-control:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 2px var(--accent-soft); }
+
+  .mini-toggles { display: flex; gap: 6px; }
+  .mini-toggle {
+    display: inline-flex; align-items: center; gap: 4px;
+    padding: 6px 10px; border-radius: var(--radius-sm);
+    font-size: 11px; cursor: pointer; border: 1px solid var(--border-subtle);
+    background: transparent; color: var(--text-muted);
+    transition: all 0.15s; flex: 1; justify-content: center;
+  }
+  .mini-toggle:hover { border-color: var(--text-muted); color: var(--text-secondary); }
+  .mini-toggle.on {
+    border-color: var(--accent); color: var(--accent);
+    background: var(--accent-soft);
+  }
+</style>
+</head>
+<body>
+
+  <div class="main-area">
+    <h1>MassGen</h1>
+    <p>Ready when you are</p>
+  </div>
+
+  <!-- ═══════════════════════════════════════
+       MODE BAR
+       ═══════════════════════════════════════ -->
+  <div class="mode-bar">
+
+    <!-- Mode dropdown (Normal / Plan / Spec / Analyze) -->
+    <div class="dropdown-token active" onclick="openDropdown(this, 'plan-dd')" id="plan-token">
+      <span class="token-label">Mode</span>
+      <span class="token-value">Normal</span>
+      <span class="arrow">&#9662;</span>
+      <div class="dropdown-menu" id="plan-dd">
+        <button class="dropdown-item selected" onclick="selectDropdown(this, 'plan-token', 'Normal')">
+          <span class="check">&#10003;</span>
+          <div class="item-text"><div>Normal</div><div class="desc">Standard multi-agent run</div></div>
+        </button>
+        <button class="dropdown-item" onclick="selectDropdown(this, 'plan-token', 'Plan')">
+          <span class="check"></span>
+          <div class="item-text"><div>Plan</div><div class="desc">Create plan, approve, execute</div></div>
+        </button>
+        <button class="dropdown-item" onclick="selectDropdown(this, 'plan-token', 'Spec')">
+          <span class="check"></span>
+          <div class="item-text"><div>Spec</div><div class="desc">Generate requirements spec</div></div>
+        </button>
+        <button class="dropdown-item" onclick="selectDropdown(this, 'plan-token', 'Analyze')">
+          <span class="check"></span>
+          <div class="item-text"><div>Analyze</div><div class="desc">Deep structured analysis</div></div>
+        </button>
+      </div>
+    </div>
+
+    <!-- Coordination: Parallel / Decomp -->
+    <div class="toggle-btn" id="coord-toggle">
+      <button class="opt on" onclick="setToggle('coord-toggle', 0)">Parallel</button>
+      <button class="opt" onclick="setToggle('coord-toggle', 1)">Decomp</button>
+    </div>
+
+    <!-- Agent mode: Multi / Single -->
+    <div class="toggle-btn" id="agent-toggle">
+      <button class="opt on" onclick="setToggle('agent-toggle', 0)">Multi</button>
+      <button class="opt" onclick="setToggle('agent-toggle', 1)">Single</button>
+    </div>
+
+    <!-- Refinement: Refine / Quick -->
+    <div class="toggle-btn" id="refine-toggle">
+      <button class="opt on" onclick="setToggle('refine-toggle', 0)">Refine</button>
+      <button class="opt" onclick="setToggle('refine-toggle', 1)">Quick</button>
+    </div>
+
+    <!-- Personas dropdown -->
+    <div class="dropdown-token" onclick="openDropdown(this, 'persona-dd')" id="persona-token">
+      <span class="token-value">No Personas</span>
+      <span class="arrow">&#9662;</span>
+      <div class="dropdown-menu" id="persona-dd">
+        <button class="dropdown-item selected" onclick="selectDropdown(this, 'persona-token', 'No Personas')">
+          <span class="check">&#10003;</span> <div class="item-text">No Personas</div>
+        </button>
+        <button class="dropdown-item" onclick="selectDropdown(this, 'persona-token', 'Perspective')">
+          <span class="check"></span> <div class="item-text">Perspective</div>
+        </button>
+        <button class="dropdown-item" onclick="selectDropdown(this, 'persona-token', 'Implement')">
+          <span class="check"></span> <div class="item-text">Implementation</div>
+        </button>
+        <button class="dropdown-item" onclick="selectDropdown(this, 'persona-token', 'Method')">
+          <span class="check"></span> <div class="item-text">Methodology</div>
+        </button>
+      </div>
+    </div>
+
+    <div class="sep-dot"></div>
+
+    <!-- Agent count stepper -->
+    <div class="stepper">
+      <button onclick="stepCount(-1)">−</button>
+      <span class="value" id="agent-count">3</span>
+      <button onclick="stepCount(1)">+</button>
+    </div>
+
+    <!-- Agent summary — shows provider/model per agent -->
+    <button class="agent-summary-btn" onclick="toggleDrawer()">
+      <div class="model-chips" id="model-chips">
+        <div class="model-chip anthropic">
+          <span class="chip-letter">A</span>
+          <span class="chip-provider">anthropic</span><span class="chip-slash">/</span><span class="chip-model">sonnet-4-5</span>
+        </div>
+        <div class="model-chip openai">
+          <span class="chip-letter">B</span>
+          <span class="chip-provider">openai</span><span class="chip-slash">/</span><span class="chip-model">gpt-4o</span>
+        </div>
+        <div class="model-chip google">
+          <span class="chip-letter">C</span>
+          <span class="chip-provider">google</span><span class="chip-slash">/</span><span class="chip-model">gemini-2.5</span>
+        </div>
+      </div>
+      <span class="gear">&#9881;</span>
+    </button>
+
+    <!-- Docker -->
+    <div class="docker-pill" onclick="this.classList.toggle('on')">
+      <span class="dot"></span> Docker
+    </div>
+  </div>
+
+  <!-- Input bar -->
+  <div class="input-bar">
+    <button class="config-btn">
+      <svg viewBox="0 0 16 16" fill="currentColor"><path d="M4 6l4 4 4-4"/></svg>
+      config
+    </button>
+    <span class="status-dot"></span>
+    <input type="text" placeholder="Type a question to start...">
+    <button class="send-btn">Start</button>
+  </div>
+
+  <!-- ═══════════════════════════════════════
+       BOTTOM SHEET
+       ═══════════════════════════════════════ -->
+  <div class="drawer-overlay" id="drawer" onclick="if(event.target===this)toggleDrawer()">
+    <div class="drawer" onclick="event.stopPropagation()">
+      <div class="drawer-handle"><span></span></div>
+      <div class="drawer-header">
+        <h3>Configure Agents</h3>
+        <button class="close-btn" onclick="toggleDrawer()">&times;</button>
+      </div>
+      <div class="drawer-body">
+        <div class="agent-cards-row" id="agent-cards">
+
+          <!-- Agent A -->
+          <div class="agent-card">
+            <div class="card-header">
+              <span class="agent-name">
+                <span class="agent-letter">A</span> Agent A
+              </span>
+              <button class="copy-btn">Apply to all</button>
+            </div>
+            <div class="card-row">
+              <label>Provider</label>
+              <select class="select-control">
+                <option selected>Anthropic</option>
+                <option>OpenAI</option>
+                <option>Google (Gemini)</option>
+                <option>xAI (Grok)</option>
+              </select>
+            </div>
+            <div class="card-row">
+              <label>Model</label>
+              <select class="select-control">
+                <option selected>claude-sonnet-4-5-20250514</option>
+                <option>claude-opus-4-0-20250514</option>
+                <option>claude-haiku-3-5-20241022</option>
+              </select>
+            </div>
+            <div class="card-row">
+              <label>Reasoning</label>
+              <select class="select-control">
+                <option>low</option>
+                <option>medium</option>
+                <option selected>high</option>
+                <option>xhigh</option>
+                <option>max</option>
+              </select>
+            </div>
+            <div class="card-row">
+              <label>Features</label>
+              <div class="mini-toggles">
+                <button class="mini-toggle on" onclick="this.classList.toggle('on')">&#128269; Search</button>
+                <button class="mini-toggle" onclick="this.classList.toggle('on')">&#128187; Code</button>
+              </div>
+            </div>
+          </div>
+
+          <!-- Agent B -->
+          <div class="agent-card">
+            <div class="card-header">
+              <span class="agent-name">
+                <span class="agent-letter">B</span> Agent B
+              </span>
+              <button class="copy-btn">Apply to all</button>
+            </div>
+            <div class="card-row">
+              <label>Provider</label>
+              <select class="select-control">
+                <option>Anthropic</option>
+                <option selected>OpenAI</option>
+                <option>Google (Gemini)</option>
+                <option>xAI (Grok)</option>
+              </select>
+            </div>
+            <div class="card-row">
+              <label>Model</label>
+              <select class="select-control">
+                <option selected>gpt-4o</option>
+                <option>gpt-4o-mini</option>
+                <option>o3</option>
+                <option>o4-mini</option>
+              </select>
+            </div>
+            <div class="card-row">
+              <label>Reasoning</label>
+              <select class="select-control">
+                <option>low</option>
+                <option selected>medium</option>
+                <option>high</option>
+              </select>
+            </div>
+            <div class="card-row">
+              <label>Features</label>
+              <div class="mini-toggles">
+                <button class="mini-toggle" onclick="this.classList.toggle('on')">&#128269; Search</button>
+                <button class="mini-toggle on" onclick="this.classList.toggle('on')">&#128187; Code</button>
+              </div>
+            </div>
+          </div>
+
+          <!-- Agent C -->
+          <div class="agent-card">
+            <div class="card-header">
+              <span class="agent-name">
+                <span class="agent-letter">C</span> Agent C
+              </span>
+              <button class="copy-btn">Apply to all</button>
+            </div>
+            <div class="card-row">
+              <label>Provider</label>
+              <select class="select-control">
+                <option>Anthropic</option>
+                <option>OpenAI</option>
+                <option selected>Google (Gemini)</option>
+                <option>xAI (Grok)</option>
+              </select>
+            </div>
+            <div class="card-row">
+              <label>Model</label>
+              <select class="select-control">
+                <option selected>gemini-2.5-pro</option>
+                <option>gemini-2.5-flash</option>
+              </select>
+            </div>
+            <div class="card-row">
+              <label>Reasoning</label>
+              <select class="select-control">
+                <option>low</option>
+                <option>medium</option>
+                <option selected>high</option>
+              </select>
+            </div>
+            <div class="card-row">
+              <label>Features</label>
+              <div class="mini-toggles">
+                <button class="mini-toggle on" onclick="this.classList.toggle('on')">&#128269; Search</button>
+                <button class="mini-toggle on" onclick="this.classList.toggle('on')">&#128187; Code</button>
+              </div>
+            </div>
+          </div>
+
+        </div>
+      </div>
+    </div>
+  </div>
+
+<script>
+// Toggle drawer
+function toggleDrawer() {
+  document.getElementById('drawer').classList.toggle('open');
+}
+
+// Two-state toggle
+function setToggle(id, idx) {
+  const btns = document.getElementById(id).querySelectorAll('.opt');
+  btns.forEach((b, i) => b.classList.toggle('on', i === idx));
+}
+
+// Dropdown open/close
+function openDropdown(token, ddId) {
+  document.querySelectorAll('.dropdown-menu.open').forEach(d => {
+    if (d.id !== ddId) d.classList.remove('open');
+  });
+  document.getElementById(ddId).classList.toggle('open');
+}
+
+// Select dropdown item
+function selectDropdown(item, tokenId, value) {
+  const token = document.getElementById(tokenId);
+  token.querySelector('.token-value').textContent = value;
+  const dd = item.closest('.dropdown-menu');
+  dd.querySelectorAll('.dropdown-item').forEach(i => {
+    i.classList.remove('selected');
+    i.querySelector('.check').textContent = '';
+  });
+  item.classList.add('selected');
+  item.querySelector('.check').textContent = '\u2713';
+  dd.classList.remove('open');
+  if (value !== 'Normal' && value !== 'No Personas') {
+    token.classList.add('active');
+  } else {
+    token.classList.remove('active');
+  }
+}
+
+// Stepper — auto-opens drawer when adding agents
+function stepCount(delta) {
+  const el = document.getElementById('agent-count');
+  const cur = parseInt(el.textContent);
+  const next = cur + delta;
+  if (next >= 1 && next <= 8) {
+    el.textContent = next;
+    updateAgentChips(next);
+    // Auto-open drawer when adding agents
+    if (delta > 0) {
+      document.getElementById('drawer').classList.add('open');
+    }
+  }
+}
+
+// Update the model chip previews when count changes
+const agentDefaults = [
+  { letter: 'A', provider: 'anthropic', model: 'sonnet-4-5', cls: 'anthropic' },
+  { letter: 'B', provider: 'openai', model: 'gpt-4o', cls: 'openai' },
+  { letter: 'C', provider: 'google', model: 'gemini-2.5', cls: 'google' },
+  { letter: 'D', provider: 'anthropic', model: 'sonnet-4-5', cls: 'anthropic' },
+  { letter: 'E', provider: 'openai', model: 'gpt-4o', cls: 'openai' },
+  { letter: 'F', provider: 'google', model: 'gemini-2.5', cls: 'google' },
+  { letter: 'G', provider: 'xai', model: 'grok-3', cls: 'xai' },
+  { letter: 'H', provider: 'anthropic', model: 'opus-4', cls: 'anthropic' },
+];
+
+function updateAgentChips(count) {
+  const container = document.getElementById('model-chips');
+  container.innerHTML = '';
+  for (let i = 0; i < count; i++) {
+    const d = agentDefaults[i] || { letter: String.fromCharCode(65+i), provider: 'default', model: 'default', cls: 'default' };
+    const chip = document.createElement('div');
+    chip.className = 'model-chip ' + d.cls;
+    chip.innerHTML = `<span class="chip-letter">${d.letter}</span><span class="chip-provider">${d.provider}</span><span class="chip-slash">/</span><span class="chip-model">${d.model}</span>`;
+    container.appendChild(chip);
+  }
+}
+
+// Close dropdowns on outside click
+document.addEventListener('click', (e) => {
+  if (!e.target.closest('.dropdown-token')) {
+    document.querySelectorAll('.dropdown-menu.open').forEach(d => d.classList.remove('open'));
+  }
+});
+</script>
+
+</body>
+</html>

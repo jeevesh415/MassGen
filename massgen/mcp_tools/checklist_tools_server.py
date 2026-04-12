@@ -135,7 +135,7 @@ def build_round_evaluator_task_mode_redirect(state: dict[str, Any]) -> str | Non
         "The round evaluator has already finished and auto-injected your next tasks.",
         "`get_task_plan` is the source of truth.",
         "Implement and verify those tasks, then call `new_answer`.",
-        "Do not call `submit_checklist` or `propose_improvements` here.",
+        "Do not call `submit_checklist` or `draft_approach` here.",
         "Do not write a second diagnostic report.",
     ]
     if objective:
@@ -193,7 +193,7 @@ def _find_plateaued_criteria(
     Each returned dict contains:
     - id: criterion ID (e.g. "E1")
     - text: criterion text (from items list)
-    - category: must/should/could
+    - category: primary/standard/stretch (legacy: must/should/could)
     - score_history: list of scores across rounds (prior + current)
     - current_score: latest score
 
@@ -340,7 +340,19 @@ def _normalize_preserve_entry(entry: Any) -> dict[str, str]:
     return {"what": str(entry), "source": ""}
 
 
-def evaluate_proposed_improvements(
+def _all_sources_are_fresh(improvements: dict[str, Any]) -> bool:
+    """Return True when every improvement entry uses only 'fresh'/'new' sources."""
+    _FRESH_SENTINELS = {"fresh", "new"}
+    for entries in improvements.values():
+        for entry in entries:
+            norm = _normalize_improvement_entry(entry)
+            sources = norm.get("sources", [])
+            if not sources or not all(s.lower().strip() in _FRESH_SENTINELS for s in sources):
+                return False
+    return True
+
+
+def evaluate_draft_approach(
     improvements: dict[str, Any],
     failed_criteria: list[str],
     items: list[str],
@@ -348,6 +360,7 @@ def evaluate_proposed_improvements(
     preserve: dict[str, Any] | None = None,
     state: dict[str, Any] | None = None,
     latest_evaluation: dict[str, Any] | None = None,
+    vision: str | None = None,
 ) -> dict[str, Any]:
     """Validate that improvements cover all failing criteria and preserve strengths."""
     if not isinstance(improvements, dict):
@@ -378,8 +391,9 @@ def evaluate_proposed_improvements(
     normalized_preserve: dict[str, dict[str, str]] = {}
 
     if all_criteria_ids is not None:
-        # Require at least one preserve entry when criteria exist
-        if all_criteria_ids and not preserve:
+        # Require at least one preserve entry when criteria exist —
+        # UNLESS all improvements use only "fresh" sources (starting over).
+        if all_criteria_ids and not preserve and not _all_sources_are_fresh(improvements):
             return {
                 "valid": False,
                 "error": ("Preserve is required: specify what to protect from regression. " f"Criteria available: {', '.join(all_criteria_ids)}"),
@@ -437,8 +451,20 @@ def evaluate_proposed_improvements(
             ),
         }
 
-    # --- Build task plan: improvements first, then single verify_preserve checkpoint ---
+    # --- Build task plan: vision preamble, improvements, then verify_preserve ---
     task_plan: list[dict[str, Any]] = []
+
+    # Vision preamble: guides execution toward the ideal, not just fixing what's broken
+    if vision and isinstance(vision, str) and vision.strip():
+        task_plan.append(
+            {
+                "type": "vision",
+                "description": vision.strip(),
+                "priority": "high",
+                "execution": {"mode": "inline"},
+            },
+        )
+
     answer_count = _state.get("agent_answer_count", 0)
     try:
         answer_count = int(answer_count)
@@ -477,6 +503,7 @@ def evaluate_proposed_improvements(
         )
 
     # Improvement entries
+    _subagents_on = bool(_state.get("subagents_enabled"))
     for cid in failed_criteria:
         criterion_idx = int(cid[1:]) - 1
         criterion_text = items[criterion_idx] if criterion_idx < len(items) else cid
@@ -492,7 +519,7 @@ def evaluate_proposed_improvements(
                 # Keep backward-compat "improvement" key
                 "improvement": norm["plan"],
             }
-            if bool(_state.get("subagents_enabled")) and norm["impact"] in ("structural", "transformative"):
+            if _subagents_on:
                 task_entry["execution"] = {"mode": "delegate", "subagent_type": "builder"}
             else:
                 task_entry["execution"] = {"mode": "inline"}
@@ -507,40 +534,41 @@ def evaluate_proposed_improvements(
             "confirm each preserved item is present in the actual output, and "
             "that passing criteria scores haven't dropped."
         )
-        if bool(_state.get("subagents_enabled")):
-            verify_description += (
-                " If subagents are enabled, delegate this checkpoint to an evaluator or critic "
-                "subagent for explicit before-vs-after comparison and regression checks, "
-                "without revealing which answer is yours."
-            )
-
         verify_task: dict[str, Any] = {
             "type": "verify_preserve",
             "description": verify_description,
             "items": preserve_items,
             "priority": "high",
+            "execution": {"mode": "inline"},
         }
-        if bool(_state.get("subagents_enabled")):
-            # Advisory: evaluator subagent is a strong fit for regression/comparison checks.
-            verify_task["execution"] = {"mode": "delegate", "subagent_type": "evaluator"}
-        else:
-            verify_task["execution"] = {"mode": "inline"}
         task_plan.append(verify_task)
 
+    _base_msg = (
+        f"Improvements validated for {len(failed_criteria)} criteria. "
+        f"{len(normalized_preserve)} criteria marked for preservation. "
+        "Add each item from task_plan to your task plan tool, then "
+        "execute them. Do correctness-critical tasks first when present, "
+        "then the remaining higher-order work. The verify_preserve item at "
+        "the end is a final guardrail — confirm preserved strengths are "
+        "intact and that earlier correctness fixes still hold after later "
+        "changes before submitting. Do not defer blocker correctness fixes "
+        "in favor of easier polish."
+    )
+    if _subagents_on:
+        _base_msg += (
+            "\n\n**DELEGATION REQUIRED**: All improve tasks are marked "
+            "delegate — you MUST spawn builder subagents for them. Do NOT "
+            "implement improvements inline. Group related criteria (those "
+            "touching the same file or surface) into builder subagents, "
+            "max ~2-3 criteria per builder. Primary criteria get their own "
+            "builder. Spawn all builders in parallel via a single "
+            "spawn_subagents call with background=True, then merge their "
+            "outputs before submitting."
+        )
     result: dict[str, Any] = {
         "valid": True,
         "task_plan": task_plan,
-        "message": (
-            f"Improvements validated for {len(failed_criteria)} criteria. "
-            f"{len(normalized_preserve)} criteria marked for preservation. "
-            "Add each item from task_plan to your task plan tool, then "
-            "execute them. Do correctness-critical tasks first when present, "
-            "then the remaining higher-order work. The verify_preserve item at "
-            "the end is a final guardrail — confirm preserved strengths are "
-            "intact and that earlier correctness fixes still hold after later "
-            "changes before submitting. Do not defer blocker correctness fixes "
-            "in favor of easier polish."
-        ),
+        "message": _base_msg,
     }
     if normalized_preserve:
         result["preserve"] = normalized_preserve
@@ -1003,7 +1031,7 @@ def evaluate_checklist_submission(
                         "side-by-side in background \u2014 pass each the "
                         "plateaued_criteria detail from this result (it contains "
                         "criterion text, category, and full score history). "
-                        "Meanwhile, proceed with propose_improvements and start "
+                        "Meanwhile, proceed with draft_approach and start "
                         "implementing. Integrate subagent proposals when they return. "
                     )
                 elif _quality_rethinking_enabled:
@@ -1031,7 +1059,7 @@ def evaluate_checklist_submission(
                         "side-by-side in background \u2014 pass each the "
                         "failing_criteria_detail from this result (it contains "
                         "criterion text and category for every failing criterion). "
-                        "Meanwhile, proceed with propose_improvements and start "
+                        "Meanwhile, proceed with draft_approach and start "
                         "implementing. Integrate subagent proposals when they return. "
                     )
                 elif _spawn_quality:
@@ -1039,7 +1067,7 @@ def evaluate_checklist_submission(
                         "Spawn a quality_rethinking subagent in background \u2014 pass "
                         "it the failing_criteria_detail from this result (it contains "
                         "criterion text and category for every failing criterion). "
-                        "Meanwhile, proceed with propose_improvements and start "
+                        "Meanwhile, proceed with draft_approach and start "
                         "implementing. Integrate subagent proposals when they return. "
                     )
                 elif _spawn_novelty:
@@ -1047,11 +1075,11 @@ def evaluate_checklist_submission(
                         "Spawn a novelty subagent in background \u2014 pass it the "
                         "failing_criteria_detail from this result (it contains "
                         "criterion text and category for every failing criterion). "
-                        "Meanwhile, proceed with propose_improvements and start "
+                        "Meanwhile, proceed with draft_approach and start "
                         "implementing. Integrate subagent proposals when they return. "
                     )
 
-            explanation += "NEXT STEP: Call `propose_improvements` with specific improvements " "for each failing criterion. This is required before implementing."
+            explanation += "NEXT STEP: Call `draft_approach` to plan what to build for each failing criterion. This is required before implementing."
         else:
             explanation = f"{true_count} of {len(items)} items passed (required: {required}). Verdict: {verdict}."
 
@@ -1138,7 +1166,7 @@ def evaluate_checklist_submission(
 
 
 def _convert_task_plan_to_inject_format(task_plan: list[dict]) -> list[dict]:
-    """Convert task_plan items from evaluate_proposed_improvements to injection format.
+    """Convert task_plan items from evaluate_draft_approach to injection format.
 
     Args:
         task_plan: List of dicts in either legacy evaluator-task format
@@ -1290,23 +1318,31 @@ def _convert_task_plan_to_inject_format(task_plan: list[dict]) -> list[dict]:
 def _write_inject_file(injection_dir: Path | None, task_plan: list[dict]) -> None:
     """Write inject_tasks.json atomically to injection_dir for planning MCP consumption.
 
+    Best-effort: silently skips on permission/OS errors. The draft_approach
+    result is still returned to the agent in the tool response regardless, so the
+    automatic task injection is a convenience, not a requirement. Suppressing errors
+    here prevents agents from seeing filesystem errors and wasting rounds on workarounds.
+
     Args:
         injection_dir: Path to injection directory, or None (no-op)
-        task_plan: Raw task_plan from evaluate_proposed_improvements
+        task_plan: Raw task_plan from evaluate_draft_approach
     """
     if injection_dir is None:
         return
 
-    injection_dir = Path(injection_dir)
-    injection_dir.mkdir(parents=True, exist_ok=True)
-    tasks = _convert_task_plan_to_inject_format(task_plan)
-    inject_file = injection_dir / "inject_tasks.json"
-    tmp_file = injection_dir / "inject_tasks.json.tmp"
+    try:
+        injection_dir = Path(injection_dir)
+        injection_dir.mkdir(parents=True, exist_ok=True)
+        tasks = _convert_task_plan_to_inject_format(task_plan)
+        inject_file = injection_dir / "inject_tasks.json"
+        tmp_file = injection_dir / "inject_tasks.json.tmp"
 
-    tmp_file.write_text(json.dumps(tasks, indent=2))
-    import os
+        tmp_file.write_text(json.dumps(tasks, indent=2))
+        import os
 
-    os.replace(str(tmp_file), str(inject_file))
+        os.replace(str(tmp_file), str(inject_file))
+    except (PermissionError, OSError):
+        pass
 
 
 def _register_checklist_tool(mcp: fastmcp.FastMCP, specs_path: Path, injection_dir: str | None = None) -> None:
@@ -1322,7 +1358,7 @@ def _register_checklist_tool(mcp: fastmcp.FastMCP, specs_path: Path, injection_d
     schema_state = specs.get("state", {})
     schema_decomposition_mode = bool(schema_state.get("decomposition_mode", False))
 
-    # Track last failed criteria so propose_improvements can validate coverage
+    # Track last failed criteria so draft_approach can validate coverage
     _last_result: dict[str, Any] = {
         "status": "none",
         "verdict": None,
@@ -1441,7 +1477,7 @@ def _register_checklist_tool(mcp: fastmcp.FastMCP, specs_path: Path, injection_d
         if result_status == "accepted" and result.get("verdict") == iterate_action:
             result = dict(result)
             result["explanation"] = (
-                result.get("explanation", "") + " NEXT: Call `propose_improvements` with specific improvements for each failing criterion. " + "Then implement your plan and call `new_answer`."
+                result.get("explanation", "") + " NEXT: Call `draft_approach` to plan what to build for each failing criterion. " + "Then implement your plan and call `new_answer`."
             )
 
         report_data = result.get("report") if isinstance(result.get("report"), dict) else {}
@@ -1534,8 +1570,8 @@ def _register_checklist_tool(mcp: fastmcp.FastMCP, specs_path: Path, injection_d
         description=submit_checklist.__doc__,
     )(submit_checklist)
 
-    # propose_improvements: validate improvement coverage for all failing criteria
-    async def propose_improvements(improvements: dict, preserve: dict = None) -> str:
+    # draft_approach: validate improvement coverage for all failing criteria
+    async def draft_approach(improvements: dict, preserve: dict = None, vision: str = None) -> str:
         if isinstance(improvements, str):
             try:
                 improvements = json.loads(improvements)
@@ -1561,14 +1597,14 @@ def _register_checklist_tool(mcp: fastmcp.FastMCP, specs_path: Path, injection_d
             return json.dumps(
                 {
                     "valid": False,
-                    "error": ("propose_improvements is unavailable because your latest submit_checklist " "result was a validation error. Fix and resubmit submit_checklist first."),
+                    "error": ("draft_approach is unavailable because your latest submit_checklist " "result was a validation error. Fix and resubmit submit_checklist first."),
                 },
             )
         if verdict != iterate_action:
             return json.dumps(
                 {
                     "valid": False,
-                    "error": ("propose_improvements is only available after submit_checklist returns " f"an iterate verdict ({iterate_action})."),
+                    "error": ("draft_approach is only available after submit_checklist returns " f"an iterate verdict ({iterate_action})."),
                 },
             )
         pending_recheck_labels = _normalize_pending_recheck_labels(state_for_improve.get("pending_checklist_recheck_labels"))
@@ -1578,13 +1614,13 @@ def _register_checklist_tool(mcp: fastmcp.FastMCP, specs_path: Path, injection_d
                 {
                     "valid": False,
                     "error": (
-                        "propose_improvements is unavailable because newer injected answer labels "
+                        "draft_approach is unavailable because newer injected answer labels "
                         f"still require checklist re-evaluation: {pending_labels_text}. "
                         "Re-run submit_checklist on the newest labels first."
                     ),
                 },
             )
-        result = evaluate_proposed_improvements(
+        result = evaluate_draft_approach(
             improvements=improvements,
             failed_criteria=_last_result["failed_criteria"],
             items=_last_result["items"],
@@ -1599,6 +1635,7 @@ def _register_checklist_tool(mcp: fastmcp.FastMCP, specs_path: Path, injection_d
                 "diagnostic_report_path": _last_result.get("diagnostic_report_path", ""),
                 "diagnostic_report_artifact_paths": _last_result.get("diagnostic_report_artifact_paths", []),
             },
+            vision=vision,
         )
         if result.get("valid") and _injection_dir_path:
             _write_inject_file(_injection_dir_path, result["task_plan"])
@@ -1633,30 +1670,100 @@ def _register_checklist_tool(mcp: fastmcp.FastMCP, specs_path: Path, injection_d
                 )
         return json.dumps(result)
 
-    propose_improvements.__doc__ = (
-        "Propose specific improvements for each failing criterion. "
+    draft_approach.__doc__ = (
+        "Propose what to build for your next answer. "
         "Must be called after submit_checklist returns an iterate verdict. "
         "Pass 'improvements' mapping criterion IDs (e.g. 'E2') to lists of "
         "entries, each with 'plan' (what to do) and 'sources' (which answers "
-        "to draw from). Pass 'preserve' mapping criterion IDs to entries with "
-        "'what' (strength to protect) and 'source' (which answer). A criterion "
-        "can appear in both improvements and preserve."
+        "to draw from, or 'fresh' for new ideas). Optionally pass 'vision' "
+        "for a north-star description of the ideal output. Pass 'preserve' "
+        "mapping criterion IDs to entries with 'what' (strength to protect) "
+        "and 'source' (which answer)."
     )
 
     propose_sig = inspect.Signature(
         [
             inspect.Parameter("improvements", inspect.Parameter.POSITIONAL_OR_KEYWORD),
             inspect.Parameter("preserve", inspect.Parameter.POSITIONAL_OR_KEYWORD, default=None),
+            inspect.Parameter("vision", inspect.Parameter.POSITIONAL_OR_KEYWORD, default=None),
         ],
     )
-    propose_improvements.__signature__ = propose_sig
+    draft_approach.__signature__ = propose_sig
 
     mcp.tool(
-        name="propose_improvements",
-        description=propose_improvements.__doc__,
-    )(propose_improvements)
+        name="draft_approach",
+        description=draft_approach.__doc__,
+    )(draft_approach)
 
-    logger.info("Registered submit_checklist + propose_improvements MCP tools")
+    # --- set_evaluator_personas tool ---
+    # Always register; gate on enable_evaluator_personas at call time (re-reads
+    # specs) because for Codex the specs file may not exist yet at server startup.
+    async def set_evaluator_personas(personas: list) -> str:
+        current = _read_specs(specs_path)
+        state = current.get("state", {})
+
+        if not bool(state.get("enable_evaluator_personas", False)):
+            return json.dumps({"error": "set_evaluator_personas is not enabled in this configuration"})
+
+        team_size = int(state.get("evaluator_team_size", 0) or 0)
+
+        # Codex sometimes sends JSON strings; normalise
+        if isinstance(personas, str):
+            try:
+                personas = json.loads(personas)
+            except (json.JSONDecodeError, TypeError):
+                return json.dumps({"error": "personas must be a JSON array"})
+        if not isinstance(personas, list):
+            return json.dumps({"error": "personas must be a JSON array"})
+
+        if team_size > 0 and len(personas) != team_size:
+            return json.dumps(
+                {
+                    "error": f"Expected {team_size} persona(s) to match evaluator team size, got {len(personas)}",
+                },
+            )
+        for i, p in enumerate(personas):
+            if not isinstance(p, dict):
+                return json.dumps({"error": f"Persona at index {i} must be an object"})
+            if not str(p.get("label", "")).strip():
+                return json.dumps({"error": f"Persona at index {i} has empty label"})
+            if not str(p.get("instructions", "")).strip():
+                return json.dumps({"error": f"Persona at index {i} has empty instructions"})
+
+        # Write back to specs so orchestrator can read
+        state["pending_evaluator_personas"] = [{"label": str(p["label"]).strip(), "instructions": str(p["instructions"]).strip()} for p in personas]
+        current["state"] = state
+        try:
+            with open(specs_path, "w") as f:
+                json.dump(current, f, indent=2, default=str)
+        except Exception as exc:
+            return json.dumps({"error": f"Failed to write personas: {exc}"})
+
+        labels = [p["label"] for p in state["pending_evaluator_personas"]]
+        return json.dumps(
+            {
+                "status": "accepted",
+                "message": f"Evaluator personas set: {', '.join(labels)}. " "These will be applied to the next round evaluator run.",
+            },
+        )
+
+    set_evaluator_personas.__doc__ = (
+        "Configure distinct evaluation lenses for round evaluator subagents. "
+        "Call before new_answer to shape how evaluators critique your next submission. "
+        "Each persona needs 'label' (short name) and 'instructions' (critique focus). "
+        "Count must match evaluator team size."
+    )
+    set_personas_sig = inspect.Signature(
+        [inspect.Parameter("personas", inspect.Parameter.POSITIONAL_OR_KEYWORD)],
+    )
+    set_evaluator_personas.__signature__ = set_personas_sig
+
+    mcp.tool(
+        name="set_evaluator_personas",
+        description=set_evaluator_personas.__doc__,
+    )(set_evaluator_personas)
+
+    logger.info("Registered submit_checklist + draft_approach + set_evaluator_personas MCP tools")
 
 
 # ---------- spec file I/O ----------

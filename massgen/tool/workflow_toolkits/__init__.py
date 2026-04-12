@@ -6,6 +6,7 @@ from typing import Any
 
 from .base import BaseToolkit, ToolType
 from .broadcast import BroadcastToolkit
+from .checkpoint import CheckpointToolkit
 from .new_answer import NewAnswerToolkit
 from .post_evaluation import PostEvaluationToolkit
 from .stop import StopToolkit
@@ -18,6 +19,7 @@ __all__ = [
     "VoteToolkit",
     "StopToolkit",
     "BroadcastToolkit",
+    "CheckpointToolkit",
     "PostEvaluationToolkit",
     "get_workflow_tools",
     "get_post_evaluation_tools",
@@ -34,6 +36,8 @@ def get_workflow_tools(
     vote_only: bool = False,
     anon_agent_ids: list[str] | None = None,
     decomposition_mode: bool = False,
+    checkpoint_context: bool = False,
+    checkpoint_mode: bool = False,
 ) -> list[dict]:
     """
     Get workflow tool definitions with proper formatting.
@@ -53,6 +57,8 @@ def get_workflow_tools(
                        global consistency with injections and vote validation.
         decomposition_mode: If True, use stop tool instead of vote tool.
                            Used when coordination_mode is "decomposition".
+        checkpoint_context: If True, add proposed_actions to new_answer schema.
+        checkpoint_mode: If True, include checkpoint tool (for main agent).
 
     Returns:
         List of tool definitions
@@ -66,7 +72,14 @@ def get_workflow_tools(
         "valid_agent_ids": valid_agent_ids,
         "anon_agent_ids": anon_agent_ids,
         "broadcast_enabled": bool(broadcast_mode and broadcast_mode is not False),
+        "checkpoint_context": checkpoint_context,
+        "checkpoint_mode": checkpoint_mode,
     }
+
+    # Get checkpoint tool (for main agent in checkpoint coordination mode)
+    if checkpoint_mode and not vote_only:
+        checkpoint_toolkit = CheckpointToolkit()
+        tools.extend(checkpoint_toolkit.get_tools(config))
 
     # Get new_answer tool (unless vote_only mode)
     if not vote_only:

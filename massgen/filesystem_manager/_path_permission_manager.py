@@ -1650,6 +1650,13 @@ class PathPermissionManagerHook(PatternHook):
                 logger.warning(f"[PathPermissionManagerHook] Invalid JSON arguments for {function_name}: {e}")
                 tool_args = {}
 
+            # Ensure tool_args is a dict — callers should pass a JSON-encoded
+            # dict, but a double-encoding bug or unusual backend may produce a
+            # string/list/int.  Coerce gracefully so PPM's dict-based path
+            # extraction doesn't crash.
+            if not isinstance(tool_args, dict):
+                tool_args = {}
+
             # Call the existing pre_tool_use_hook method
             allowed, reason = await self.path_permission_manager.pre_tool_use_hook(function_name, tool_args)
 

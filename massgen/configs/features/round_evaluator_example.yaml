@@ -1,5 +1,8 @@
-### One agent builds, 3 agents evaluate
+### One agent builds, multi-agent evaluation team critiques each round
 # uv run massgen --config @examples/features/round_evaluator_example.yaml "Create an svg of an AI agent coding."
+#
+# This example showcases all round evaluator and evaluation options.
+# Uncomment optional sections to enable them.
 
 agents:
   - id: agent_a
@@ -11,7 +14,6 @@ agents:
       exclude_file_operation_mcps: true
       enable_mcp_command_line: true
       command_line_execution_mode: docker
-      command_line_docker_image: massgen/mcp-runtime-sudo:latest
       command_line_docker_network_mode: bridge
       command_line_docker_enable_sudo: true
       command_line_docker_credentials:
@@ -46,8 +48,30 @@ orchestrator:
   voting_sensitivity: checklist_gated
   voting_threshold: 2
   coordination:
+    ### ── Evaluation Criteria ──────────────────────────────────────────
+    # How checklist criteria are determined. Three mutually exclusive methods
+    # (inline > preset > generator). Pick one.
+
     evaluation_criteria_generator:
       enabled: true
+      # min_criteria: 4          # Min criteria to generate (default: 4)
+      # max_criteria: 7          # Max criteria to generate (default: 7)
+      # persist_across_turns: false  # Reuse generated criteria across interactive turns
+
+    # --- OR use a domain-specific preset instead of generating: ---
+    # checklist_criteria_preset: analysis
+    #   Valid values: persona, decomposition, evaluation, prompt,
+    #                 analysis, planning, spec, round_evaluator
+
+    # --- OR specify criteria inline (highest precedence): ---
+    # checklist_criteria_inline:
+    #   - text: "Output must compile/render without errors"
+    #     category: must
+    #   - text: "Code includes meaningful comments"
+    #     category: should
+    #   - text: "Solution explores an unconventional approach"
+    #     category: could
+
     pre_collab_voting_threshold: 3
     max_orchestration_restarts: 0
     use_skills: true
@@ -61,10 +85,29 @@ orchestrator:
     enable_subagents: true
     subagent_default_timeout: 2000
     subagent_max_concurrent: 3
+    ### ── Round Evaluator ──────────────────────────────────────────────
     round_evaluator_before_checklist: true
     orchestrator_managed_round_evaluator: true
-    round_evaluator_transformation_pressure: aggressive
-    subagent_types: [round_evaluator]
+    round_evaluator_transformation_pressure: aggressive  # gentle | balanced | aggressive
+    # enable_evaluator_personas: true  # Expose set_evaluator_personas tool for agent-driven evaluator diversity
+    # round_evaluator_refine: false    # Let evaluator agents iterate across multiple rounds
+    # round_evaluator_skip_synthesis: false  # Pass raw critiques instead of synthesizing
+    #                                        # (incompatible with orchestrator_managed)
+
+    ### ── Execution Trace Analyzer (runs in parallel with round_evaluator) ──
+    enable_execution_trace_analyzer: true
+
+    ### ── Iteration-Triggered Subagents ────────────────────────────────
+    # enable_quality_rethink_on_iteration: false  # Auto-spawn quality rethinking on round 2+
+    # enable_novelty_on_iteration: false           # Auto-spawn novelty evaluation on round 2+
+
+    ### ── Improvement Quality Gates ────────────────────────────────────
+    # improvements:
+    #   min_transformative: 1      # Min transformative improvements required
+    #   min_structural: 1          # Min structural improvements required
+    #   min_non_incremental: 2     # Min non-incremental improvements required
+
+    subagent_types: [round_evaluator, execution_trace_analyzer, regression_guard]
     subagent_orchestrator:
       enabled: true
       max_new_answers: 1

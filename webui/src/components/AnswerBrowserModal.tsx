@@ -25,6 +25,8 @@ import { ComparisonView } from './ComparisonView';
 import { ResizableSplitPane } from './ResizableSplitPane';
 import { createAbortableFetch, isAbortError } from '../utils/fetchWithAbort';
 import { debugLog } from '../utils/debugLogger';
+import { getAnswerWorkspaceLabel } from '../utils/workspaceBrowser';
+import { normalizePath } from '../utils/normalizePath';
 
 // Types for workspace API responses
 interface WorkspaceInfo {
@@ -990,7 +992,7 @@ export function AnswerBrowserModal({ isOpen, onClose, initialTab = 'answers' }: 
       return isLoadingHistoricalFiles || historicalFiles === null;
     } else {
       // Current: WebSocket always provides files - check if workspace exists in store
-      const wsData = allWorkspaces[activeWorkspace.path];
+      const wsData = allWorkspaces[normalizePath(activeWorkspace.path)];
       // Loading if connected but no workspace data yet
       return wsStatus === 'connecting' || (wsStatus === 'connected' && !wsData);
     }
@@ -1631,17 +1633,17 @@ export function AnswerBrowserModal({ isOpen, onClose, initialTab = 'answers' }: 
                           }}
                           className="appearance-none bg-gray-700 border border-gray-600 rounded-lg px-3 py-1 pr-8 text-sm text-gray-200 focus:outline-none focus:ring-2 focus:ring-blue-500"
                         >
-                          <option value="current">Current</option>
+                          <option value="current">Live</option>
                           {/* Show versions from answers (instant via WebSocket), not answerWorkspaces (requires HTTP) */}
                           {answers
                             .filter(a => a.agentId === selectedAgentWorkspace && a.answerNumber > 0)
-                            .sort((a, b) => a.answerNumber - b.answerNumber)
+                            .sort((a, b) => b.answerNumber - a.answerNumber)
                             .map((answer) => {
                               const agentIdx = agentOrder.indexOf(answer.agentId) + 1;
                               const label = `agent${agentIdx}.${answer.answerNumber}`;
                               return (
                                 <option key={answer.id} value={label}>
-                                  {label}
+                                  {getAnswerWorkspaceLabel(answer.answerNumber)}
                                 </option>
                               );
                             })}
@@ -1806,7 +1808,7 @@ export function AnswerBrowserModal({ isOpen, onClose, initialTab = 'answers' }: 
                                 className="flex-1 px-4 py-2.5 bg-blue-600 hover:bg-blue-500 text-white font-medium rounded-lg transition-colors flex items-center justify-center gap-2"
                               >
                                 <RefreshCw className="w-4 h-4" />
-                                Move to Current
+                                Move to Live
                               </button>
                               <button
                                 onClick={handleStayInHistorical}

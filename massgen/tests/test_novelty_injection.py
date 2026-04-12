@@ -439,11 +439,12 @@ class TestNoveltyPressureSection:
             restart_count=0,
         )
         content = section.build_content()
-        assert "CONVERGENCE DETECTED" in content
+        assert "CONVERGENCE SIGNAL" in content
         assert "3" in content  # should include the count
+        assert "checklist verdict" in content.lower()
 
     def test_aggressive_level_content(self):
-        """Aggressive level should produce mandatory divergence text."""
+        """Aggressive level should produce convergence signal text."""
         from massgen.system_prompt_sections import NoveltyPressureSection
 
         section = NoveltyPressureSection(
@@ -452,7 +453,8 @@ class TestNoveltyPressureSection:
             restart_count=1,
         )
         content = section.build_content()
-        assert "MANDATORY DIVERGENCE" in content
+        assert "CONVERGENCE SIGNAL" in content
+        assert "checklist verdict" in content.lower()
 
     def test_section_has_medium_priority(self):
         """NoveltyPressureSection should have Priority.MEDIUM (10)."""
@@ -496,8 +498,8 @@ class TestNoveltyPressureWiring:
         sig = inspect.signature(SystemMessageBuilder.build_coordination_message)
         assert "novelty_pressure_data" in sig.parameters
 
-    def test_aggressive_novelty_renders_mandatory_divergence_in_system_message(self):
-        """Integration: aggressive novelty with restart_count>0 must produce MANDATORY DIVERGENCE in rendered message."""
+    def test_aggressive_novelty_renders_convergence_signal_in_system_message(self):
+        """Integration: aggressive novelty with restart_count>0 must produce CONVERGENCE SIGNAL in rendered message."""
         from massgen.message_templates import MessageTemplates
         from massgen.system_message_builder import SystemMessageBuilder
 
@@ -525,7 +527,7 @@ class TestNoveltyPressureWiring:
             previous_turns=[],
             novelty_pressure_data={"consecutive": 2, "restart_count": 3},
         )
-        assert "MANDATORY DIVERGENCE" in message
+        assert "CONVERGENCE SIGNAL" in message
 
     def test_no_novelty_when_data_is_none(self):
         """Integration: novelty_pressure_data=None must NOT produce novelty text."""
@@ -555,11 +557,10 @@ class TestNoveltyPressureWiring:
             previous_turns=[],
             novelty_pressure_data=None,
         )
-        assert "MANDATORY DIVERGENCE" not in message
-        assert "CONVERGENCE DETECTED" not in message
+        assert "CONVERGENCE SIGNAL" not in message
 
-    def test_moderate_novelty_renders_convergence_detected(self):
-        """Integration: moderate novelty must produce CONVERGENCE DETECTED in rendered message."""
+    def test_moderate_novelty_renders_convergence_signal(self):
+        """Integration: moderate novelty must produce CONVERGENCE SIGNAL in rendered message."""
         from massgen.message_templates import MessageTemplates
         from massgen.system_message_builder import SystemMessageBuilder
 
@@ -586,7 +587,7 @@ class TestNoveltyPressureWiring:
             previous_turns=[],
             novelty_pressure_data={"consecutive": 3, "restart_count": 2},
         )
-        assert "CONVERGENCE DETECTED" in message
+        assert "CONVERGENCE SIGNAL" in message
 
 
 # ---------------------------------------------------------------------------

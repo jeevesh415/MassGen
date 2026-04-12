@@ -457,6 +457,57 @@ class ConfigValidator:
                                 result,
                             )
 
+        # Validate main_agent: at most one agent can have main_agent: true
+        main_agent_count = sum(1 for a in agents if isinstance(a, dict) and a.get("main_agent") is True)
+        if main_agent_count > 1:
+            result.add_error(
+                f"Only one agent can have main_agent: true, found {main_agent_count}",
+                "agents",
+                "Set main_agent: true on exactly one agent for checkpoint coordination",
+            )
+
+        # Validate checkpoint config (if present at top level)
+        if "checkpoint" in config:
+            self._validate_checkpoint_config(config["checkpoint"], result)
+
+    def _validate_checkpoint_config(
+        self,
+        checkpoint_config: dict[str, Any],
+        result: ValidationResult,
+    ) -> None:
+        """Validate checkpoint configuration section."""
+        if not isinstance(checkpoint_config, dict):
+            result.add_error(
+                "checkpoint must be a dictionary",
+                "checkpoint",
+                "Use checkpoint: {enabled: true, mode: conversation}",
+            )
+            return
+
+        # Validate mode
+        valid_modes = {"conversation", "task"}
+        mode = checkpoint_config.get("mode", "conversation")
+        if mode not in valid_modes:
+            result.add_error(
+                f"Invalid checkpoint mode: '{mode}'",
+                "checkpoint.mode",
+                f"Use one of: {', '.join(sorted(valid_modes))}",
+            )
+
+        # Validate gated_patterns
+        gated_patterns = checkpoint_config.get("gated_patterns")
+        if gated_patterns is not None:
+            if not isinstance(gated_patterns, list):
+                result.add_error(
+                    "checkpoint.gated_patterns must be a list of strings",
+                    "checkpoint.gated_patterns",
+                )
+            elif not all(isinstance(p, str) for p in gated_patterns):
+                result.add_error(
+                    "All entries in checkpoint.gated_patterns must be strings",
+                    "checkpoint.gated_patterns",
+                )
+
     def _validate_backend(self, backend_config: dict[str, Any], location: str, result: ValidationResult) -> None:
         """Validate backend configuration (Level 3)."""
         if not isinstance(backend_config, dict):
@@ -563,6 +614,7 @@ class ConfigValidator:
         # Validate boolean fields
         boolean_fields = [
             "enable_web_search",
+            "enable_x_search",
             "enable_code_execution",
             "enable_code_interpreter",
             "enable_programmatic_flow",
@@ -949,6 +1001,7 @@ class ConfigValidator:
                     "orchestrator_managed_round_evaluator",
                     "round_evaluator_refine",
                     "round_evaluator_skip_synthesis",
+                    "fast_iteration_mode",
                 ]
                 for field_name in boolean_fields:
                     if field_name in coordination:
@@ -1326,7 +1379,7 @@ class ConfigValidator:
                 if "checklist_criteria_inline" in coordination:
                     inline = coordination["checklist_criteria_inline"]
                     if inline is not None:
-                        valid_categories = {"must", "should", "could"}
+                        valid_categories = {"primary", "standard", "stretch", "must", "should", "could"}
                         if not isinstance(inline, list):
                             result.add_error(
                                 "checklist_criteria_inline must be a list",
@@ -1352,7 +1405,7 @@ class ConfigValidator:
                                     result.add_error(
                                         f"checklist_criteria_inline[{i}] missing 'category'",
                                         f"{location}.coordination.checklist_criteria_inline[{i}]",
-                                        "Each criterion needs a 'category' (must/should/could)",
+                                        "Each criterion needs a 'category' (primary/standard/stretch)",
                                     )
                                 elif item["category"] not in valid_categories:
                                     result.add_error(

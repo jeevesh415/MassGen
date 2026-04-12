@@ -30,6 +30,7 @@ class EntryType(Enum):
     CONTENT = "content"  # Model's text output (distinct from internal reasoning)
     ANSWER = "answer"
     VOTE = "vote"  # Vote submission during enforcement phase
+    INJECTED_CONTEXT = "injected_context"  # Short-term memory loaded at round start
 
 
 @dataclass
@@ -66,6 +67,24 @@ class ExecutionTraceWriter:
     _active_reasoning_entry: TraceEntry | None = field(default=None, repr=False)
     # Track active content entry to accumulate streaming tokens
     _active_content_entry: TraceEntry | None = field(default=None, repr=False)
+
+    def add_injected_context(self, name: str, content: str) -> None:
+        """Record context injected from memory/short_term/ at round start.
+
+        Call this before start_round() to make the injected content
+        visible at the top of the trace, before any round activity.
+
+        Args:
+            name: The memory file stem (e.g., "trace_analysis_round_2")
+            content: The full file content
+        """
+        self.entries.append(
+            TraceEntry(
+                entry_type=EntryType.INJECTED_CONTEXT,
+                timestamp=datetime.now(),
+                content={"name": name, "text": content},
+            ),
+        )
 
     def start_round(self, round_num: int, answer_label: str) -> None:
         """Mark the start of a new round/answer.
@@ -253,7 +272,14 @@ class ExecutionTraceWriter:
 
         # Process entries
         for entry in self.entries:
-            if entry.entry_type == EntryType.ROUND_START:
+            if entry.entry_type == EntryType.INJECTED_CONTEXT:
+                name = entry.content["name"]
+                text = entry.content["text"]
+                lines.append(f"### Injected Context: {name}")
+                lines.append(text)
+                lines.append("")
+
+            elif entry.entry_type == EntryType.ROUND_START:
                 round_num = entry.content["round_num"]
                 answer_label = entry.content["answer_label"]
                 lines.append(f"## Round {round_num} (Answer {answer_label})")

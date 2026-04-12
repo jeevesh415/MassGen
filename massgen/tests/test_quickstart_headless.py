@@ -193,6 +193,27 @@ class TestHeadlessOverrides:
         config = yaml.safe_load(Path(result["config_path"]).read_text())
         assert [agent["backend"]["type"] for agent in config["agents"]] == ["claude", "openai", "gemini"]
 
+    def test_explicit_agent_specs_preserve_ids(self, tmp_path, monkeypatch):
+        """Explicit quickstart agent specs should keep caller-provided ids."""
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test")
+        monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+
+        from massgen.config_builder import ConfigBuilder
+
+        builder = ConfigBuilder()
+        result = builder.run_quickstart_headless(
+            output_dir=str(tmp_path),
+            use_docker=False,
+            agent_specs=[
+                {"id": "agent_a", "backend": "claude", "model": "claude-opus-4-6"},
+                {"id": "agent_b", "backend": "openai", "model": "gpt-5.4"},
+            ],
+        )
+
+        assert result["success"] is True
+        config = yaml.safe_load(Path(result["config_path"]).read_text())
+        assert [agent["id"] for agent in config["agents"]] == ["agent_a", "agent_b"]
+
 
 class TestHeadlessEnvTemplate:
     """Env template generation."""
@@ -272,8 +293,8 @@ class TestHeadlessConfigGeneration:
         for agent in config["agents"]:
             assert agent["backend"]["type"] == "claude"
 
-    def test_config_uses_default_3_agents(self, tmp_path, monkeypatch):
-        """Default num_agents is 3."""
+    def test_config_uses_default_single_agent(self, tmp_path, monkeypatch):
+        """Default num_agents is 1."""
         monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test")
 
         from massgen.config_builder import ConfigBuilder
@@ -282,7 +303,7 @@ class TestHeadlessConfigGeneration:
         result = builder.run_quickstart_headless(output_dir=str(tmp_path))
 
         config = yaml.safe_load(Path(result["config_path"]).read_text())
-        assert len(config["agents"]) == 3
+        assert len(config["agents"]) == 1
 
 
 class TestHeadlessDocker:
@@ -406,6 +427,291 @@ class TestHeadlessCLI:
         assert args.headless is True
         assert args.config_backend == "anthropic"
         assert args.config_agents == 5
+
+    def test_generate_config_cli_dispatches_without_unboundlocalerror(self, monkeypatch, tmp_path, capsys):
+        """--generate-config should use ConfigBuilder without tripping local shadowing."""
+        from massgen import cli as massgen_cli
+
+        output_path = tmp_path / "generated.yaml"
+        args = massgen_cli.main_parser().parse_args(
+            [
+                "--generate-config",
+                str(output_path),
+                "--config-backend",
+                "openai",
+                "--config-model",
+                "gpt-5.4",
+                "--config-docker",
+            ],
+        )
+
+        generate_calls = []
+
+        def fake_generate_config_programmatic(
+            self,
+            output_path,
+            num_agents,
+            backend_type,
+            model,
+            use_docker,
+            context_path,
+            agent_id=None,
+        ):
+            generate_calls.append(
+                {
+                    "output_path": output_path,
+                    "num_agents": num_agents,
+                    "backend_type": backend_type,
+                    "model": model,
+                    "use_docker": use_docker,
+                    "context_path": context_path,
+                    "agent_id": agent_id,
+                },
+            )
+            Path(output_path).write_text("agents: []\n")
+            return True
+
+        monkeypatch.setattr(
+            massgen_cli.ConfigBuilder,
+            "generate_config_programmatic",
+            fake_generate_config_programmatic,
+        )
+
+        massgen_cli._cli_main_continued(args)
+
+        output = capsys.readouterr().out
+        assert generate_calls == [
+            {
+                "output_path": str(output_path),
+                "num_agents": 1,
+                "backend_type": "openai",
+                "model": "gpt-5.4",
+                "use_docker": True,
+                "context_path": None,
+                "agent_id": None,
+            },
+        ]
+        assert f"Configuration saved to: {output_path}" in output
+
+    def test_generate_config_cli_dispatches_explicit_agent_id(self, monkeypatch, tmp_path, capsys):
+        """--config-agent-id should be forwarded to programmatic config generation."""
+        from massgen import cli as massgen_cli
+
+        output_path = tmp_path / "generated.yaml"
+        args = massgen_cli.main_parser().parse_args(
+            [
+                "--generate-config",
+                str(output_path),
+                "--config-backend",
+                "openai",
+                "--config-model",
+                "gpt-5.4",
+                "--config-agent-id",
+                "agent_a",
+            ],
+        )
+
+        generate_calls = []
+
+        def fake_generate_config_programmatic(
+            self,
+            output_path,
+            num_agents,
+            backend_type,
+            model,
+            use_docker,
+            context_path,
+            agent_id=None,
+        ):
+            generate_calls.append(
+                {
+                    "output_path": output_path,
+                    "num_agents": num_agents,
+                    "backend_type": backend_type,
+                    "model": model,
+                    "use_docker": use_docker,
+                    "context_path": context_path,
+                    "agent_id": agent_id,
+                },
+            )
+            Path(output_path).write_text("agents: []\n")
+            return True
+
+        monkeypatch.setattr(
+            massgen_cli.ConfigBuilder,
+            "generate_config_programmatic",
+            fake_generate_config_programmatic,
+        )
+
+        massgen_cli._cli_main_continued(args)
+
+        output = capsys.readouterr().out
+        assert generate_calls[0]["agent_id"] == "agent_a"
+        assert f"Configuration saved to: {output_path}" in output
+
+    def test_headless_quickstart_cli_honors_exact_config_path(self, monkeypatch, tmp_path):
+        """Headless quickstart should treat --config as an exact output path."""
+        from massgen import cli as massgen_cli
+
+        requested_path = tmp_path / "exact" / "headless.yaml"
+        args = massgen_cli.main_parser().parse_args(
+            [
+                "--quickstart",
+                "--headless",
+                "--config",
+                str(requested_path),
+                "--config-backend",
+                "openai",
+                "--config-model",
+                "gpt-5.4",
+            ],
+        )
+
+        run_calls = []
+        monkeypatch.setattr(
+            massgen_cli,
+            "_print_headless_quickstart_summary",
+            lambda result: None,
+        )
+        monkeypatch.setattr(
+            massgen_cli,
+            "_ensure_quickstart_skills_ready",
+            lambda *_args, **_kwargs: None,
+        )
+
+        def fake_run_quickstart_headless(
+            self,
+            output_dir,
+            num_agents,
+            backend_override,
+            model_override,
+            use_docker,
+            context_path,
+            agent_specs,
+            agent_id=None,
+            output_path=None,
+        ):
+            run_calls.append(
+                {
+                    "output_dir": output_dir,
+                    "output_path": output_path,
+                    "num_agents": num_agents,
+                    "backend_override": backend_override,
+                    "model_override": model_override,
+                    "use_docker": use_docker,
+                    "context_path": context_path,
+                    "agent_specs": agent_specs,
+                    "agent_id": agent_id,
+                },
+            )
+            return {
+                "success": True,
+                "config_path": output_path,
+                "env_template_path": None,
+                "backend": backend_override,
+                "model": model_override,
+                "backends": None,
+                "models": None,
+                "api_keys_summary": {},
+                "docker_available": False,
+                "docker_pulled": False,
+                "skills_installed": False,
+                "messages": [],
+                "manual_steps": [],
+            }
+
+        monkeypatch.setattr(
+            massgen_cli.ConfigBuilder,
+            "run_quickstart_headless",
+            fake_run_quickstart_headless,
+        )
+
+        massgen_cli._cli_main_continued(args)
+
+        assert run_calls == [
+            {
+                "output_dir": ".massgen",
+                "output_path": str(requested_path),
+                "num_agents": 1,
+                "backend_override": "openai",
+                "model_override": "gpt-5.4",
+                "use_docker": None,
+                "context_path": None,
+                "agent_specs": None,
+                "agent_id": None,
+            },
+        ]
+
+    def test_headless_quickstart_cli_forwards_config_agent_id(self, monkeypatch, tmp_path):
+        """Headless quickstart should forward --config-agent-id in single-backend mode."""
+        from massgen import cli as massgen_cli
+
+        requested_path = tmp_path / "exact" / "headless.yaml"
+        args = massgen_cli.main_parser().parse_args(
+            [
+                "--quickstart",
+                "--headless",
+                "--config",
+                str(requested_path),
+                "--config-backend",
+                "openai",
+                "--config-model",
+                "gpt-5.4",
+                "--config-agent-id",
+                "agent_a",
+            ],
+        )
+
+        run_calls = []
+        monkeypatch.setattr(
+            massgen_cli,
+            "_print_headless_quickstart_summary",
+            lambda result: None,
+        )
+        monkeypatch.setattr(
+            massgen_cli,
+            "_ensure_quickstart_skills_ready",
+            lambda *_args, **_kwargs: None,
+        )
+
+        def fake_run_quickstart_headless(
+            self,
+            output_dir,
+            num_agents,
+            backend_override,
+            model_override,
+            use_docker,
+            context_path,
+            agent_specs,
+            agent_id=None,
+            output_path=None,
+        ):
+            run_calls.append({"agent_id": agent_id})
+            return {
+                "success": True,
+                "config_path": output_path,
+                "env_template_path": None,
+                "backend": backend_override,
+                "model": model_override,
+                "backends": None,
+                "models": None,
+                "api_keys_summary": {},
+                "docker_available": False,
+                "docker_pulled": False,
+                "skills_installed": False,
+                "messages": [],
+                "manual_steps": [],
+            }
+
+        monkeypatch.setattr(
+            massgen_cli.ConfigBuilder,
+            "run_quickstart_headless",
+            fake_run_quickstart_headless,
+        )
+
+        massgen_cli._cli_main_continued(args)
+
+        assert run_calls == [{"agent_id": "agent_a"}]
 
 
 class TestHeadlessAutoTrigger:

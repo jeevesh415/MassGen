@@ -900,7 +900,7 @@ class TestDockerMountsWriteMode:
         fm.agent_id = "agent1"
         fm.path_permission_manager = MagicMock()
         fm.path_permission_manager.get_context_paths.return_value = [
-            {"path": str(repo_path), "permission": "read"},
+            {"path": str(repo_path), "permission": "write"},
         ]
 
         # Call the Docker container creation block directly by calling setup_orchestration_paths
@@ -912,12 +912,13 @@ class TestDockerMountsWriteMode:
             )
 
         # Verify create_container was called with empty context_paths and .git/ extra_mount_paths
+        # (writable git repo paths are suppressed; only .git/ is mounted for worktree refs)
         call_kwargs = fm.docker_manager.create_container.call_args
         assert call_kwargs is not None, "create_container should have been called"
         kwargs = call_kwargs.kwargs if call_kwargs.kwargs else {}
         # Check positional or keyword args
         if "context_paths" in kwargs:
-            assert kwargs["context_paths"] == [], "context_paths should be empty when write_mode active"
+            assert kwargs["context_paths"] == [], "writable git context_paths should be suppressed when write_mode active"
         if "extra_mount_paths" in kwargs:
             mount_paths = kwargs["extra_mount_paths"]
             assert len(mount_paths) == 1, f"Should have 1 .git/ mount, got {len(mount_paths)}"
@@ -942,7 +943,7 @@ class TestDockerMountsWriteMode:
         fm.agent_id = "agent1"
         fm.path_permission_manager = MagicMock()
         fm.path_permission_manager.get_context_paths.return_value = [
-            {"path": str(repo_path), "permission": "read"},
+            {"path": str(repo_path), "permission": "write"},
         ]
 
         with patch.object(fm, "_setup_workspace", return_value=workspace):
@@ -953,6 +954,42 @@ class TestDockerMountsWriteMode:
         if "extra_mount_paths" in kwargs:
             mount_paths = kwargs["extra_mount_paths"]
             assert mount_paths[0][2] == "rw", f"Expected rw mode, got {mount_paths[0][2]}"
+
+    def test_read_only_git_context_paths_preserved(self, tmp_path):
+        """Read-only git repo context paths should stay mounted in Docker (not suppressed).
+
+        Subagents receive parent workspaces as read-only context_paths. These must
+        remain accessible inside Docker so the subagent can read deliverable files.
+        """
+        from unittest.mock import MagicMock, patch
+
+        from massgen.filesystem_manager._filesystem_manager import FilesystemManager
+
+        workspace = tmp_path / "workspace"
+        workspace.mkdir()
+
+        repo_path = tmp_path / "repo"
+        repo_path.mkdir()
+        init_test_repo(repo_path)
+        (repo_path / "index.html").write_text("<html>deliverable</html>")
+
+        fm = FilesystemManager(cwd=str(workspace), write_mode="auto")
+        fm.docker_manager = MagicMock()
+        fm.docker_manager.create_container.return_value = None
+        fm.agent_id = "agent1"
+        fm.path_permission_manager = MagicMock()
+        fm.path_permission_manager.get_context_paths.return_value = [
+            {"path": str(repo_path), "permission": "read"},
+        ]
+
+        with patch.object(fm, "_setup_workspace", return_value=workspace):
+            fm.setup_orchestration_paths(agent_id="agent1", skills_directory=None)
+
+        call_kwargs = fm.docker_manager.create_container.call_args
+        kwargs = call_kwargs.kwargs if call_kwargs.kwargs else {}
+        if "context_paths" in kwargs:
+            paths = [p["path"] for p in kwargs["context_paths"]]
+            assert str(repo_path) in paths, "read-only git repo should remain in context_paths"
 
     def test_non_git_context_paths_not_mounted(self, tmp_path):
         """Non-git context paths are preserved as regular context_paths (no .git/ mounts needed)."""

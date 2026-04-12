@@ -524,6 +524,7 @@ class TestFinishReasonTracking:
         mock_orchestrator = MagicMock()
         mock_orchestrator.agent_states = {}
         mock_orchestrator.is_orchestrator_timeout = False
+        mock_orchestrator._review_pending = False
 
         tracker.save_status_file(tmp_path, mock_orchestrator)
 

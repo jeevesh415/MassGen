@@ -311,8 +311,20 @@ _PRECOLLAB_SUBAGENT_IDS = frozenset(
         "persona_generation",
         "task_decomposition",
         "criteria_generation",
+        "prompt_improvement",
     },
 )
+
+
+_PRECOLLAB_DISPLAY_NAMES: dict[str, str] = {
+    "persona_generation": "Personas",
+    "criteria_generation": "Eval Criteria",
+    "prompt_improvement": "Prompt",
+    "task_decomposition": "Decomposition",
+}
+
+# Parallel pre-collab IDs — all except task_decomposition which runs separately.
+_PARALLEL_PRECOLLAB_IDS = _PRECOLLAB_SUBAGENT_IDS - {"task_decomposition"}
 
 
 class _PrecollabSubagentState:
@@ -1210,6 +1222,12 @@ class TextualTerminalDisplay(TerminalDisplay):
             answer_preview,
             error,
         )
+
+    def notify_prompt_improved(self, improved_prompt: str) -> None:
+        """Notify the TUI that the task prompt was improved/evolved."""
+        if not self._app:
+            return
+        self._call_app_method("update_improved_prompt", improved_prompt)
 
     def update_hook_execution(
         self,
@@ -3723,6 +3741,8 @@ if TEXTUAL_AVAILABLE:
             self._runtime_evaluation_criteria_source: str = "default"
             self._decomposition_completion_source: str = "subagent"
             self._precollab_subagents: dict[str, _PrecollabSubagentState] = {}
+            self._parallel_precollab_expected: set[str] = set()
+            self._parallel_precollab_screen_opened: bool = False
             # Workspace browser open-guard to prevent duplicate modal pushes from
             # repeated click/key events while the UI is busy.
             self._workspace_browser_open_pending: bool = False
@@ -3796,6 +3816,8 @@ if TEXTUAL_AVAILABLE:
             self._runtime_parallel_personas = {}
             self._dismiss_decomposition_generation_modal()
             self._precollab_subagents.clear()
+            self._parallel_precollab_expected = set()
+            self._parallel_precollab_screen_opened = False
 
             if self._tab_bar and self._mode_state.coordination_mode == "parallel":
                 if self._mode_state.parallel_personas_enabled:
@@ -4653,10 +4675,12 @@ if TEXTUAL_AVAILABLE:
         # fire before agent widgets exist or carry no agent_id.
         _AGENT_GUARD_BYPASS_EVENTS = frozenset(
             {
+                "pre_collab_batch_announced",
                 "pre_collab_started",
                 "pre_collab_completed",
                 "personas_set",
                 "evaluation_criteria_set",
+                "evaluation_criteria_evolved",
                 "subtasks_set",
                 "orchestrator_timeout",
             },
@@ -4943,6 +4967,11 @@ if TEXTUAL_AVAILABLE:
                     except Exception as e:
                         tui_log(f"[TextualDisplay] {e}")
 
+            elif event.event_type == "pre_collab_batch_announced":
+                ids = event.data.get("pre_collab_ids", [])
+                self._parallel_precollab_expected = set(ids)
+                self._parallel_precollab_screen_opened = False
+
             elif event.event_type == "pre_collab_started":
                 try:
                     self.show_runtime_subagent_card(
@@ -4984,6 +5013,21 @@ if TEXTUAL_AVAILABLE:
                     self.set_evaluation_criteria(criteria, source=source)
                 except Exception as e:
                     tui_log(f"[TextualDisplay] evaluation_criteria_set: {e}")
+
+            elif event.event_type == "evaluation_criteria_evolved":
+                try:
+                    evo_num = event.data.get("evolution_number", "?")
+                    evolved_count = event.data.get("evolved_count", 0)
+                    total_count = event.data.get("total_count", 0)
+                    summary = event.data.get("summary", "")
+                    short_summary = (summary[:80] + "...") if len(summary) > 80 else summary
+                    self.notify(
+                        f"Criteria evolved (v{evo_num}): " f"{evolved_count}/{total_count} criteria raised\n" f"{short_summary}",
+                        severity="information",
+                        timeout=10,
+                    )
+                except Exception as e:
+                    tui_log(f"[TextualDisplay] evaluation_criteria_evolved: {e}")
 
             elif event.event_type == "subtasks_set":
                 try:
@@ -6423,6 +6467,119 @@ Type your question and press Enter to ask the agents.
                 lambda sid=subagent_id, a=attempt: self._auto_open_precollab_screen(sid, a + 1),
             )
 
+        def _try_open_unified_precollab_screen(self, attempt: int = 0) -> None:
+            """Wait for all expected parallel pre-collabs to register, then open unified screen."""
+            if self._parallel_precollab_screen_opened:
+                return
+
+            registered = set(self._precollab_subagents.keys()) & _PARALLEL_PRECOLLAB_IDS
+
+            if self._parallel_precollab_expected:
+                # Batch info available — wait for all expected
+                target = self._parallel_precollab_expected
+            elif attempt < 10:
+                # Batch info not yet available — wait briefly for it
+                self.set_timer(
+                    0.1,
+                    lambda a=attempt: self._try_open_unified_precollab_screen(a + 1),
+                )
+                return
+            else:
+                # Timeout waiting for batch info — use whatever registered
+                target = registered
+
+            if target.issubset(registered):
+                self._open_unified_precollab_screen()
+                return
+
+            # Retry up to ~5s (50 * 100ms)
+            if attempt >= 50:
+                # Timeout — open with whatever is available
+                self._open_unified_precollab_screen()
+                return
+
+            self.set_timer(
+                0.1,
+                lambda a=attempt: self._try_open_unified_precollab_screen(a + 1),
+            )
+
+        def _open_unified_precollab_screen(self) -> None:
+            """Open a single SubagentScreen with tabs for all parallel pre-collab subagents."""
+            if self._parallel_precollab_screen_opened:
+                return
+            self._parallel_precollab_screen_opened = True
+
+            from massgen.subagent.models import SubagentDisplayData
+
+            # Collect all parallel pre-collab SubagentDisplayData, preserving order.
+            # Use _parallel_precollab_expected if available, else fall back to
+            # whatever parallel IDs are registered (handles the race where the
+            # batch event hasn't arrived yet).
+            expected = self._parallel_precollab_expected or (set(self._precollab_subagents.keys()) & _PARALLEL_PRECOLLAB_IDS)
+            subagents: list = []
+            for sid in ("persona_generation", "criteria_generation", "prompt_improvement"):
+                if sid not in expected:
+                    continue
+                state = self._precollab_subagents.get(sid)
+                if state and state.data:
+                    # Create a copy with a friendly display name as subagent_type
+                    display_name = _PRECOLLAB_DISPLAY_NAMES.get(sid, sid)
+                    data = state.data
+                    subagent = SubagentDisplayData(
+                        id=sid,
+                        task=data.task,
+                        status=data.status,
+                        progress_percent=data.progress_percent,
+                        elapsed_seconds=data.elapsed_seconds,
+                        timeout_seconds=data.timeout_seconds,
+                        workspace_path=data.workspace_path,
+                        workspace_file_count=data.workspace_file_count,
+                        last_log_line=data.last_log_line,
+                        error=data.error,
+                        answer_preview=data.answer_preview,
+                        log_path=data.log_path,
+                        subagent_type=display_name,
+                    )
+                    subagents.append(subagent)
+
+            if not subagents:
+                self._parallel_precollab_screen_opened = False
+                return
+
+            # Wait for at least one to have event data ready (up to ~12s)
+            self._wait_and_open_unified_screen(subagents, attempt=0)
+
+        def _wait_and_open_unified_screen(self, subagents: list, attempt: int = 0) -> None:
+            """Wait for at least one pre-collab to have events, then push screen."""
+            any_ready = any(self._precollab_events_ready(s.id) for s in subagents)
+
+            if any_ready or attempt >= 120:
+                screen = SubagentScreen(
+                    subagent=subagents[0],
+                    all_subagents=subagents,
+                    status_callback=lambda sid: self._get_precollab_subagent(sid),
+                    auto_return_on_completion=True,
+                    send_message_callback=self._subagent_message_callback,
+                    continue_subagent_callback=getattr(self, "_subagent_continue_callback", None),
+                )
+                self.push_screen(screen)
+                return
+
+            self.set_timer(
+                0.1,
+                lambda a=attempt: self._wait_and_open_unified_screen(subagents, a + 1),
+            )
+
+        def set_precollab_batch(self, pre_collab_ids: list[str]) -> None:
+            """Set which parallel pre-collab subagents will run.
+
+            Called by the orchestrator via direct display callback BEFORE
+            any pre-collab subagent starts, ensuring the unified screen
+            logic is ready before show_runtime_subagent_card fires.
+            """
+            self._parallel_precollab_expected = set(pre_collab_ids)
+            self._parallel_precollab_screen_opened = False
+
         def show_runtime_subagent_card(
             self,
             agent_id: str,
@@ -6482,7 +6639,16 @@ Type your question and press Enter to ask the agents.
 
                 if not state.auto_opened:
                     state.auto_opened = True
-                    self.set_timer(0.05, lambda sid=subagent_id: self._auto_open_precollab_screen(sid))
+                    if subagent_id == "task_decomposition":
+                        # Decomposition always gets its own screen (runs after parallel batch)
+                        self.set_timer(0.05, lambda sid=subagent_id: self._auto_open_precollab_screen(sid))
+                    elif subagent_id in _PARALLEL_PRECOLLAB_IDS:
+                        # Any parallel pre-collab uses the unified screen path,
+                        # regardless of whether the batch event has arrived yet.
+                        self._try_open_unified_precollab_screen()
+                    else:
+                        # Fallback for unknown pre-collab IDs
+                        self.set_timer(0.05, lambda sid=subagent_id: self._auto_open_precollab_screen(sid))
                 return
 
             target_agent = agent_id if agent_id in self.agent_widgets else None
@@ -7771,6 +7937,11 @@ Type your question and press Enter to ask the agents.
                 # This ensures clean state for each new turn
                 self.coordination_display.reset_turn_state()
 
+        def update_improved_prompt(self, improved_prompt: str) -> None:
+            """Store the improved/evolved prompt for display in the session info modal."""
+            if self._tab_bar:
+                self._tab_bar.update_improved_prompt(improved_prompt)
+
         def set_agent_subtasks(self, subtasks: dict[str, str]) -> None:
             """Pass agent subtask assignments to the tab bar for display.
 
@@ -8022,9 +8193,47 @@ Type your question and press Enter to ask the agents.
                     continue
 
             # Fallback: runtime preparation subagents (hidden from timeline by design)
-            for precollab_id in _PRECOLLAB_SUBAGENT_IDS:
-                if self._open_precollab_screen(precollab_id):
-                    return
+            # Collect all available parallel pre-collab subagents for a unified screen.
+            from massgen.subagent.models import SubagentDisplayData as _SDD
+
+            parallel_subagents: list = []
+            for sid in ("persona_generation", "criteria_generation", "prompt_improvement"):
+                pc_state = self._precollab_subagents.get(sid)
+                if pc_state and pc_state.data:
+                    display_name = _PRECOLLAB_DISPLAY_NAMES.get(sid, sid)
+                    data = pc_state.data
+                    parallel_subagents.append(
+                        _SDD(
+                            id=sid,
+                            task=data.task,
+                            status=data.status,
+                            progress_percent=data.progress_percent,
+                            elapsed_seconds=data.elapsed_seconds,
+                            timeout_seconds=data.timeout_seconds,
+                            workspace_path=data.workspace_path,
+                            workspace_file_count=data.workspace_file_count,
+                            last_log_line=data.last_log_line,
+                            error=data.error,
+                            answer_preview=data.answer_preview,
+                            log_path=data.log_path,
+                            subagent_type=display_name,
+                        ),
+                    )
+
+            if parallel_subagents:
+                screen = SubagentScreen(
+                    subagent=parallel_subagents[0],
+                    all_subagents=parallel_subagents,
+                    status_callback=lambda sid: self._get_precollab_subagent(sid),
+                    send_message_callback=self._subagent_message_callback,
+                    continue_subagent_callback=getattr(self, "_subagent_continue_callback", None),
+                )
+                self.push_screen(screen)
+                return
+
+            # task_decomposition gets its own screen
+            if self._open_precollab_screen("task_decomposition"):
+                return
 
             self.notify("No active subagents", severity="information", timeout=2)
 
@@ -8158,11 +8367,24 @@ Type your question and press Enter to ask the agents.
             if event.subtask:
                 label = getattr(event, "assignment_kind", "Subtask")
                 content += f"{label}: {event.subtask}\n\n"
-            content += event.question or "(No prompt)"
+
+            improved = getattr(event, "improved_prompt", None)
+            if improved:
+                content += "IMPROVED PROMPT (what agents see):\n"
+                content += improved
+                content += "\n\n---\n\n"
+                content += "ORIGINAL PROMPT:\n"
+                content += event.question or "(No prompt)"
+            else:
+                content += event.question or "(No prompt)"
+
+            title = f"Turn {event.turn} • Prompt"
+            if improved:
+                title += " (improved)"
             # Show the full prompt in a text modal
             self.push_screen(
                 TextContentModal(
-                    title=f"Turn {event.turn} • Prompt",
+                    title=title,
                     content=content,
                 ),
             )

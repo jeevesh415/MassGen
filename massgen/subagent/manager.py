@@ -1984,6 +1984,17 @@ You are a subagent spawned to work on a specific task. Your workspace is isolate
                         continue
                     backend_config.setdefault(setting, value)
 
+            # Inject evaluator persona as system_prompt if available.
+            evaluator_personas = (config.metadata or {}).get("evaluator_personas")
+            if evaluator_personas and isinstance(evaluator_personas, list) and i < len(evaluator_personas):
+                persona = evaluator_personas[i]
+                persona_label = str(persona.get("label", "")).strip()
+                persona_instructions = str(persona.get("instructions", "")).strip()
+                if persona_label and persona_instructions:
+                    backend_config["system_prompt"] = (
+                        f"## Evaluator Persona: {persona_label}\n\n" f"{persona_instructions}\n\n" "Apply this evaluation lens consistently across " "all criteria and candidate answers."
+                    )
+
             agent_config = {
                 "id": agent_id,
                 "backend": backend_config,
@@ -2490,6 +2501,7 @@ You are a subagent spawned to work on a specific task. Your workspace is isolate
         refine: bool = True,
         skills: list[str] | None = None,
         subagent_type: str | None = None,
+        extra_metadata: dict[str, Any] | None = None,
     ) -> SubagentResult:
         """
         Spawn a single subagent to work on a task.
@@ -2508,6 +2520,8 @@ You are a subagent spawned to work on a specific task. Your workspace is isolate
             refine: If True (default), allow multi-round coordination and refinement.
                     If False, return first answer without iteration (faster).
             skills: Optional list of skill names to pre-load for the subagent
+            extra_metadata: Optional extra metadata to merge into the subagent config
+                (e.g., evaluator_personas for round evaluator spawns)
 
         Returns:
             SubagentResult with execution outcome
@@ -2519,6 +2533,8 @@ You are a subagent spawned to work on a specific task. Your workspace is isolate
             metadata["skills"] = skills
         if subagent_type:
             metadata["subagent_type"] = subagent_type
+        if extra_metadata:
+            metadata.update(extra_metadata)
         config = SubagentConfig.create(
             task=task,
             parent_agent_id=self.parent_agent_id,
@@ -2688,6 +2704,7 @@ You are a subagent spawned to work on a specific task. Your workspace is isolate
                 refine=refine,
                 skills=task_config.get("skills"),
                 subagent_type=task_config.get("subagent_type"),
+                extra_metadata=task_config.get("metadata"),
             )
             coroutines.append(coro)
 

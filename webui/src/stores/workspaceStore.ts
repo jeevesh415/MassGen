@@ -24,6 +24,7 @@ interface AgentWorkspace {
   workspacePath: string;
   files: WorkspaceFileInfo[];
   lastUpdated: number;
+  agentId?: string;
 }
 
 // Historical snapshot (from answer)
@@ -62,7 +63,11 @@ interface WorkspaceStore {
   setRefreshSessionFn: (fn: (() => void) | null) => void;
 
   // Actions - Workspace updates
-  setInitialFiles: (workspacePath: string, files: WorkspaceFileInfo[]) => void;
+  setInitialFiles: (
+    workspacePath: string,
+    files: WorkspaceFileInfo[],
+    agentId?: string
+  ) => void;
   clearWorkspace: (workspacePath: string) => void;
 
   // Actions - Historical snapshots
@@ -109,7 +114,7 @@ export const useWorkspaceStore = create<WorkspaceStore>()(
   setRefreshSessionFn: (fn) => set({ refreshSessionFn: fn }),
 
   // Workspace update actions
-  setInitialFiles: (workspacePath, files) => {
+  setInitialFiles: (workspacePath, files, agentId) => {
     // Normalize path to ensure consistent key format across HTTP and WebSocket
     const normalizedPath = normalizePath(workspacePath);
     // FIX: Clear stale 404 caches when receiving fresh file list
@@ -122,6 +127,7 @@ export const useWorkspaceStore = create<WorkspaceStore>()(
           workspacePath: normalizedPath,
           files,
           lastUpdated: Date.now(),
+          agentId: agentId ?? state.workspaces[normalizedPath]?.agentId,
         },
       },
     }));
@@ -140,47 +146,12 @@ export const useWorkspaceStore = create<WorkspaceStore>()(
     // Normalize path for consistent lookup
     const normalizedPath = normalizePath(workspacePath);
 
-    // If files not provided, try to get current live workspace files as snapshot
-    const currentWorkspaces = get().workspaces;
-    const workspaceKeys = Object.keys(currentWorkspaces);
-
-    // First try exact path match (using normalized path)
-    let snapshotFiles = files ?? currentWorkspaces[normalizedPath]?.files ?? null;
-
-    // If no exact match, try to find matching live workspace by agent pattern
-    // Historical paths: .massgen/.../agent_a/.../workspace or .massgen/.../agent_b/.../workspace
-    // Live paths: /Users/.../workspace1 or /Users/.../workspace2
-    if (!snapshotFiles && !files) {
-      // Extract agent identifier from historical path (e.g., "agent_a" or "agent_b")
-      const agentMatch = workspacePath.match(/agent_([a-z0-9_]+)/i);
-      if (agentMatch) {
-        const agentSuffix = agentMatch[1].toLowerCase(); // "a", "b", "1", "2", etc.
-
-        // Try to find matching live workspace
-        // Convention: agent_a -> workspace1, agent_b -> workspace2
-        // OR agent_1 -> workspace1, agent_2 -> workspace2
-        for (const livePath of workspaceKeys) {
-          // Match workspace1 with agent_a or agent_1, workspace2 with agent_b or agent_2
-          const wsMatch = livePath.match(/workspace(\d+)$/);
-          if (wsMatch) {
-            const wsNum = parseInt(wsMatch[1], 10);
-            // agent_a = 1, agent_b = 2 OR agent_1 = 1, agent_2 = 2
-            const agentNum = agentSuffix === 'a' ? 1 : agentSuffix === 'b' ? 2 : parseInt(agentSuffix, 10);
-            if (wsNum === agentNum) {
-              snapshotFiles = currentWorkspaces[livePath]?.files ?? null;
-              break;
-            }
-          }
-        }
-      }
-    }
-
     set((state) => ({
       historicalSnapshots: {
         ...state.historicalSnapshots,
         [answerLabel]: {
           workspacePath: normalizedPath,
-          files: snapshotFiles,
+          files: files ?? null,
           timestamp: timestamp || Date.now(),
         },
       },
@@ -214,9 +185,9 @@ export const useWorkspaceStore = create<WorkspaceStore>()(
 
   getHistoricalFiles: (answerLabel) => {
     const snapshot = get().historicalSnapshots[answerLabel];
-    // Return null if no snapshot OR if files is null/empty
-    // This ensures fetchHistoricalFiles is triggered for unfetched snapshots
-    if (!snapshot || snapshot.files === null || snapshot.files.length === 0) {
+    // Return null only when the snapshot has not been fetched yet.
+    // An empty array means the snapshot was fetched successfully but has no visible files.
+    if (!snapshot || snapshot.files === null) {
       debugLog.info('[HistoricalLoad] getHistoricalFiles returning null', {
         answerLabel,
         hasSnapshot: !!snapshot,

@@ -28,6 +28,7 @@ def _build_orchestrator(
     )
     orchestrator._normalize_workspace_paths_in_answers = lambda answers, viewing_agent_id: answers
     orchestrator._compute_plan_progress_stats = lambda _workspace_path: None
+    orchestrator._snapshot_storage = None
 
     backend = MagicMock()
     backend.filesystem_manager = MagicMock()
@@ -62,7 +63,7 @@ def test_checklist_mode_injection_requires_submit_checklist_flow():
 
     assert "submit_checklist" in injection
     assert "validation error" in injection.lower()
-    assert "propose_improvements" in injection
+    assert "draft_approach" in injection
 
 
 def test_decomposition_checklist_mode_injection_requires_recheck_before_stop():
@@ -78,7 +79,7 @@ def test_decomposition_checklist_mode_injection_requires_recheck_before_stop():
     )
 
     assert "submit_checklist" in injection
-    assert "propose_improvements" in injection
+    assert "draft_approach" in injection
     assert "Call `stop` only" in injection
 
 

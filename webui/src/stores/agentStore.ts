@@ -24,6 +24,7 @@ import { useWorkspaceStore } from './workspaceStore';
 
 interface AgentStore extends SessionState {
   // Actions
+  beginLaunch: (question: string) => void;
   initSession: (sessionId: string, question: string, agents: string[], theme: string, agentModels?: Record<string, string>) => void;
   updateAgentContent: (agentId: string, content: string, contentType: string) => void;
   updateAgentStatus: (agentId: string, status: AgentStatus) => void;
@@ -121,6 +122,22 @@ const createAgentState = (id: string, modelName?: string): AgentState => {
 
 export const useAgentStore = create<AgentStore>((set, get) => ({
   ...initialState,
+
+  beginLaunch: (question) => {
+    set({
+      ...initialState,
+      question,
+      initStatus: {
+        message: 'Submitting prompt...',
+        step: 'request',
+        progress: 3,
+      },
+      conversationHistory: [
+        { role: 'user', content: question, turn: 1 },
+      ],
+      turnNumber: 1,
+    });
+  },
 
   initSession: (sessionId, question, agents, theme, agentModels) => {
     const agentStates: Record<string, AgentState> = {};
@@ -805,6 +822,18 @@ export const useAgentStore = create<AgentStore>((set, get) => ({
             (event as { status: string }).status,
             'detail' in event ? (event as { detail?: string }).detail : undefined
           );
+          // When the server auto-starts a run (e.g. `massgen --web "question"`),
+          // the preparation_status carries the question so the frontend can show
+          // the launch sequence immediately.
+          if ('question' in event && !get().question) {
+            const q = (event as { question: string }).question;
+            set({
+              question: q,
+              initStatus: { message: 'Submitting prompt...', step: 'request', progress: 3 },
+              conversationHistory: [{ role: 'user' as const, content: q, turn: 1 }],
+              turnNumber: 1,
+            });
+          }
         }
         break;
 
@@ -833,6 +862,49 @@ export const useAgentStore = create<AgentStore>((set, get) => ({
           set({ automationMode: (event as { automation_mode: boolean }).automation_mode });
         }
         break;
+
+      // Handle structured_event for checkpoint_activated (dynamic agent registration)
+      // Note: pre-collab events are handled by messageStore -> preCollabStore only
+      case 'structured_event' as string: {
+        const se = event as unknown as {
+          event_type: string;
+          data: Record<string, unknown>;
+        };
+        if (se.event_type === 'checkpoint_activated') {
+          const participants = (se.data.participants as Record<string, { real_agent_id: string; model: string }>) || {};
+          const currentAgents = { ...get().agents };
+          const currentOrder = [...get().agentOrder];
+          const currentUIState = { ...get().agentUIState };
+
+          for (const [displayId, info] of Object.entries(participants)) {
+            if (!currentAgents[displayId]) {
+              currentAgents[displayId] = createAgentState(displayId, info.model || undefined);
+              currentUIState[displayId] = createAgentUIState();
+              if (!currentOrder.includes(displayId)) {
+                // Insert after real agent in order
+                const realIdx = currentOrder.indexOf(info.real_agent_id);
+                if (realIdx >= 0) {
+                  currentOrder.splice(realIdx + 1, 0, displayId);
+                } else {
+                  currentOrder.push(displayId);
+                }
+              }
+            }
+          }
+
+          // Mark the main agent as "completed" so it stops showing "Generating"
+          const mainAgentId = (se.data.main_agent_id as string) || '';
+          if (mainAgentId && currentAgents[mainAgentId]) {
+            currentAgents[mainAgentId] = {
+              ...currentAgents[mainAgentId],
+              status: 'completed' as AgentStatus,
+            };
+          }
+
+          set({ agents: currentAgents, agentOrder: currentOrder, agentUIState: currentUIState });
+        }
+        break;
+      }
 
       case 'agent_content':
         if ('agent_id' in event && 'content' in event) {

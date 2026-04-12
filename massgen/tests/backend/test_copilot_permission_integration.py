@@ -531,6 +531,37 @@ class TestDockerModeIntegration:
         )
         assert result.allowed is False
 
+    @pytest.mark.asyncio
+    async def test_ppm_hook_non_dict_tool_args_allowed(self, tmp_path):
+        """PPM hook should not crash when Copilot SDK passes non-dict toolArgs.
+
+        The Copilot SDK's native tools (grep, view, search) can pass tool args
+        as strings or lists instead of dicts. Previously this caused a TypeError
+        ('string indices must be integers, not str') which failed-closed and
+        blocked all tool calls.
+        """
+        workspace = tmp_path / "workspace"
+        workspace.mkdir()
+        _, ppm = _make_copilot_backend_with_ppm(workspace)
+
+        hook = PathPermissionManagerHook(ppm)
+
+        # String args (e.g. grep pattern) — should allow, not crash
+        result = await hook.execute("grep", json.dumps("SensitivePathGuardHook"))
+        assert result.allowed is True
+
+        # List args — should allow, not crash
+        result = await hook.execute("view", json.dumps(["/some/file.py", 1, 50]))
+        assert result.allowed is True
+
+        # Integer args — should allow, not crash
+        result = await hook.execute("unknown_tool", json.dumps(42))
+        assert result.allowed is True
+
+        # Empty string args — should allow, not crash
+        result = await hook.execute("search", "{}")
+        assert result.allowed is True
+
     def test_docker_mode_excluded_tools_merge(self, tmp_path):
         """Docker-disallowed tools should merge with user-configured exclude_tools."""
         workspace = tmp_path / "workspace"

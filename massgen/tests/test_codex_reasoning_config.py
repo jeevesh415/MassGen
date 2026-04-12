@@ -12,6 +12,7 @@ try:
 except ImportError:  # pragma: no cover - Python < 3.11 fallback
     import tomli as tomllib
 
+import massgen.backend.codex as codex_module
 from massgen import logger_config
 from massgen.agent_config import AgentConfig
 from massgen.backend.codex import SUBPROCESS_STREAM_LIMIT, CodexBackend
@@ -27,7 +28,7 @@ def _mock_codex_cli(monkeypatch):
 
 def _read_workspace_codex_config(workspace: Path) -> dict:
     config_path = workspace / ".codex" / "config.toml"
-    return tomllib.loads(config_path.read_text())
+    return tomllib.loads(config_path.read_text(encoding="utf-8"))
 
 
 def test_codex_accepts_openai_style_reasoning_effort(tmp_path: Path):
@@ -93,10 +94,22 @@ def test_codex_writes_instructions_file_under_codex_home(tmp_path: Path):
     config = _read_workspace_codex_config(tmp_path)
     instructions_path = tmp_path / ".codex" / "AGENTS.md"
     assert config["model_instructions_file"] == str(instructions_path)
-    content = instructions_path.read_text()
+    content = instructions_path.read_text(encoding="utf-8")
     assert content.startswith("system instructions")
     assert "[Human Input]:" in content
     assert not (tmp_path / "AGENTS.md").exists()
+
+
+def test_codex_write_workspace_config_uses_utf8_for_unicode_instructions(tmp_path: Path):
+    backend = CodexBackend(cwd=str(tmp_path))
+    backend.system_prompt = "Workflow"
+    backend._pending_workflow_instructions = "Choose best answer → then stop"
+
+    backend._write_workspace_config()
+
+    instructions_path = tmp_path / ".codex" / "AGENTS.md"
+    assert instructions_path.exists()
+    assert "→" in instructions_path.read_text(encoding="utf-8")
 
 
 def test_codex_appends_runtime_input_priority_guidance(tmp_path: Path):
@@ -105,10 +118,40 @@ def test_codex_appends_runtime_input_priority_guidance(tmp_path: Path):
     backend._write_workspace_config()
 
     instructions_path = tmp_path / ".codex" / "AGENTS.md"
-    content = instructions_path.read_text()
+    content = instructions_path.read_text(encoding="utf-8")
     assert "system instructions" in content
     assert "[Human Input]:" in content
     assert "high-priority runtime instruction" in content
+
+
+def test_codex_fallback_toml_writer_uses_utf8_for_unicode_values(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    import massgen.backend.codex as codex_module
+
+    monkeypatch.setattr(codex_module, "tomli_w", None)
+
+    backend = CodexBackend(
+        cwd=str(tmp_path),
+        mcp_servers=[
+            {
+                "name": "unicode_server",
+                "type": "stdio",
+                "command": "python",
+                "args": ["-c", "print('hello')"],
+                "env": {"ARROW_VALUE": "A→B"},
+            },
+        ],
+    )
+    backend.system_prompt = "Workflow"
+    backend._pending_workflow_instructions = "Choose best answer → then stop"
+
+    backend._write_workspace_config()
+
+    config_text = (tmp_path / ".codex" / "config.toml").read_text(encoding="utf-8")
+    config = tomllib.loads(config_text)
+
+    assert "ARROW_VALUE" in config_text
+    assert config["mcp_servers"]["unicode_server"]["env"]["ARROW_VALUE"] == "A→B"
+    assert "→" in (tmp_path / ".codex" / "AGENTS.md").read_text(encoding="utf-8")
 
 
 def test_codex_mirrors_local_skills_into_codex_home(tmp_path: Path):
@@ -229,7 +272,6 @@ def test_codex_writes_execution_trace_markdown(tmp_path: Path):
     trace_path = backend._save_execution_trace(snapshot_dir)
 
     assert trace_path == snapshot_dir / "execution_trace.md"
-    assert trace_path is not None
     trace_text = trace_path.read_text()
     assert "# Execution Trace: agent_a" in trace_text
     assert "### Reasoning" in trace_text
@@ -278,6 +320,125 @@ async def test_codex_stream_local_uses_large_subprocess_limit(tmp_path: Path, mo
 
     assert chunks == []
     assert captured_kwargs["limit"] == SUBPROCESS_STREAM_LIMIT
+
+
+@pytest.mark.asyncio
+async def test_codex_stream_docker_ignores_plain_text_diagnostics(tmp_path: Path, monkeypatch):
+    backend = CodexBackend(cwd=str(tmp_path), agent_id="agent_a")
+    backend._docker_codex_verified = True
+    backend._build_exec_command = lambda prompt, resume_session=False, for_docker=False: ["/usr/bin/codex", "exec"]  # noqa: ARG005
+    warning_messages: list[str] = []
+
+    fake_home = tmp_path / "home"
+    (fake_home / ".codex").mkdir(parents=True)
+    (fake_home / ".codex" / "auth.json").write_text("{}", encoding="utf-8")
+    monkeypatch.setattr(Path, "home", classmethod(lambda cls: fake_home))
+    monkeypatch.setattr(codex_module.logger, "warning", lambda message: warning_messages.append(message))
+
+    output_lines = [
+        "Reading additional input from stdin...\n",
+        json.dumps({"type": "thread.started", "thread_id": "thread_123"}) + "\n",
+        (
+            "2026-04-10T16:46:46.610532Z ERROR codex_core::tools::router: "
+            "error=Command blocked by PreToolUse hook: Command substitution "
+            "and process substitution are not allowed. Command: mkdir -p "
+            "deliverable && cat > deliverable/index.html <<'EOF'\n"
+        ),
+        "<!DOCTYPE html>\n",
+        json.dumps(
+            {
+                "type": "turn.completed",
+                "usage": {
+                    "input_tokens": 10,
+                    "output_tokens": 5,
+                    "total_tokens": 15,
+                },
+            },
+        )
+        + "\n",
+    ]
+
+    class _FakeAPI:
+        def exec_create(self, container_id, **kwargs):  # noqa: ANN001, ANN003
+            del container_id, kwargs
+            return {"Id": "exec_1"}
+
+        def exec_start(self, exec_id, **kwargs):  # noqa: ANN001, ANN003
+            del exec_id, kwargs
+            for line in output_lines:
+                yield line.encode("utf-8")
+
+        def exec_inspect(self, exec_id):  # noqa: ANN001
+            del exec_id
+            return {"ExitCode": 0}
+
+    class _FakeClient:
+        def __init__(self) -> None:
+            self.api = _FakeAPI()
+
+    class _FakeContainer:
+        def __init__(self) -> None:
+            self.id = "container_1"
+            self.client = _FakeClient()
+
+        def exec_run(self, cmd):  # noqa: ANN001
+            del cmd
+            return 0, b"/usr/bin/codex\n"
+
+    monkeypatch.setattr(backend, "_get_docker_container", lambda: _FakeContainer())
+
+    chunks = [chunk async for chunk in backend._stream_docker("prompt", resume_session=False)]
+
+    assert [chunk.type for chunk in chunks] == ["agent_status", "done"]
+    assert backend.session_id == "thread_123"
+    assert not any("Failed to parse Codex event" in message for message in warning_messages)
+
+
+@pytest.mark.asyncio
+async def test_codex_stream_local_still_warns_on_malformed_json_event_line(tmp_path: Path, monkeypatch):
+    backend = CodexBackend(cwd=str(tmp_path))
+    backend._build_exec_command = lambda prompt, resume_session=False: ["/usr/bin/codex", "exec"]  # noqa: ARG005
+    warning_messages: list[str] = []
+    monkeypatch.setattr(codex_module.logger, "warning", lambda message: warning_messages.append(message))
+
+    class _FakeStdout:
+        def __init__(self, lines: list[str]) -> None:
+            self._lines = [line.encode("utf-8") for line in lines]
+            self._index = 0
+
+        def __aiter__(self):
+            return self
+
+        async def __anext__(self):
+            if self._index >= len(self._lines):
+                raise StopAsyncIteration
+            line = self._lines[self._index]
+            self._index += 1
+            return line
+
+    class _FakeStderr:
+        async def read(self):
+            return b""
+
+    class _FakeProcess:
+        def __init__(self) -> None:
+            self.stdout = _FakeStdout(['{"type": "thread.started"\n'])
+            self.stderr = _FakeStderr()
+            self.returncode = 0
+
+        async def wait(self):
+            return 0
+
+    async def _fake_create_subprocess_exec(*args, **kwargs):  # noqa: ANN002, ANN003
+        del args, kwargs
+        return _FakeProcess()
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", _fake_create_subprocess_exec)
+
+    chunks = [chunk async for chunk in backend._stream_local("prompt", resume_session=False)]
+
+    assert chunks == []
+    assert any("Failed to parse Codex event" in message for message in warning_messages)
 
 
 def test_codex_turn_completed_usage_preserves_cached_input_tokens(tmp_path: Path):

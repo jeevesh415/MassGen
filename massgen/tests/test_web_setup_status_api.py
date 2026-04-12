@@ -36,6 +36,76 @@ def test_setup_status_prefers_project_config(monkeypatch, tmp_path) -> None:
     assert payload["config_path"] == str(project_config)
 
 
+def test_create_app_loads_persisted_webui_sessions_without_name_error() -> None:
+    """Web UI startup should not crash while loading persisted WebUI sessions."""
+    completed_session = {
+        "source": "webui",
+        "session_id": "session-1",
+        "description": "Persisted question",
+        "config_path": "/tmp/config.yaml",
+        "end_time": "2026-03-22T14:00:00Z",
+    }
+
+    with patch("massgen.session.SessionRegistry") as mock_registry:
+        mock_registry.return_value.list_sessions.return_value = [completed_session]
+
+        app = create_app()
+
+    assert app is not None
+
+
+def test_create_app_handles_persisted_session_load_failures_without_name_error() -> None:
+    """Web UI startup should continue even if persisted sessions cannot be loaded."""
+    with patch("massgen.session.SessionRegistry", side_effect=RuntimeError("boom")):
+        app = create_app()
+
+    assert app is not None
+
+
+def test_sessions_endpoint_handles_mixed_timestamp_types(monkeypatch) -> None:
+    """Session list API should handle float and ISO-string timestamps together."""
+    with patch("massgen.session.SessionRegistry") as mock_registry:
+        mock_registry.return_value.list_sessions.return_value = []
+        app = create_app()
+
+    client = TestClient(app)
+
+    from massgen.frontend.web import server
+
+    monkeypatch.setattr(
+        server.manager,
+        "completed_sessions",
+        {
+            "webui-session": {
+                "question": "Persisted webui session",
+                "completed_at": 1.0,
+            },
+        },
+    )
+    monkeypatch.setattr(server.manager, "displays", {})
+    monkeypatch.setattr(server.manager, "tasks", {})
+    monkeypatch.setattr(
+        "massgen.frontend.web.server._scan_log_dirs_cached",
+        lambda _logs_root: [
+            {
+                "session_id": "log-session",
+                "question": "Historical log session",
+                "start_time": "2026-03-26T13:42:24.478272",
+                "log_dir": ".massgen/massgen_logs/log-session/turn_1/attempt_1",
+            },
+        ],
+    )
+
+    response = client.get("/api/sessions")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert [session["session_id"] for session in payload["sessions"][:2]] == [
+        "log-session",
+        "webui-session",
+    ]
+
+
 def test_providers_endpoint_prioritizes_agent_frameworks_and_marks_them() -> None:
     """Quickstart providers API should surface framework backends first with framework metadata."""
     app = create_app()
@@ -47,12 +117,13 @@ def test_providers_endpoint_prioritizes_agent_frameworks_and_marks_them() -> Non
     payload = response.json()
     provider_ids = [provider["id"] for provider in payload["providers"]]
 
-    assert provider_ids[:3] == ["claude_code", "codex", "copilot"]
+    assert provider_ids[:4] == ["claude_code", "codex", "copilot", "gemini_cli"]
 
     providers_by_id = {provider["id"]: provider for provider in payload["providers"]}
     assert providers_by_id["claude_code"]["is_agent_framework"] is True
     assert providers_by_id["codex"]["is_agent_framework"] is True
     assert providers_by_id["copilot"]["is_agent_framework"] is True
+    assert providers_by_id["gemini_cli"]["is_agent_framework"] is True
     assert providers_by_id["openai"]["is_agent_framework"] is False
 
 

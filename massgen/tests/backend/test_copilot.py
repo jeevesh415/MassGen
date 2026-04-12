@@ -59,8 +59,14 @@ async def test_initialization(copilot_backend):
 @pytest.mark.asyncio
 async def test_stream_with_tools_create_session(copilot_backend):
     mock_session = _make_session()
-    copilot_backend.client.create_session.return_value = mock_session
     copilot_backend.client.start = AsyncMock()
+    created_session_config: dict = {}
+
+    async def create_session(config):
+        created_session_config.update(config)
+        return mock_session
+
+    copilot_backend.client.create_session.side_effect = create_session
 
     messages = [{"role": "user", "content": "Hello"}]
     tools = []
@@ -122,6 +128,8 @@ async def test_stream_with_tools_create_session(copilot_backend):
     assert len(done_chunks) == 1
 
     copilot_backend.client.create_session.assert_called_once()
+    assert created_session_config["streaming"] is True
+    assert callable(created_session_config["on_permission_request"])
     mock_session.send.assert_called_with({"prompt": "[user]: Hello"})
 
 

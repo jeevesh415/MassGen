@@ -7,9 +7,15 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useAgentStore } from '../stores/agentStore';
+import { useMessageStore } from '../stores/v2/messageStore';
+import { useModeStore } from '../stores/v2/modeStore';
+import { useReviewStore } from '../stores/v2/reviewStore';
+import { useWorkspaceStore } from '../stores/workspaceStore';
 import type { WSEvent } from '../types';
 
 export type ConnectionStatus = 'connecting' | 'connected' | 'disconnected' | 'error';
+
+const WORKSPACE_REFRESH_DEBOUNCE_MS = 250;
 
 interface UseWebSocketOptions {
   sessionId: string;
@@ -26,6 +32,7 @@ interface UseWebSocketReturn {
   startCoordination: (question: string, configPath?: string) => void;
   continueConversation: (question: string) => void;
   cancelCoordination: () => void;
+  broadcastMessage: (message: string, targets: string[] | null) => void;
   error: string | null;
 }
 
@@ -41,8 +48,11 @@ export function useWebSocket({
   const wsRef = useRef<WebSocket | null>(null);
   const reconnectCountRef = useRef(0);
   const reconnectTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const workspaceRefreshTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const processWSEvent = useAgentStore((state) => state.processWSEvent);
+  const processV2Event = useMessageStore((state) => state.processWSEvent);
+  const refreshWorkspaceSession = useWorkspaceStore((state) => state.refreshSessionFn);
 
   // Build WebSocket URL
   const getWsUrl = useCallback(() => {
@@ -51,17 +61,36 @@ export function useWebSocket({
     return `${protocol}//${host}/ws/${sessionId}`;
   }, [sessionId]);
 
-  // Handle incoming messages
+  // Handle incoming messages — dispatch to both v1 and v2 stores
   const handleMessage = useCallback(
     (event: MessageEvent) => {
       try {
         const data: WSEvent = JSON.parse(event.data);
         processWSEvent(data);
+        processV2Event(data);
+
+        // Dispatch review events to review store
+        if (data.type === 'review_request') {
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          useReviewStore.getState().openReview(data as any);
+        } else if (data.type === 'review_resolved') {
+          useReviewStore.getState().closeReview();
+        }
+
+        if (data.type === 'file_change' && refreshWorkspaceSession) {
+          if (workspaceRefreshTimeoutRef.current) {
+            clearTimeout(workspaceRefreshTimeoutRef.current);
+          }
+          workspaceRefreshTimeoutRef.current = setTimeout(() => {
+            refreshWorkspaceSession();
+            workspaceRefreshTimeoutRef.current = null;
+          }, WORKSPACE_REFRESH_DEBOUNCE_MS);
+        }
       } catch (err) {
         console.error('Failed to parse WebSocket message:', err);
       }
     },
-    [processWSEvent]
+    [processWSEvent, processV2Event, refreshWorkspaceSession]
   );
 
   // Connect to WebSocket
@@ -122,6 +151,11 @@ export function useWebSocket({
       reconnectTimeoutRef.current = null;
     }
 
+    if (workspaceRefreshTimeoutRef.current) {
+      clearTimeout(workspaceRefreshTimeoutRef.current);
+      workspaceRefreshTimeoutRef.current = null;
+    }
+
     if (wsRef.current) {
       wsRef.current.close(1000, 'Client disconnect');
       wsRef.current = null;
@@ -139,13 +173,20 @@ export function useWebSocket({
     }
   }, []);
 
+  // Register send function with review store so modal can send responses
+  useEffect(() => {
+    useReviewStore.getState().setSendFn(send);
+  }, [send]);
+
   // Start coordination
   const startCoordination = useCallback(
     (question: string, configPath?: string) => {
+      const overrides = useModeStore.getState().getOverrides();
       send({
         action: 'start',
         question,
         config: configPath,
+        mode_overrides: Object.keys(overrides).length > 0 ? overrides : undefined,
       });
     },
     [send]
@@ -154,9 +195,11 @@ export function useWebSocket({
   // Continue conversation with follow-up question
   const continueConversation = useCallback(
     (question: string) => {
+      const overrides = useModeStore.getState().getOverrides();
       send({
         action: 'continue',
         question,
+        mode_overrides: Object.keys(overrides).length > 0 ? overrides : undefined,
       });
     },
     [send]
@@ -168,6 +211,18 @@ export function useWebSocket({
       action: 'cancel',
     });
   }, [send]);
+
+  // Broadcast message to agents during active session
+  const broadcastMessage = useCallback(
+    (message: string, targets: string[] | null) => {
+      send({
+        action: 'broadcast_response',
+        message,
+        targets,
+      });
+    },
+    [send]
+  );
 
   // Auto-connect on mount
   useEffect(() => {
@@ -188,6 +243,7 @@ export function useWebSocket({
     startCoordination,
     continueConversation,
     cancelCoordination,
+    broadcastMessage,
     error,
   };
 }

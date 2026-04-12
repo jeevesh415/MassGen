@@ -14,7 +14,7 @@ if TYPE_CHECKING:
     pass
 
 
-TaskExecutionMode = Literal["inline", "delegate"]
+TaskExecutionMode = Literal["inline", "delegate", "checkpoint"]
 
 
 def normalize_task_execution(
@@ -41,8 +41,14 @@ def normalize_task_execution(
         else:
             mode = default_mode
 
-    if mode not in ("inline", "delegate"):
-        raise ValueError("execution.mode must be either 'inline' or 'delegate'")
+    if mode not in ("inline", "delegate", "checkpoint"):
+        raise ValueError("execution.mode must be 'inline', 'delegate', or 'checkpoint'")
+
+    if mode == "checkpoint":
+        # Checkpoint tasks carry optional eval_criteria, context, personas
+        normalized = {k: v for k, v in raw.items() if k not in {"mode"}}
+        normalized["mode"] = "checkpoint"
+        return normalized
 
     if mode == "inline":
         if legacy_subagent_type or legacy_subagent_id:

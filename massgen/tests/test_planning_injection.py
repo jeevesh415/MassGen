@@ -1,11 +1,11 @@
-"""Unit tests for planning task injection from propose_improvements.
+"""Unit tests for planning task injection from draft_approach.
 
 Tests cover:
 - _check_and_inject_pending_tasks reads inject_tasks.json and adds tasks
 - Injection file is consumed (deleted) after processing
 - No injection when injection_dir is None
 - Both improve and preserve item types convert correctly
-- Repeated propose_improvements overwrites (not appends) injection file
+- Repeated draft_approach overwrites (not appends) injection file
 """
 
 import json
@@ -278,9 +278,7 @@ class TestCheckAndInjectPendingTasks:
         assert out[-1]["id"] == "write_verification_memo"
         assert set(out[-1]["depends_on"]) == {"implement", "test"}
         assert "memory/short_term/verification_latest.md" in out[-1]["description"]
-        assert "## Verification Contract" in out[-1]["description"]
-        assert "## Latest Verification Result" in out[-1]["description"]
-        assert "## Stale If" in out[-1]["description"]
+        assert "essential_files_manifest.json" in out[-1]["description"]
         assert "concrete assertion extracted" not in out[-1]["description"].lower()
 
     @pytest.mark.asyncio
@@ -383,7 +381,7 @@ class TestCheckAndInjectPendingTasks:
 
 
 class TestVerificationMemoSinksToEnd:
-    """write_verification_memo must stay the last task after propose_improvements injects new tasks."""
+    """write_verification_memo must stay the last task after draft_approach injects new tasks."""
 
     def _make_plan_with_memo(self) -> "TaskPlan":
         """Create a plan with 3 framework tasks + write_verification_memo appended at end."""
@@ -406,7 +404,7 @@ class TestVerificationMemoSinksToEnd:
         return plan
 
     def test_verification_memo_is_last_after_injection(self, tmp_path):
-        """After propose_improvements injects improvement tasks, write_verification_memo is still last."""
+        """After draft_approach injects improvement tasks, write_verification_memo is still last."""
         from massgen.mcp_tools.planning._planning_mcp_server import (
             _check_and_inject_pending_tasks,
         )

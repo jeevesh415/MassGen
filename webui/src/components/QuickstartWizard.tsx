@@ -15,16 +15,19 @@ import {
   SetupModeStep,
   AgentConfigStep,
   CoordinationStep,
+  SkillsStep,
   PreviewStep,
 } from './wizard';
 
 const stepConfig: Record<WizardStep, { title: string }> = {
+  welcome: { title: 'Welcome' },
   docker: { title: 'Execution Mode' },
   apiKeys: { title: 'API Keys' },
   agentCount: { title: 'Number of Agents' },
   setupMode: { title: 'Setup Mode' },
   agentConfig: { title: 'Agent Configuration' },
   coordination: { title: 'Coordination Settings' },
+  skills: { title: 'Skills' },
   preview: { title: 'Review & Save' },
 };
 
@@ -124,7 +127,7 @@ export function QuickstartWizard({ onConfigSaved, temporaryMode = false }: Quick
   }, [finalizeTemporarySession, handleClose, onConfigSaved, saveConfig, temporaryMode]);
 
   const providers = useWizardStore((s) => s.providers);
-  const visibleSteps = (['docker', 'apiKeys', 'agentCount', 'setupMode', 'agentConfig', 'coordination', 'preview'] as WizardStep[]).filter(
+  const visibleSteps = (['docker', 'apiKeys', 'agentCount', 'setupMode', 'agentConfig', 'coordination', 'skills', 'preview'] as WizardStep[]).filter(
     (step) => {
       if (step === 'apiKeys' && providers.some((p) => p.has_api_key)) {
         return false;
@@ -157,6 +160,8 @@ export function QuickstartWizard({ onConfigSaved, temporaryMode = false }: Quick
         return agents.every((agent) => agent.provider && agent.model);
       case 'coordination':
         return true; // Coordination settings are optional, defaults are fine
+      case 'skills':
+        return true; // Skills are optional
       case 'preview':
         return true;
       default:
@@ -179,6 +184,8 @@ export function QuickstartWizard({ onConfigSaved, temporaryMode = false }: Quick
         return <AgentConfigStep />;
       case 'coordination':
         return <CoordinationStep />;
+      case 'skills':
+        return <SkillsStep />;
       case 'preview':
         return <PreviewStep />;
       default:

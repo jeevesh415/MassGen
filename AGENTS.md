@@ -196,6 +196,11 @@ When adding new YAML parameters, update **both**:
 - `massgen/backend/base.py` -> `get_base_excluded_config_params()`
 - `massgen/api_params_handler/_api_params_handler_base.py` -> `get_base_excluded_config_params()`
 
+When adding new **coordination** YAML parameters (under `orchestrator.coordination`), update **all three**:
+- `massgen/agent_config.py` -> `CoordinationConfig` dataclass field
+- `massgen/cli.py` -> `_parse_coordination_config()` (must explicitly map the key or it silently defaults to `False`)
+- `massgen/agent_config.py` -> `to_dict()` if the field needs to serialize back
+
 ## Workflow Guidelines
 
 1. **TDD is the default.** Every non-trivial task starts with tests. See the [TDD section above](#test-driven-development-tdd) for the full contract. Do not skip this -- if you find yourself writing production code before tests, stop and reverse course.
@@ -301,6 +306,7 @@ Detailed documentation for specific modules lives in `docs/modules/`. **Always c
 - `docs/modules/interactive_mode.md` - Interactive mode architecture, launch_run MCP, system prompts, project workspace
 - `docs/modules/worktrees.md` - Worktree lifecycle, branch naming, scratch archives, system prompt integration
 - `docs/modules/composition.md` - **Composable primitives, phase architecture, domain-specific checklist gates** — how personas, eval criteria, decomposition, and planning compose for maximum quality
+- `docs/modules/checkpoint.md` - **Checkpoint coordination mode** — tool schema, fresh agent instantiation, state save/restore, workspace propagation, WebUI behavior
 - `docs/modules/coordination_workflow.md` - **Round lifecycle and checklist workflow** — the implement → evaluate → submit cycle, when to call `submit_checklist` vs `new_answer`, and why agents must not re-evaluate within a round
 
 ## MassGen Skills

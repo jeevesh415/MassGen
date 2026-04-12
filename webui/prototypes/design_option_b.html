@@ -1,0 +1,1121 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Design Option B: Bold Sections</title>
+<style>
+  /* ========== RESET & BASE ========== */
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+    background: #0e1015;
+    color: #e2e4e9;
+    min-height: 100vh;
+    padding: 24px;
+  }
+
+  /* ========== LAYOUT ========== */
+  .page-title {
+    text-align: center;
+    font-size: 20px;
+    font-weight: 600;
+    color: #9ca3af;
+    margin-bottom: 8px;
+    letter-spacing: 0.5px;
+  }
+  .page-subtitle {
+    text-align: center;
+    font-size: 13px;
+    color: #6b7280;
+    margin-bottom: 32px;
+    max-width: 700px;
+    margin-left: auto;
+    margin-right: auto;
+  }
+  .comparison {
+    display: flex;
+    gap: 32px;
+    max-width: 1600px;
+    margin: 0 auto;
+  }
+  .panel {
+    flex: 1;
+    border-radius: 16px;
+    padding: 24px;
+    min-height: 720px;
+    position: relative;
+    overflow: hidden;
+  }
+  .panel-label {
+    position: absolute;
+    top: 12px;
+    right: 16px;
+    font-size: 10px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 1.5px;
+    padding: 4px 10px;
+    border-radius: 6px;
+    z-index: 2;
+  }
+
+  /* ========== API KEYS PANEL ========== */
+  .panel-apikeys {
+    background: #1a1d23;
+    border: 1px solid rgba(245, 158, 11, 0.12);
+    box-shadow:
+      inset 0 1px 0 rgba(245, 158, 11, 0.06),
+      0 0 60px rgba(245, 158, 11, 0.03);
+  }
+  .panel-apikeys .panel-label {
+    background: linear-gradient(135deg, rgba(245, 158, 11, 0.2), rgba(217, 119, 6, 0.15));
+    color: #fbbf24;
+    border: 1px solid rgba(245, 158, 11, 0.25);
+  }
+
+  /* ========== AGENT CONFIG PANEL ========== */
+  .panel-agentconfig {
+    background: #1a1d23;
+    border: 1px solid rgba(99, 102, 241, 0.12);
+    box-shadow:
+      inset 0 1px 0 rgba(99, 102, 241, 0.06),
+      0 0 60px rgba(99, 102, 241, 0.03);
+  }
+  .panel-agentconfig .panel-label {
+    background: linear-gradient(135deg, rgba(99, 102, 241, 0.2), rgba(139, 92, 246, 0.15));
+    color: #a5b4fc;
+    border: 1px solid rgba(99, 102, 241, 0.25);
+  }
+
+  /* ========== HEADERS ========== */
+  .step-header {
+    margin-bottom: 16px;
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+  }
+  .step-header h2 {
+    font-size: 18px;
+    font-weight: 700;
+    margin-bottom: 4px;
+  }
+  .step-header p {
+    font-size: 12px;
+    color: #9ca3af;
+    line-height: 1.5;
+  }
+  .step-header p code {
+    background: rgba(255,255,255,0.06);
+    padding: 1px 6px;
+    border-radius: 4px;
+    font-size: 11px;
+    font-family: 'SF Mono', 'Fira Code', monospace;
+  }
+
+  .panel-apikeys .step-header h2 {
+    background: linear-gradient(135deg, #fbbf24, #f59e0b, #d97706);
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    background-clip: text;
+  }
+  .panel-agentconfig .step-header h2 {
+    background: linear-gradient(135deg, #a5b4fc, #818cf8, #6366f1);
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    background-clip: text;
+  }
+
+  /* ========== BUTTONS ========== */
+  .btn-bold {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 7px 16px;
+    font-size: 12px;
+    font-weight: 600;
+    border-radius: 8px;
+    cursor: pointer;
+    transition: all 0.2s;
+    white-space: nowrap;
+  }
+  .btn-bold-amber {
+    color: #fef3c7;
+    background: linear-gradient(135deg, rgba(245, 158, 11, 0.2), rgba(217, 119, 6, 0.12));
+    border: 1px solid rgba(245, 158, 11, 0.3);
+    box-shadow: 0 0 16px rgba(245, 158, 11, 0.08);
+  }
+  .btn-bold-amber:hover {
+    background: linear-gradient(135deg, rgba(245, 158, 11, 0.3), rgba(217, 119, 6, 0.2));
+    box-shadow: 0 0 24px rgba(245, 158, 11, 0.15);
+  }
+
+  /* ========== SECTIONS ========== */
+  .section {
+    border-radius: 12px;
+    margin-bottom: 12px;
+    overflow: hidden;
+  }
+
+  /* --- Configured Keys section --- */
+  .section-configured {
+    background: linear-gradient(135deg, rgba(34, 197, 94, 0.08) 0%, rgba(34, 197, 94, 0.03) 100%);
+    border: 1px solid rgba(34, 197, 94, 0.15);
+    box-shadow: 0 0 20px rgba(34, 197, 94, 0.04);
+  }
+
+  .section-header-bold {
+    padding: 10px 14px;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    cursor: pointer;
+    user-select: none;
+    position: relative;
+  }
+  .section-header-bold:hover {
+    background: rgba(255,255,255,0.02);
+  }
+  .section-header-bold .chevron {
+    font-size: 10px;
+    color: #6b7280;
+    transition: transform 0.2s;
+  }
+  .section-header-bold .chevron.collapsed { transform: rotate(-90deg); }
+  .section-header-bold .label {
+    font-size: 11px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 1px;
+  }
+  .section-header-bold .count-badge {
+    font-size: 10px;
+    font-weight: 600;
+    padding: 2px 8px;
+    border-radius: 10px;
+  }
+
+  .section-configured .section-header-bold .label { color: #4ade80; }
+  .section-configured .count-badge {
+    background: rgba(34, 197, 94, 0.15);
+    color: #86efac;
+    border: 1px solid rgba(34, 197, 94, 0.2);
+  }
+
+  .section-body {
+    padding: 4px 14px 14px 30px;
+  }
+
+  /* Configured chips - with glow */
+  .chips {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+  }
+  .chip-bold {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    padding: 6px 14px;
+    border-radius: 20px;
+    font-size: 11px;
+    font-weight: 600;
+    background: linear-gradient(135deg, rgba(34, 197, 94, 0.15), rgba(34, 197, 94, 0.08));
+    border: 1px solid rgba(34, 197, 94, 0.25);
+    color: #86efac;
+    box-shadow: 0 0 10px rgba(34, 197, 94, 0.08);
+    transition: all 0.2s;
+  }
+  .chip-bold:hover {
+    box-shadow: 0 0 16px rgba(34, 197, 94, 0.15);
+    border-color: rgba(34, 197, 94, 0.4);
+  }
+  .chip-bold .check {
+    color: #4ade80;
+    font-size: 12px;
+    font-weight: 700;
+  }
+
+  /* --- Add API Keys section --- */
+  .section-addkeys-bold {
+    border: 1px solid rgba(245, 158, 11, 0.15);
+    background: rgba(245, 158, 11, 0.02);
+    box-shadow: 0 0 20px rgba(245, 158, 11, 0.03);
+  }
+  .section-addkeys-bold-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 12px 16px;
+    background: linear-gradient(90deg,
+      rgba(245, 158, 11, 0.1) 0%,
+      rgba(245, 158, 11, 0.04) 40%,
+      rgba(217, 119, 6, 0.02) 100%);
+    border-bottom: 1px solid rgba(245, 158, 11, 0.1);
+    position: relative;
+  }
+  .section-addkeys-bold-header::before {
+    content: '';
+    position: absolute;
+    left: 0;
+    top: 0;
+    bottom: 0;
+    width: 3px;
+    background: linear-gradient(180deg, #fbbf24, #d97706);
+    border-radius: 0 2px 2px 0;
+  }
+  .section-addkeys-bold-header .label {
+    font-size: 12px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 1px;
+    background: linear-gradient(90deg, #fbbf24, #f59e0b);
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    background-clip: text;
+  }
+
+  /* Search input - bold variant */
+  .search-wrap-bold {
+    position: relative;
+  }
+  .search-wrap-bold input {
+    background: rgba(0,0,0,0.4);
+    border: 1px solid rgba(245, 158, 11, 0.12);
+    border-radius: 8px;
+    padding: 6px 10px 6px 30px;
+    font-size: 11px;
+    color: #d1d5db;
+    width: 180px;
+    outline: none;
+    transition: all 0.2s;
+  }
+  .search-wrap-bold input:focus {
+    border-color: rgba(245, 158, 11, 0.35);
+    box-shadow: 0 0 12px rgba(245, 158, 11, 0.08);
+  }
+  .search-wrap-bold input::placeholder { color: #6b7280; }
+  .search-wrap-bold .search-icon {
+    position: absolute;
+    left: 9px;
+    top: 50%;
+    transform: translateY(-50%);
+    color: #6b7280;
+    font-size: 12px;
+  }
+
+  /* Provider rows - bold */
+  .provider-list-bold {
+    max-height: 240px;
+    overflow-y: auto;
+  }
+  .provider-list-bold::-webkit-scrollbar { width: 4px; }
+  .provider-list-bold::-webkit-scrollbar-track { background: transparent; }
+  .provider-list-bold::-webkit-scrollbar-thumb { background: rgba(245, 158, 11, 0.15); border-radius: 2px; }
+
+  .provider-row-bold {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 10px 16px;
+    border-bottom: 1px solid rgba(255,255,255,0.03);
+    transition: all 0.2s;
+    position: relative;
+  }
+  .provider-row-bold:last-child { border-bottom: none; }
+  .provider-row-bold:hover {
+    background: rgba(245, 158, 11, 0.03);
+  }
+  .provider-row-bold:hover::before {
+    content: '';
+    position: absolute;
+    left: 0;
+    top: 4px;
+    bottom: 4px;
+    width: 2px;
+    background: rgba(245, 158, 11, 0.4);
+    border-radius: 1px;
+  }
+  .provider-row-bold .name {
+    font-size: 13px;
+    font-weight: 500;
+    color: #d1d5db;
+    width: 130px;
+    flex-shrink: 0;
+  }
+  .provider-row-bold .input-wrap {
+    position: relative;
+    flex: 1;
+    max-width: 280px;
+  }
+  .provider-row-bold input[type="password"],
+  .provider-row-bold input[type="text"] {
+    width: 100%;
+    background: rgba(0,0,0,0.3);
+    border: 1px solid rgba(255,255,255,0.06);
+    border-radius: 8px;
+    padding: 7px 32px 7px 12px;
+    font-size: 12px;
+    color: #d1d5db;
+    outline: none;
+    transition: all 0.2s;
+  }
+  .provider-row-bold input:focus {
+    border-color: rgba(245, 158, 11, 0.3);
+    box-shadow: 0 0 8px rgba(245, 158, 11, 0.06);
+  }
+  .provider-row-bold input::placeholder { color: #4b5563; font-family: 'SF Mono', 'Fira Code', monospace; font-size: 11px; }
+  .provider-row-bold .eye-btn {
+    position: absolute;
+    right: 8px;
+    top: 50%;
+    transform: translateY(-50%);
+    background: none;
+    border: none;
+    color: #6b7280;
+    cursor: pointer;
+    font-size: 12px;
+    transition: color 0.2s;
+  }
+  .provider-row-bold .eye-btn:hover { color: #fbbf24; }
+
+  /* --- Frameworks section --- */
+  .section-frameworks-bold {
+    background: linear-gradient(135deg, rgba(245, 158, 11, 0.05) 0%, rgba(217, 119, 6, 0.02) 100%);
+    border: 1px solid rgba(245, 158, 11, 0.12);
+    box-shadow: 0 0 16px rgba(245, 158, 11, 0.02);
+  }
+  .section-frameworks-bold .section-header-bold .label { color: #fbbf24; }
+  .section-frameworks-bold .count-badge {
+    background: rgba(245, 158, 11, 0.12);
+    color: #fbbf24;
+    border: 1px solid rgba(245, 158, 11, 0.2);
+  }
+
+  /* --- Save location --- */
+  .save-location-bold {
+    display: flex;
+    align-items: center;
+    gap: 16px;
+    padding: 10px 0;
+    font-size: 12px;
+    color: #9ca3af;
+  }
+  .save-location-bold label {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    cursor: pointer;
+    padding: 4px 10px;
+    border-radius: 6px;
+    border: 1px solid transparent;
+    transition: all 0.2s;
+  }
+  .save-location-bold label:hover {
+    background: rgba(245, 158, 11, 0.04);
+    border-color: rgba(245, 158, 11, 0.1);
+  }
+  .save-location-bold code {
+    background: rgba(255,255,255,0.04);
+    padding: 2px 8px;
+    border-radius: 4px;
+    font-size: 11px;
+    font-family: 'SF Mono', 'Fira Code', monospace;
+    color: #9ca3af;
+  }
+  .save-location-bold input[type="radio"] {
+    accent-color: #f59e0b;
+    width: 14px;
+    height: 14px;
+  }
+
+  /* ========== AGENT CONFIG SPECIFIC ========== */
+
+  /* Agent tabs - bold */
+  .agent-tabs-bold {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-bottom: 14px;
+    flex-wrap: wrap;
+  }
+  .agent-tab-bold {
+    padding: 6px 14px;
+    border-radius: 10px;
+    font-size: 12px;
+    font-weight: 600;
+    cursor: pointer;
+    border: 1px solid transparent;
+    transition: all 0.25s;
+    display: flex;
+    align-items: center;
+    gap: 5px;
+    white-space: nowrap;
+    position: relative;
+  }
+  .agent-tab-bold.active {
+    background: linear-gradient(135deg, rgba(99, 102, 241, 0.3), rgba(139, 92, 246, 0.2));
+    border-color: rgba(129, 140, 248, 0.4);
+    color: #e0e7ff;
+    box-shadow: 0 0 20px rgba(99, 102, 241, 0.15), 0 0 4px rgba(99, 102, 241, 0.3);
+  }
+  .agent-tab-bold.configured {
+    background: linear-gradient(135deg, rgba(34, 197, 94, 0.1), rgba(34, 197, 94, 0.05));
+    border-color: rgba(34, 197, 94, 0.25);
+    color: #86efac;
+    box-shadow: 0 0 12px rgba(34, 197, 94, 0.06);
+  }
+  .agent-tab-bold.unconfigured {
+    background: rgba(255,255,255,0.03);
+    border-color: rgba(255,255,255,0.08);
+    color: #9ca3af;
+  }
+  .agent-tab-bold .check-mark { color: #4ade80; font-size: 11px; }
+  .agent-tabs-bold .shortcut-hint {
+    font-size: 10px;
+    color: #4b5563;
+    margin-left: 4px;
+  }
+
+  /* Two-column layout */
+  .two-col-bold {
+    display: flex;
+    gap: 0;
+    flex: 1;
+    min-height: 0;
+  }
+  .col-provider-bold {
+    width: 42%;
+    flex-shrink: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    padding: 14px;
+    background: linear-gradient(180deg, rgba(99, 102, 241, 0.04) 0%, rgba(99, 102, 241, 0.01) 100%);
+    border-radius: 12px 0 0 12px;
+    border: 1px solid rgba(99, 102, 241, 0.1);
+    border-right: none;
+  }
+  .col-model-bold {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    padding: 14px;
+    background: linear-gradient(180deg, rgba(16, 185, 129, 0.04) 0%, rgba(16, 185, 129, 0.01) 100%);
+    border-radius: 0 12px 12px 0;
+    border: 1px solid rgba(16, 185, 129, 0.1);
+    border-left: 1px solid rgba(255,255,255,0.04);
+  }
+
+  .col-header-bold {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+  }
+  .col-header-bold h3 {
+    font-size: 12px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 1px;
+  }
+  .col-header-bold .count {
+    font-size: 10px;
+    font-weight: 600;
+    padding: 2px 8px;
+    border-radius: 10px;
+  }
+  .col-provider-bold .col-header-bold h3 {
+    background: linear-gradient(90deg, #a5b4fc, #818cf8);
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    background-clip: text;
+  }
+  .col-provider-bold .col-header-bold .count {
+    background: rgba(99, 102, 241, 0.12);
+    color: #a5b4fc;
+    border: 1px solid rgba(99, 102, 241, 0.15);
+  }
+  .col-model-bold .col-header-bold h3 {
+    background: linear-gradient(90deg, #6ee7b7, #34d399);
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    background-clip: text;
+  }
+  .col-model-bold .col-header-bold .count {
+    background: rgba(16, 185, 129, 0.12);
+    color: #6ee7b7;
+    border: 1px solid rgba(16, 185, 129, 0.15);
+  }
+
+  /* Search inputs in bold columns */
+  .col-search-bold {
+    position: relative;
+  }
+  .col-search-bold input {
+    width: 100%;
+    background: rgba(0,0,0,0.3);
+    border: 1px solid rgba(255,255,255,0.06);
+    border-radius: 8px;
+    padding: 8px 10px 8px 30px;
+    font-size: 11px;
+    color: #d1d5db;
+    outline: none;
+    transition: all 0.2s;
+  }
+  .col-search-bold input::placeholder { color: #6b7280; }
+  .col-search-bold .search-icon {
+    position: absolute;
+    left: 9px;
+    top: 50%;
+    transform: translateY(-50%);
+    color: #6b7280;
+    font-size: 12px;
+  }
+  .col-provider-bold .col-search-bold input:focus {
+    border-color: rgba(129, 140, 248, 0.35);
+    box-shadow: 0 0 12px rgba(99, 102, 241, 0.08);
+  }
+  .col-model-bold .col-search-bold input:focus {
+    border-color: rgba(52, 211, 153, 0.35);
+    box-shadow: 0 0 12px rgba(16, 185, 129, 0.08);
+  }
+
+  /* Card list */
+  .card-list-bold {
+    flex: 1;
+    overflow-y: auto;
+    display: flex;
+    flex-direction: column;
+    gap: 5px;
+  }
+  .card-list-bold::-webkit-scrollbar { width: 4px; }
+  .card-list-bold::-webkit-scrollbar-track { background: transparent; }
+  .card-list-bold::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.08); border-radius: 2px; }
+
+  /* Provider cards - bold */
+  .prov-card-bold {
+    padding: 10px 12px;
+    border-radius: 10px;
+    cursor: pointer;
+    transition: all 0.25s;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    background: rgba(0,0,0,0.15);
+    border: 1px solid rgba(255,255,255,0.04);
+    position: relative;
+  }
+  .prov-card-bold:hover {
+    background: rgba(99, 102, 241, 0.06);
+    border-color: rgba(99, 102, 241, 0.15);
+    box-shadow: 0 0 12px rgba(99, 102, 241, 0.04);
+  }
+  .prov-card-bold.selected {
+    background: linear-gradient(135deg, rgba(99, 102, 241, 0.12), rgba(139, 92, 246, 0.06));
+    border-color: rgba(129, 140, 248, 0.3);
+    box-shadow:
+      0 0 20px rgba(99, 102, 241, 0.08),
+      inset 0 0 20px rgba(99, 102, 241, 0.03);
+  }
+  .prov-card-bold.selected::before {
+    content: '';
+    position: absolute;
+    left: 0;
+    top: 4px;
+    bottom: 4px;
+    width: 3px;
+    background: linear-gradient(180deg, #818cf8, #6366f1);
+    border-radius: 0 2px 2px 0;
+  }
+  .prov-card-bold .prov-name {
+    font-size: 13px;
+    font-weight: 500;
+    color: #e5e7eb;
+  }
+  .prov-card-bold.selected .prov-name { color: #e0e7ff; }
+  .prov-card-bold .badge-agent {
+    display: inline-flex;
+    align-items: center;
+    gap: 3px;
+    padding: 2px 8px;
+    border-radius: 10px;
+    font-size: 10px;
+    font-weight: 600;
+    background: linear-gradient(135deg, rgba(245, 158, 11, 0.15), rgba(245, 158, 11, 0.08));
+    color: #fbbf24;
+    border: 1px solid rgba(245, 158, 11, 0.2);
+    margin-left: 6px;
+  }
+  .prov-card-bold .check-circle {
+    width: 20px;
+    height: 20px;
+    border-radius: 50%;
+    background: linear-gradient(135deg, #818cf8, #6366f1);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    color: white;
+    font-size: 11px;
+    font-weight: 700;
+    box-shadow: 0 0 10px rgba(99, 102, 241, 0.3);
+  }
+  .prov-card-bold.disabled {
+    opacity: 0.35;
+    cursor: not-allowed;
+  }
+  .prov-card-bold .needs-key {
+    font-size: 10px;
+    color: #ef4444;
+    margin-left: 6px;
+  }
+
+  /* "Needs API Key" divider */
+  .needs-key-divider-bold {
+    font-size: 10px;
+    font-weight: 600;
+    color: #f87171;
+    text-transform: uppercase;
+    letter-spacing: 1px;
+    padding: 14px 0 6px 0;
+    border-top: 1px solid rgba(239, 68, 68, 0.12);
+    margin-top: 4px;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+  .needs-key-divider-bold::before {
+    content: '';
+    display: inline-block;
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: rgba(239, 68, 68, 0.3);
+    border: 2px solid rgba(239, 68, 68, 0.5);
+  }
+
+  /* Model cards - bold */
+  .model-card-bold {
+    padding: 10px 12px;
+    border-radius: 10px;
+    cursor: pointer;
+    transition: all 0.25s;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    background: rgba(0,0,0,0.15);
+    border: 1px solid rgba(255,255,255,0.04);
+    position: relative;
+  }
+  .model-card-bold:hover {
+    background: rgba(16, 185, 129, 0.06);
+    border-color: rgba(16, 185, 129, 0.15);
+    box-shadow: 0 0 12px rgba(16, 185, 129, 0.04);
+  }
+  .model-card-bold.selected {
+    background: linear-gradient(135deg, rgba(16, 185, 129, 0.12), rgba(52, 211, 153, 0.06));
+    border-color: rgba(52, 211, 153, 0.3);
+    box-shadow:
+      0 0 20px rgba(16, 185, 129, 0.08),
+      inset 0 0 20px rgba(16, 185, 129, 0.03);
+  }
+  .model-card-bold.selected::before {
+    content: '';
+    position: absolute;
+    left: 0;
+    top: 4px;
+    bottom: 4px;
+    width: 3px;
+    background: linear-gradient(180deg, #34d399, #10b981);
+    border-radius: 0 2px 2px 0;
+  }
+  .model-card-bold .model-name {
+    font-size: 13px;
+    font-weight: 500;
+    color: #e5e7eb;
+  }
+  .model-card-bold.selected .model-name { color: #d1fae5; }
+  .model-card-bold .badge-recommended {
+    display: inline-flex;
+    align-items: center;
+    gap: 3px;
+    padding: 2px 8px;
+    border-radius: 10px;
+    font-size: 10px;
+    font-weight: 600;
+    background: linear-gradient(135deg, rgba(16, 185, 129, 0.15), rgba(52, 211, 153, 0.08));
+    color: #6ee7b7;
+    border: 1px solid rgba(16, 185, 129, 0.2);
+    margin-left: 6px;
+  }
+  .model-card-bold .check-circle {
+    width: 18px;
+    height: 18px;
+    border-radius: 50%;
+    background: linear-gradient(135deg, #34d399, #10b981);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    color: white;
+    font-size: 10px;
+    font-weight: 700;
+    box-shadow: 0 0 10px rgba(16, 185, 129, 0.3);
+  }
+
+  /* Empty state */
+  .empty-state-bold {
+    flex: 1;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    border: 1px dashed rgba(16, 185, 129, 0.15);
+    border-radius: 10px;
+    background: rgba(16, 185, 129, 0.02);
+    color: #6b7280;
+    font-size: 13px;
+  }
+
+  /* Inline options - bold variant */
+  .inline-options-bold {
+    margin: 4px 0 4px 8px;
+    padding: 10px 14px;
+    border-left: 2px solid rgba(99, 102, 241, 0.35);
+    background: rgba(99, 102, 241, 0.03);
+    border-radius: 0 8px 8px 0;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+  }
+  .inline-option-bold {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 11px;
+    color: #9ca3af;
+  }
+  .inline-option-bold .opt-icon { color: #818cf8; font-size: 13px; }
+  .inline-option-bold .opt-label { font-weight: 500; color: #c7d2fe; }
+  .inline-option-bold select {
+    background: rgba(0,0,0,0.3);
+    border: 1px solid rgba(99, 102, 241, 0.15);
+    border-radius: 6px;
+    padding: 4px 8px;
+    font-size: 11px;
+    color: #d1d5db;
+    outline: none;
+    transition: all 0.2s;
+  }
+  .inline-option-bold select:focus {
+    border-color: rgba(99, 102, 241, 0.35);
+    box-shadow: 0 0 8px rgba(99, 102, 241, 0.08);
+  }
+
+  .toggle-bold {
+    width: 30px;
+    height: 17px;
+    border-radius: 9px;
+    background: #374151;
+    position: relative;
+    cursor: pointer;
+    margin-left: auto;
+    transition: all 0.2s;
+    border: 1px solid rgba(255,255,255,0.06);
+  }
+  .toggle-bold.on {
+    background: linear-gradient(90deg, #6366f1, #818cf8);
+    box-shadow: 0 0 10px rgba(99, 102, 241, 0.3);
+    border-color: rgba(99, 102, 241, 0.4);
+  }
+  .toggle-bold .dot {
+    position: absolute;
+    top: 2px;
+    left: 2px;
+    width: 11px;
+    height: 11px;
+    border-radius: 50%;
+    background: white;
+    transition: transform 0.2s;
+    box-shadow: 0 1px 3px rgba(0,0,0,0.3);
+  }
+  .toggle-bold.on .dot { transform: translateX(13px); }
+</style>
+</head>
+<body>
+
+<div class="page-title">Design Option B: Bold Sections</div>
+<div class="page-subtitle">Prominent colored section backgrounds with glow effects, stronger visual separation, saturated accents on interactive elements</div>
+
+<div class="comparison">
+
+  <!-- ==================== API KEYS PAGE ==================== -->
+  <div class="panel panel-apikeys">
+    <span class="panel-label">API Keys Step</span>
+
+    <!-- Header -->
+    <div class="step-header">
+      <div>
+        <h2>API Keys</h2>
+        <p>Enter keys below or set as environment variables. Saved to a local <code>.env</code> file (owner-only permissions).</p>
+      </div>
+      <button class="btn-bold btn-bold-amber">
+        &#x21bb; Save &amp; refresh
+      </button>
+    </div>
+
+    <!-- Section 1: Configured -->
+    <div class="section section-configured">
+      <div class="section-header-bold">
+        <span class="chevron">&#9662;</span>
+        <span class="label">Configured</span>
+        <span class="count-badge">5</span>
+      </div>
+      <div class="section-body">
+        <div class="chips">
+          <span class="chip-bold"><span class="check">&#10003;</span> Gemini</span>
+          <span class="chip-bold"><span class="check">&#10003;</span> OpenAI</span>
+          <span class="chip-bold"><span class="check">&#10003;</span> Grok</span>
+          <span class="chip-bold"><span class="check">&#10003;</span> Groq</span>
+          <span class="chip-bold"><span class="check">&#10003;</span> OpenRouter</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- Section 2: Add API Keys -->
+    <div class="section section-addkeys-bold">
+      <div class="section-addkeys-bold-header">
+        <span class="label">Add API Keys</span>
+        <div class="search-wrap-bold">
+          <span class="search-icon">&#128269;</span>
+          <input type="text" placeholder="Search providers...">
+        </div>
+      </div>
+      <div class="provider-list-bold">
+        <div class="provider-row-bold">
+          <span class="name">Claude</span>
+          <div class="input-wrap">
+            <input type="password" placeholder="ANTHROPIC_API_KEY">
+            <button class="eye-btn">&#128065;</button>
+          </div>
+        </div>
+        <div class="provider-row-bold">
+          <span class="name">Azure OpenAI</span>
+          <div class="input-wrap">
+            <input type="password" placeholder="AZURE_OPENAI_API_KEY">
+            <button class="eye-btn">&#128065;</button>
+          </div>
+        </div>
+        <div class="provider-row-bold">
+          <span class="name">xAI</span>
+          <div class="input-wrap">
+            <input type="password" placeholder="XAI_API_KEY">
+            <button class="eye-btn">&#128065;</button>
+          </div>
+        </div>
+        <div class="provider-row-bold">
+          <span class="name">Cerebras AI</span>
+          <div class="input-wrap">
+            <input type="password" placeholder="CEREBRAS_API_KEY">
+            <button class="eye-btn">&#128065;</button>
+          </div>
+        </div>
+        <div class="provider-row-bold">
+          <span class="name">Together AI</span>
+          <div class="input-wrap">
+            <input type="password" placeholder="TOGETHER_API_KEY">
+            <button class="eye-btn">&#128065;</button>
+          </div>
+        </div>
+        <div class="provider-row-bold">
+          <span class="name">Fireworks AI</span>
+          <div class="input-wrap">
+            <input type="password" placeholder="FIREWORKS_API_KEY">
+            <button class="eye-btn">&#128065;</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Section 3: Agent Frameworks (collapsed) -->
+    <div class="section section-frameworks-bold">
+      <div class="section-header-bold">
+        <span class="chevron collapsed">&#9662;</span>
+        <span class="label">Agent Frameworks</span>
+        <span class="count-badge">4</span>
+      </div>
+    </div>
+
+    <!-- Save location -->
+    <div class="save-location-bold">
+      <span>Save to:</span>
+      <label>
+        <input type="radio" name="save-b" checked>
+        <code>~/.massgen/.env</code>
+      </label>
+      <label>
+        <input type="radio" name="save-b">
+        <code>./.env</code>
+      </label>
+    </div>
+  </div>
+
+  <!-- ==================== AGENT CONFIG PAGE ==================== -->
+  <div class="panel panel-agentconfig">
+    <span class="panel-label">Agent Config Step</span>
+
+    <!-- Header -->
+    <div class="step-header">
+      <div>
+        <h2>Agent Configuration</h2>
+        <p>Select a provider and model for each agent. All agents can share the same config or be configured individually.</p>
+      </div>
+    </div>
+
+    <!-- Agent tabs -->
+    <div class="agent-tabs-bold">
+      <div class="agent-tab-bold active">A: unconfigured</div>
+      <div class="agent-tab-bold configured">B: OpenAI / gpt-4o <span class="check-mark">&#10003;</span></div>
+      <div class="agent-tab-bold unconfigured">C: unconfigured</div>
+      <span class="shortcut-hint">Press A/B/C</span>
+    </div>
+
+    <!-- Two-column layout -->
+    <div class="two-col-bold">
+      <!-- Provider column -->
+      <div class="col-provider-bold">
+        <div class="col-header-bold">
+          <h3>Provider</h3>
+          <span class="count">9</span>
+        </div>
+        <div class="col-search-bold">
+          <span class="search-icon">&#128269;</span>
+          <input type="text" placeholder="Search...">
+        </div>
+        <div class="card-list-bold">
+          <div class="prov-card-bold selected">
+            <div>
+              <span class="prov-name">OpenAI</span>
+            </div>
+            <span class="check-circle">&#10003;</span>
+          </div>
+          <div class="prov-card-bold">
+            <div>
+              <span class="prov-name">Claude</span>
+            </div>
+          </div>
+          <div class="prov-card-bold">
+            <div>
+              <span class="prov-name">Gemini</span>
+            </div>
+          </div>
+          <div class="prov-card-bold">
+            <div>
+              <span class="prov-name">Grok</span>
+            </div>
+          </div>
+          <div class="prov-card-bold">
+            <div>
+              <span class="prov-name">Groq</span>
+            </div>
+          </div>
+          <div class="prov-card-bold">
+            <div>
+              <span class="prov-name">OpenRouter</span>
+            </div>
+          </div>
+          <div class="prov-card-bold">
+            <div>
+              <span class="prov-name">Claude Code</span>
+              <span class="badge-agent">&#x1F916; Agent</span>
+            </div>
+          </div>
+          <div class="prov-card-bold">
+            <div>
+              <span class="prov-name">Codex</span>
+              <span class="badge-agent">&#x1F916; Agent</span>
+            </div>
+          </div>
+
+          <div class="needs-key-divider-bold">Needs API key</div>
+          <div class="prov-card-bold disabled">
+            <div>
+              <span class="prov-name">Azure OpenAI</span>
+              <span class="needs-key">Needs AZURE_OPENAI_API_KEY</span>
+            </div>
+          </div>
+          <div class="prov-card-bold disabled">
+            <div>
+              <span class="prov-name">Cerebras AI</span>
+              <span class="needs-key">Needs CEREBRAS_API_KEY</span>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Model column -->
+      <div class="col-model-bold">
+        <div class="col-header-bold">
+          <h3>Model</h3>
+          <span class="count">8</span>
+        </div>
+        <div class="col-search-bold">
+          <span class="search-icon">&#128269;</span>
+          <input type="text" placeholder="Search or type custom model...">
+        </div>
+        <div class="card-list-bold">
+          <div class="model-card-bold selected">
+            <div>
+              <span class="model-name">gpt-4o</span>
+              <span class="badge-recommended">&#9733; Recommended</span>
+            </div>
+            <span class="check-circle">&#10003;</span>
+          </div>
+          <!-- Inline options -->
+          <div class="inline-options-bold">
+            <div class="inline-option-bold">
+              <span class="opt-icon">&#9733;</span>
+              <span class="opt-label">Reasoning</span>
+              <select>
+                <option>Medium (default)</option>
+                <option>Low</option>
+                <option>High</option>
+              </select>
+            </div>
+            <div class="inline-option-bold">
+              <span class="opt-icon">&#127760;</span>
+              <span class="opt-label">Web Search</span>
+              <div class="toggle-bold">
+                <div class="dot"></div>
+              </div>
+            </div>
+          </div>
+
+          <div class="model-card-bold">
+            <div><span class="model-name">gpt-4o-mini</span></div>
+          </div>
+          <div class="model-card-bold">
+            <div><span class="model-name">gpt-4-turbo</span></div>
+          </div>
+          <div class="model-card-bold">
+            <div><span class="model-name">o1</span></div>
+          </div>
+          <div class="model-card-bold">
+            <div><span class="model-name">o1-mini</span></div>
+          </div>
+          <div class="model-card-bold">
+            <div><span class="model-name">o3</span></div>
+          </div>
+          <div class="model-card-bold">
+            <div><span class="model-name">o3-mini</span></div>
+          </div>
+          <div class="model-card-bold">
+            <div><span class="model-name">o4-mini</span></div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+</div>
+
+</body>
+</html>

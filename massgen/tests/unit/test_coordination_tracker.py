@@ -205,3 +205,21 @@ def test_path_tokens_not_equal_to_agent_id():
     tracker = CoordinationTracker()
     tracker.initialize_session(["agent_a", "agent_b"])
     assert tracker.get_path_token("agent_a") not in ["agent_a", "agent1", "agent2"]
+
+
+def test_regenerate_path_tokens_changes_all_tokens():
+    """regenerate_path_tokens() produces fresh tokens for every agent."""
+    tracker = CoordinationTracker()
+    tracker.initialize_session(["agent_a", "agent_b", "agent_c"])
+
+    old_tokens = {aid: tracker.get_path_token(aid) for aid in ["agent_a", "agent_b", "agent_c"]}
+
+    tracker.regenerate_path_tokens()
+
+    new_tokens = {aid: tracker.get_path_token(aid) for aid in ["agent_a", "agent_b", "agent_c"]}
+
+    # Every token should have changed (probabilistically near-certain with 8-hex tokens)
+    for aid in ["agent_a", "agent_b", "agent_c"]:
+        assert new_tokens[aid] != old_tokens[aid], f"Token for {aid} did not change"
+        assert len(new_tokens[aid]) == 8
+        assert all(c in "0123456789abcdef" for c in new_tokens[aid])

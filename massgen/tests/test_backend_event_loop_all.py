@@ -93,21 +93,10 @@ async def test_response_backend_stream_closes_client(monkeypatch):
     assert created[0]._closed is True
 
 
-# ---- GrokBackend test ----
-class _FakeChatCompletions:
-    async def create(self, **kwargs: Any):
-        # Yield a single finishing chunk similar to Chat Completions
-        def _item():
-            choice = SimpleNamespace(delta=None, finish_reason="stop")
-            return SimpleNamespace(choices=[choice], usage=None)
-
-        return _FakeStreamSingleStop(_item)
-
-
 class _FakeOpenAIClientForGrok(_FakeAsyncClientBase):
     def __init__(self, *args: Any, **kwargs: Any):
         super().__init__(*args, **kwargs)
-        self.chat = SimpleNamespace(completions=_FakeChatCompletions())
+        self.responses = _FakeResponses()
 
 
 @pytest.mark.asyncio
@@ -127,7 +116,7 @@ async def test_grok_backend_stream_closes_client(monkeypatch):
     backend = GrokBackend()
     messages = [{"role": "user", "content": "hi"}]
 
-    async for _ in backend.stream_with_tools(messages, tools=[], model="grok-2-mini"):
+    async for _ in backend.stream_with_tools(messages, tools=[], model="grok-4"):
         pass
 
     assert len(created) == 1

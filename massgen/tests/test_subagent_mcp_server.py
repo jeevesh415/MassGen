@@ -24,6 +24,7 @@ async def _build_subagent_server(monkeypatch, tmp_path, orchestrator_config=None
     server._specialized_subagents = {}
     server._subagent_types_loaded = False
     server._next_subagent_index = 0
+    server._deferred_configs_loaded = False
 
     argv = [
         "subagent-server",
@@ -792,6 +793,7 @@ class TestSpecializedTypesFileNotDeleted:
         server._manager = None
         server._workspace_path = None
         server._parent_agent_configs = []
+        server._deferred_configs_loaded = False
 
         workspace = tmp_path / "workspace"
         workspace.mkdir(parents=True, exist_ok=True)
@@ -833,6 +835,9 @@ class TestSpecializedTypesFileNotDeleted:
 
         await server.create_server()
 
+        # Config loading is deferred — trigger it explicitly before asserting.
+        server._load_deferred_configs()
+
         assert server._parent_agent_configs
         assert server._parent_agent_configs[0]["backend"]["enable_mcp_command_line"] is True
         assert server._parent_agent_configs[0]["backend"]["command_line_execution_mode"] == "docker"
@@ -847,6 +852,7 @@ class TestSpecializedTypesFileNotDeleted:
         server._manager = None
         server._workspace_path = None
         server._parent_coordination_config = {}
+        server._deferred_configs_loaded = False
 
         workspace = tmp_path / "workspace"
         workspace.mkdir(parents=True, exist_ok=True)
@@ -883,6 +889,9 @@ class TestSpecializedTypesFileNotDeleted:
 
         await server.create_server()
 
+        # Config loading is deferred — trigger it explicitly before asserting.
+        server._load_deferred_configs()
+
         assert server._parent_coordination_config
         assert server._parent_coordination_config["enable_agent_task_planning"] is True
         assert server._parent_coordination_config["task_planning_filesystem_mode"] is True
@@ -897,6 +906,7 @@ class TestSpecializedTypesFileNotDeleted:
         server._manager = None
         server._workspace_path = None
         server._subagent_orchestrator_config = None
+        server._deferred_configs_loaded = False
 
         workspace = tmp_path / "workspace"
         workspace.mkdir(parents=True, exist_ok=True)
@@ -932,6 +942,9 @@ class TestSpecializedTypesFileNotDeleted:
         )
 
         await server.create_server()
+
+        # Config loading is deferred — trigger it explicitly before asserting.
+        server._load_deferred_configs()
 
         assert server._subagent_orchestrator_config is not None
         assert server._subagent_orchestrator_config.enabled is True

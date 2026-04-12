@@ -7,7 +7,7 @@
 import { create } from 'zustand';
 
 // Types for wizard state
-export type WizardStep = 'docker' | 'apiKeys' | 'agentCount' | 'setupMode' | 'agentConfig' | 'coordination' | 'preview';
+export type WizardStep = 'welcome' | 'docker' | 'apiKeys' | 'agentCount' | 'setupMode' | 'agentConfig' | 'coordination' | 'skills' | 'preview';
 export type ReasoningEffort = 'low' | 'medium' | 'high' | 'xhigh' | 'max';
 
 export interface ContextPath {
@@ -33,9 +33,16 @@ export interface ProviderCapabilities {
   supports_web_search: boolean;
   supports_code_execution: boolean;
   supports_mcp: boolean;
+  supports_reasoning: boolean;
   builtin_tools: string[];
   filesystem_support: string;
   all_capabilities: string[];
+}
+
+export interface ReasoningProfile {
+  choices: [string, string][];  // [label, effort_value]
+  default_effort: string;
+  description: string;
 }
 
 export interface AgentConfig {
@@ -71,6 +78,8 @@ interface WizardState {
   currentStep: WizardStep;
   isLoading: boolean;
   error: string | null;
+  /** True when launched from a skill invocation — enables guided flow */
+  skillOnboarding: boolean;
 
   // Setup status
   setupStatus: SetupStatus | null;
@@ -108,7 +117,7 @@ interface WizardState {
   savedConfigPath: string | null;
 
   // Actions
-  openWizard: () => void;
+  openWizard: (skillOnboarding?: boolean) => void;
   closeWizard: () => void;
   setStep: (step: WizardStep) => void;
   nextStep: () => void;
@@ -141,15 +150,16 @@ interface WizardState {
   reset: () => void;
 }
 
-const stepOrder: WizardStep[] = ['docker', 'apiKeys', 'agentCount', 'setupMode', 'agentConfig', 'coordination', 'preview'];
+const stepOrder: WizardStep[] = ['apiKeys', 'docker', 'agentCount', 'setupMode', 'agentConfig', 'skills', 'preview'];
 
 const defaultCoordinationSettings: CoordinationSettings = {};
 
 const initialState = {
   isOpen: false,
-  currentStep: 'docker' as WizardStep,
+  currentStep: 'apiKeys' as WizardStep,
   isLoading: false,
   error: null,
+  skillOnboarding: false,
   setupStatus: null,
   providers: [],
   dynamicModels: {} as Record<string, string[]>,
@@ -159,7 +169,7 @@ const initialState = {
   contextPaths: [] as ContextPath[],
   useDocker: true,
   agentCount: 3,
-  setupMode: 'same' as const,
+  setupMode: 'different' as const,
   agents: [],
   coordinationSettings: defaultCoordinationSettings,
   generatedConfig: null,
@@ -172,8 +182,13 @@ const initialState = {
 export const useWizardStore = create<WizardState>()((set, get) => ({
   ...initialState,
 
-  openWizard: () => {
-    set({ isOpen: true, currentStep: 'docker' });
+  openWizard: (skillOnboarding?: boolean) => {
+    const isSkill = skillOnboarding ?? false;
+    set({
+      isOpen: true,
+      currentStep: isSkill ? 'welcome' : 'apiKeys',
+      skillOnboarding: isSkill,
+    });
     // Fetch setup status and providers when wizard opens
     get().fetchSetupStatus();
     get().fetchProviders();
@@ -207,17 +222,8 @@ export const useWizardStore = create<WizardState>()((set, get) => ({
   },
 
   nextStep: () => {
-    const { currentStep, agentCount, providers } = get();
+    const { currentStep, agentCount } = get();
     const currentIndex = stepOrder.indexOf(currentStep);
-
-    // Skip apiKeys step if at least one provider has an API key configured
-    if (currentStep === 'docker') {
-      const hasAnyKey = providers.some((p) => p.has_api_key);
-      if (hasAnyKey) {
-        set({ currentStep: 'agentCount' });
-        return;
-      }
-    }
 
     // Skip setupMode step if only 1 agent
     if (currentStep === 'agentCount' && agentCount === 1) {
@@ -243,15 +249,8 @@ export const useWizardStore = create<WizardState>()((set, get) => ({
       set({ agents: newAgents });
     }
 
-    // Skip coordination step for single-agent quickstart to match the terminal wizard.
-    if (currentStep === 'agentConfig' && agentCount === 1) {
-      void get().generateConfig();
-      set({ currentStep: 'preview' });
-      return;
-    }
-
     // When moving to preview, generate the config
-    if (currentStep === 'coordination') {
+    if (currentStep === 'skills') {
       void get().generateConfig();
     }
 
@@ -261,27 +260,12 @@ export const useWizardStore = create<WizardState>()((set, get) => ({
   },
 
   prevStep: () => {
-    const { currentStep, agentCount, providers } = get();
+    const { currentStep, agentCount } = get();
     const currentIndex = stepOrder.indexOf(currentStep);
-
-    // Skip apiKeys step when going back if providers have keys
-    if (currentStep === 'agentCount') {
-      const hasAnyKey = providers.some((p) => p.has_api_key);
-      if (hasAnyKey) {
-        set({ currentStep: 'docker' });
-        return;
-      }
-    }
 
     // Skip setupMode step when going back if only 1 agent
     if (currentStep === 'agentConfig' && agentCount === 1) {
       set({ currentStep: 'agentCount' });
-      return;
-    }
-
-    // Skip coordination when returning from preview in single-agent quickstart.
-    if (currentStep === 'preview' && agentCount === 1) {
-      set({ currentStep: 'agentConfig' });
       return;
     }
 

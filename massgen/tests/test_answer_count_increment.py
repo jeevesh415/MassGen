@@ -17,6 +17,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from massgen.coordination_tracker import CoordinationTracker
 from massgen.orchestrator import AgentState, Orchestrator
 
 
@@ -41,6 +42,10 @@ def _build_orchestrator_with_agent(tmp_path: Path, agent_id: str = "agent_a"):
     agent.backend = backend
 
     orch.agents = {agent_id: agent}
+
+    # Coordination tracker needed for anonymous path tokens
+    orch.coordination_tracker = CoordinationTracker()
+    orch.coordination_tracker.initialize_session([agent_id])
 
     # Create the workspace directory (but no memory/ subdirectory)
     ws = tmp_path / "workspace" / agent_id
@@ -81,7 +86,8 @@ class TestAnswerCountIncrementWithoutMemoryDir:
         finally:
             os.chdir(old_cwd)
 
-        archived_file = tmp_path / ".massgen" / "sessions" / "test-session" / "archived_memories" / "agent_a_answer_0" / "short_term" / "verification_latest__agent_a.md"
+        token = orch.coordination_tracker.get_path_token("agent_a")
+        archived_file = tmp_path / ".massgen" / "sessions" / "test-session" / "archived_memories" / "agent_a_answer_0" / "short_term" / f"verification_latest__{token}.md"
         assert archived_file.exists()
         assert archived_file.read_text() == "latest verification memo"
 
@@ -192,3 +198,45 @@ class TestAnswerCountIncrementWithoutMemoryDir:
                 )
 
         assert orch.agent_states["agent_a"].answer_count == 3
+
+
+class TestChecklistCallsResetOnRestart:
+    """checklist_calls_this_round must reset when an agent starts a new round.
+
+    Bug: agent_b submitted checklist (verdict=new_answer, counter→1), got
+    restarted before implementing improvements (no new_answer submitted),
+    and on the next round the counter was still 1, so the checklist tool
+    rejected the call with "already called 1 time(s)".  The agent was
+    forced to vote without ever getting a proper checklist verdict.
+    """
+
+    @pytest.mark.asyncio
+    async def test_save_snapshot_without_answer_does_not_reset_counter(self, tmp_path):
+        """_save_agent_snapshot with answer_content=None must NOT reset the counter.
+
+        This confirms the counter only resets on actual new_answer or restart.
+        """
+        orch = _build_orchestrator_with_agent(tmp_path)
+        state = orch.agent_states["agent_a"]
+        state.checklist_calls_this_round = 1
+
+        with patch("massgen.orchestrator.get_log_session_dir", return_value=None):
+            await orch._save_agent_snapshot(agent_id="agent_a", answer_content=None)
+
+        # Counter should still be 1 — only reset when answer_content is provided
+        assert state.checklist_calls_this_round == 1
+
+    @pytest.mark.asyncio
+    async def test_save_snapshot_with_answer_resets_counter(self, tmp_path):
+        """_save_agent_snapshot with a real answer resets the counter."""
+        orch = _build_orchestrator_with_agent(tmp_path)
+        state = orch.agent_states["agent_a"]
+        state.checklist_calls_this_round = 1
+
+        with patch("massgen.orchestrator.get_log_session_dir", return_value=None):
+            await orch._save_agent_snapshot(
+                agent_id="agent_a",
+                answer_content="My answer",
+            )
+
+        assert state.checklist_calls_this_round == 0

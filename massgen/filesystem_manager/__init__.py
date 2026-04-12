@@ -14,6 +14,10 @@ from ._path_permission_manager import (
     PathPermissionManager,
     PathPermissionManagerHook,
 )
+from ._path_rewriter import (
+    replace_stale_paths_in_workspace,
+    scrub_agent_ids_in_snapshot,
+)
 from ._workspace_tools_server import get_copy_file_pairs
 
 __all__ = [
@@ -29,4 +33,6 @@ __all__ = [
     "get_copy_file_pairs",
     "git_commit_if_changed",
     "has_meaningful_content",
+    "replace_stale_paths_in_workspace",
+    "scrub_agent_ids_in_snapshot",
 ]

@@ -12,7 +12,10 @@ import json
 import time
 from collections.abc import Callable, Coroutine
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from massgen.filesystem_manager import ReviewResult
 
 from .base_display import BaseDisplay
 
@@ -52,14 +55,21 @@ class WebDisplay(BaseDisplay):
         # Sequence number for ordering events
         self._sequence = 0
 
+        # Checkpoint mode: only show main agent initially
+        self._main_agent_id: str | None = kwargs.get("main_agent_id")
+
         # Track state for visualization
         self._vote_distribution: dict[str, int] = {}
         self._vote_targets: dict[str, str] = {}  # agent_id -> voted_for
         self._selected_agent: str | None = None
         self._final_answer: str | None = None
+        self._current_phase: str = "idle"
 
         # Timeline events for visualization (answers, votes, final with context sources)
         self._timeline_events: list[dict[str, Any]] = []
+
+        # Full event history for session replay (v2 message store)
+        self._event_history: list[dict[str, Any]] = []
 
         # Track file workspace changes per agent
         self._agent_files: dict[str, list[dict[str, Any]]] = {agent_id: [] for agent_id in agent_ids}
@@ -70,8 +80,19 @@ class WebDisplay(BaseDisplay):
         # Log session directory (set by _setup_agent_output_files, used by server API)
         self.log_session_dir: Path | None = None
 
+        # Event emitter listener reference (for cleanup)
+        self._event_listener: Any | None = None
+
+        # Review modal state
+        self._review_enabled: bool = kwargs.get("review_enabled", False)
+        self._review_future: asyncio.Future | None = None
+        self._pending_review_data: dict[str, Any] | None = None
+
         # Setup agent output files (same as terminal displays)
         self._setup_agent_output_files()
+
+        # Register as EventEmitter listener to forward structured events
+        self._register_event_listener()
 
     def _next_sequence(self) -> int:
         """Get next sequence number for event ordering."""
@@ -96,6 +117,9 @@ class WebDisplay(BaseDisplay):
             **data,
         }
 
+        # Store in event history for session replay
+        self._event_history.append(payload)
+
         # If broadcast function is set, use it
         if self._broadcast is not None:
             try:
@@ -107,6 +131,35 @@ class WebDisplay(BaseDisplay):
         else:
             # Queue for later consumption (testing/standalone mode)
             self._event_queue.put_nowait(payload)
+
+    def _register_event_listener(self) -> None:
+        """Register as a listener on the EventEmitter to forward structured events."""
+        try:
+            from massgen.logger_config import get_event_emitter
+
+            emitter = get_event_emitter()
+            if emitter:
+                self._event_listener = self._on_structured_event
+                emitter.add_listener(self._event_listener)
+        except Exception:
+            pass
+
+    def _on_structured_event(self, event: Any) -> None:
+        """Forward a structured MassGenEvent over WebSocket."""
+        if self._closed:
+            return
+        try:
+            self._emit(
+                "structured_event",
+                {
+                    "event_type": event.event_type,
+                    "agent_id": event.agent_id,
+                    "round_number": event.round_number,
+                    "data": event.data,
+                },
+            )
+        except Exception:
+            pass
 
     def _setup_agent_output_files(self) -> None:
         """Setup individual txt files for each agent in the log directory."""
@@ -190,13 +243,22 @@ class WebDisplay(BaseDisplay):
         except Exception:
             pass  # Silently ignore if logger not configured
 
+        # In checkpoint mode, only show the main agent initially.
+        # Other agents appear when checkpoint_activated fires.
+        if self._main_agent_id:
+            init_agents = [self._main_agent_id]
+            init_models = {k: v for k, v in self.agent_models.items() if k == self._main_agent_id}
+        else:
+            init_agents = self.agent_ids
+            init_models = self.agent_models
+
         self._emit(
             "init",
             {
                 "question": question,
                 "log_filename": log_filename,
-                "agents": self.agent_ids,
-                "agent_models": self.agent_models,
+                "agents": init_agents,
+                "agent_models": init_models,
                 "theme": self.theme,
             },
         )
@@ -295,6 +357,56 @@ class WebDisplay(BaseDisplay):
                 "agent_id": agent_id,
                 "tool_call_id": tool_call_id,
                 "hook_info": hook_info,
+            },
+        )
+
+    def notify_subagent_spawn_started(
+        self,
+        agent_id: str,
+        tool_name: str,
+        args: dict[str, Any],
+        call_id: str,
+    ) -> None:
+        """Notify that subagent spawning has started.
+
+        Called when spawn_subagents tool is invoked, before blocking execution.
+        """
+        subagent_ids = args.get("subagent_ids", [])
+        task = args.get("task", args.get("question", ""))
+        self._emit(
+            "subagent_spawn",
+            {
+                "agent_id": agent_id,
+                "tool_name": tool_name,
+                "call_id": call_id,
+                "subagent_ids": subagent_ids,
+                "task": str(task)[:200] if task else "",
+            },
+        )
+
+    def notify_runtime_subagent_started(
+        self,
+        agent_id: str,
+        subagent_id: str,
+        task: str,
+        timeout_seconds: int = 300,
+        call_id: str | None = None,
+        status_callback: Any = None,
+        log_path: str | None = None,
+    ) -> None:
+        """Notify that a runtime subagent has started.
+
+        Called for orchestrator-owned subagents (personas, criteria, evaluators).
+        """
+        self._emit(
+            "subagent_started",
+            {
+                "agent_id": agent_id,
+                "subagent_id": subagent_id,
+                "task": task[:200] if task else "",
+                "timeout_seconds": timeout_seconds,
+                "call_id": call_id,
+                "log_path": log_path,
             },
         )
 
@@ -516,6 +628,19 @@ class WebDisplay(BaseDisplay):
             },
         )
 
+    def notify_phase(self, phase: str) -> None:
+        """Send the current coordination phase directly to web clients."""
+        self._current_phase = phase
+        self._emit(
+            "structured_event",
+            {
+                "event_type": "phase_change",
+                "agent_id": None,
+                "round_number": 0,
+                "data": {"phase": phase},
+            },
+        )
+
     # =========================================================================
     # Timeline Event Recording (for visualization)
     # =========================================================================
@@ -724,6 +849,7 @@ class WebDisplay(BaseDisplay):
         answer_number: int = 1,
         answer_label: str | None = None,
         workspace_path: str | None = None,
+        submission_round: int | None = None,
     ) -> None:
         """Notify about a new answer from an agent.
 
@@ -734,6 +860,7 @@ class WebDisplay(BaseDisplay):
             answer_number: The answer number for this agent (1, 2, etc.)
             answer_label: Label for this answer (e.g., "agent1.1")
             workspace_path: Absolute path to the workspace snapshot for this answer
+            submission_round: Optional 1-indexed round number for this answer
         """
         # Note: Don't set status to "completed" here - submitting an answer doesn't mean
         # the agent is done. They still need to vote. Status will be set to "completed"
@@ -747,6 +874,7 @@ class WebDisplay(BaseDisplay):
                 "answer_number": answer_number,
                 "answer_label": answer_label,
                 "workspace_path": workspace_path,
+                "submission_round": submission_round,
             },
         )
 
@@ -771,13 +899,161 @@ class WebDisplay(BaseDisplay):
                 # Send keepalive to keep connection alive
                 yield json.dumps({"type": "keepalive", "timestamp": time.time()})
 
+    async def show_final_answer_modal(
+        self,
+        changes: list[dict[str, Any]],
+        answer_content: str,
+        vote_results: dict[str, Any],
+        agent_id: str,
+        model_name: str = "",
+        post_eval_content: str | None = None,
+        post_eval_status: str = "none",
+        context_paths: dict[str, list[str]] | None = None,
+        workspace_path: str | None = None,
+    ) -> ReviewResult:
+        """Show review modal in WebUI and wait for user decision.
+
+        Emits a review_request WebSocket event and blocks until the browser
+        (or REST API) sends back a review_response.
+        """
+        from massgen.filesystem_manager import ReviewResult
+
+        if not self._review_enabled:
+            return ReviewResult(approved=True, metadata={"auto_approved": True})
+
+        review_data = {
+            "changes": changes,
+            "answer_content": answer_content,
+            "vote_results": vote_results,
+            "agent_id": agent_id,
+            "model_name": model_name,
+            "context_paths": context_paths,
+        }
+        self._pending_review_data = review_data
+
+        # Signal review pending on orchestrator for status.json
+        if self.orchestrator:
+            self.orchestrator._review_pending = True
+            if hasattr(self.orchestrator, "coordination_tracker"):
+                self.orchestrator.coordination_tracker.save_status_file(
+                    self.log_session_dir,
+                    self.orchestrator,
+                )
+
+        # Write review_request.json to log dir for external agents
+        if self.log_session_dir:
+            files_summary = []
+            for ctx in changes:
+                for change in ctx.get("changes", []):
+                    files_summary.append(
+                        {
+                            "path": change.get("path", ""),
+                            "status": change.get("status", ""),
+                        },
+                    )
+            request_json = {
+                "review_pending": True,
+                "url": "http://localhost:8000/?v=2",
+                "api_url": f"http://localhost:8000/api/sessions/{self.session_id}/review-response",
+                "files": files_summary,
+                "answer_preview": answer_content[:200] if answer_content else "",
+            }
+            request_path = self.log_session_dir / "review_request.json"
+            try:
+                import json as _json
+
+                tmp_path = request_path.with_suffix(".json.tmp")
+                tmp_path.write_text(_json.dumps(request_json, indent=2))
+                tmp_path.rename(request_path)
+            except Exception:
+                pass
+
+        # Print stdout marker for skill watcher
+        print("__REVIEW_PENDING__ URL=http://localhost:8000/?v=2", flush=True)
+
+        # Emit WebSocket event to connected browsers
+        self._emit("review_request", review_data)
+
+        # Create future and await browser/API response
+        loop = asyncio.get_running_loop()
+        self._review_future = loop.create_future()
+
+        try:
+            result = await asyncio.wait_for(self._review_future, timeout=600)
+        except TimeoutError:
+            result = ReviewResult(
+                approved=False,
+                metadata={"error": "timeout", "timeout_seconds": 600},
+            )
+
+        # Cleanup
+        self._pending_review_data = None
+        self._review_future = None
+        if self.orchestrator:
+            self.orchestrator._review_pending = False
+
+        # Write review_result.json
+        if self.log_session_dir:
+            result_json = {
+                "approved": result.approved,
+                "approved_files": result.approved_files,
+                "action": getattr(result, "action", "approve" if result.approved else "reject"),
+                "resolved_by": getattr(result, "_resolved_by", "unknown"),
+                "timestamp": time.time(),
+            }
+            result_path = self.log_session_dir / "review_result.json"
+            try:
+                import json as _json
+
+                tmp_path = result_path.with_suffix(".json.tmp")
+                tmp_path.write_text(_json.dumps(result_json, indent=2))
+                tmp_path.rename(result_path)
+            except Exception:
+                pass
+
+        print(f"__REVIEW_COMPLETE__ APPROVED={result.approved}", flush=True)
+        return result
+
+    def resolve_review(self, result_data: dict[str, Any], source: str = "unknown") -> None:
+        """Resolve the pending review future with a decision.
+
+        Called by both the WebSocket handler (browser) and REST API (agent).
+        Idempotent -- subsequent calls after the first resolution are ignored.
+        """
+        if self._review_future is None or self._review_future.done():
+            return
+
+        from massgen.filesystem_manager import ReviewResult
+
+        approved = result_data.get("approved", False)
+        result = ReviewResult(
+            approved=approved,
+            approved_files=result_data.get("approved_files"),
+            comments=result_data.get("comments"),
+            metadata=result_data.get("metadata", {}),
+            action=result_data.get("action", "approve" if approved else "reject"),
+            feedback=result_data.get("feedback"),
+        )
+        result._resolved_by = source  # type: ignore[attr-defined]
+
+        self._review_future.set_result(result)
+
+        # Notify all connected browsers that review was resolved
+        self._emit(
+            "review_resolved",
+            {
+                "approved": approved,
+                "resolved_by": source,
+            },
+        )
+
     def get_state_snapshot(self) -> dict[str, Any]:
         """Get current display state for late-joining clients.
 
         Returns:
             Dictionary containing full current state
         """
-        return {
+        snapshot = {
             "session_id": self.session_id,
             "question": getattr(self, "question", ""),
             "agents": self.agent_ids,
@@ -788,9 +1064,15 @@ class WebDisplay(BaseDisplay):
             "vote_targets": dict(self._vote_targets),
             "selected_agent": self._selected_agent,
             "final_answer": self._final_answer,
+            "current_phase": self._current_phase,
             "orchestrator_events": list(self.orchestrator_events),
             "theme": self.theme,
         }
+        # Include pending review data for late-joining clients
+        if self._pending_review_data:
+            snapshot["review_pending"] = True
+            snapshot["review_request"] = self._pending_review_data
+        return snapshot
 
 
 def is_web_display_available() -> bool:

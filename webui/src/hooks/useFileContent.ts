@@ -9,6 +9,7 @@ import { useState, useCallback, useRef } from 'react';
 import type { FileContentResponse } from '../types';
 import { debugLog } from '../utils/debugLogger';
 import { normalizePath } from '../utils/normalizePath';
+import { useWorkspaceStore } from '../stores/workspaceStore';
 
 interface UseFileContentReturn {
   content: FileContentResponse | null;
@@ -38,6 +39,8 @@ export function useFileContent(): UseFileContentReturn {
     // This fixes the 404 bug where paths with trailing slashes cause mismatches
     const normalizedWorkspacePath = normalizePath(workspacePath);
     const cacheKey = `${normalizedWorkspacePath}:${filePath}`;
+    const workspaceState = useWorkspaceStore.getState();
+    const isLiveWorkspace = !!workspaceState.workspaces[normalizedWorkspacePath];
 
     // Increment request ID and capture it for this request
     const thisRequestId = ++requestIdRef.current;
@@ -102,7 +105,11 @@ export function useFileContent(): UseFileContentReturn {
         debugLog.error('[FileContent] fetch failed', { status: response.status, requestId: thisRequestId });
         // Cache 404s to avoid repeated fetches
         if (response.status === 404) {
-          notFoundCache.add(cacheKey);
+          if (isLiveWorkspace) {
+            workspaceState.refreshSessionFn?.();
+          } else {
+            notFoundCache.add(cacheKey);
+          }
         }
         // Try to get error message from response
         let errorMessage = `Failed to fetch file: ${response.status}`;

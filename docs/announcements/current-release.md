@@ -1,4 +1,4 @@
-# MassGen v0.1.65 Release Announcement
+# MassGen v0.1.75 Release Announcement
 
 <!--
 This is the current release announcement. Copy this + feature-highlights.md to LinkedIn/X.
@@ -7,17 +7,17 @@ After posting, update the social links below.
 
 ## Release Summary
 
-We're excited to release MassGen v0.1.65 — MassGen Refinery Plugin! 🚀 Checklist-based evaluation and multi-round refinement now available in Claude Code via standalone MCP servers. Single-agent is fully working; multi-agent experimental. Plugin: https://github.com/massgen/massgen-refinery
+We're excited to release MassGen v0.1.75 — Codex Hooks & Checkpoint WebUI! 🚀 Hybrid hook system for Codex backend combining native and MCP capabilities. Checkpoint workflows now auto-launch the WebUI for visual monitoring. Standalone checkpoint MCP server documentation and safety policy integration.
 
 ## Install
 
 ```bash
-pip install massgen==0.1.65
+pip install massgen==0.1.75
 ```
 
 ## Links
 
-- **Release notes:** https://github.com/massgen/MassGen/releases/tag/v0.1.65
+- **Release notes:** https://github.com/massgen/MassGen/releases/tag/v0.1.75
 - **X post:** [TO BE ADDED AFTER POSTING]
 - **LinkedIn post:** [TO BE ADDED AFTER POSTING]
 
@@ -29,24 +29,35 @@ Copy everything below this line, then append content from `feature-highlights.md
 
 ---
 
-We're excited to release MassGen v0.1.65 — MassGen Refinery Plugin! 🚀 Checklist-based evaluation and multi-round refinement now available in Claude Code via standalone MCP servers. Single-agent is fully working; multi-agent experimental. Plugin: https://github.com/massgen/massgen-refinery
+We're excited to release MassGen v0.1.75 — Codex Hooks & Checkpoint WebUI! 🚀 Hybrid hook system for Codex backend combining native and MCP capabilities. Checkpoint workflows now auto-launch the WebUI for visual monitoring. Standalone checkpoint MCP server documentation and safety policy integration.
 
-**Key Improvement:**
+**Key Improvements:**
 
-🔧 **MassGen Refinery Plugin** - Standalone MCP servers for Claude Code:
-- **Quality Server** (`massgen_quality_tools`): Session-based checklist evaluation with configurable scoring thresholds, improvement proposals, and coverage validation
-- **Workflow Server** (`massgen_workflow_tools`): Multi-round answer submission with automatic deliverable snapshots per round for traceable iteration
-- **Media Server** (`massgen_media_tools`): Image, video, and audio generation with full parameter control and critical-first media analysis
+🪝 **Codex Native Hooks** — Hybrid hook system for Codex backend:
+- Combines native hooks and MCP capabilities
+- Enables richer integration between Codex and MassGen's coordination
+
+🛡️ **Checkpoint WebUI Auto-Launch** — Visual monitoring for checkpoint workflows:
+- Checkpoint runs now auto-launch the WebUI with configurable host/port
+- User/system prompt and eval criteria pass-through to checkpoint agents
+- Improved checkpoint planning with precondition validation and recovery trees
+
+📖 **Standalone MCP Server Documentation** — Guide for `massgen-checkpoint-mcp`:
+- Setup guide with examples and troubleshooting
+- Safety policy integration documentation
+
+**Plus:**
+- 🔒 **Safety policy update** — Updated safety policy for checkpoint based on Claude Code safe mode
+- 🐛 **WebUI automation fix** — Fixed erroneous setup redirect during automation mode
 
 **Getting Started:**
 
 ```bash
-pip install massgen==0.1.65
-# The standalone MCP servers are available for the massgen-refinery Claude Code plugin
-# https://github.com/massgen/massgen-refinery
+pip install massgen==0.1.75
+uv run massgen --config @examples/features/fast_iteration.yaml "Create an svg of an AI agent coding."
 ```
 
-Release notes: https://github.com/massgen/MassGen/releases/tag/v0.1.65
+Release notes: https://github.com/massgen/MassGen/releases/tag/v0.1.75
 
 Feature highlights:
 
