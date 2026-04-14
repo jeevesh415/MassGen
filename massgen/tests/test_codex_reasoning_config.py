@@ -86,6 +86,16 @@ def test_codex_disables_view_image_tool_in_workspace_config(tmp_path: Path):
     assert config["tools"]["view_image"] is False
 
 
+def test_codex_filter_enforcement_tool_calls_defaults_to_all_calls(tmp_path: Path):
+    backend = CodexBackend(cwd=str(tmp_path))
+    tool_calls = [
+        {"id": "call_1", "name": "new_answer", "arguments": {"content": "done"}},
+        {"id": "call_2", "name": "$BASH", "arguments": {"command": "ls"}},
+    ]
+
+    assert backend.filter_enforcement_tool_calls(tool_calls, [tool_calls[1]]) == tool_calls
+
+
 def test_codex_writes_instructions_file_under_codex_home(tmp_path: Path):
     backend = CodexBackend(cwd=str(tmp_path))
     backend.system_prompt = "system instructions"
@@ -221,6 +231,46 @@ def test_codex_passes_backend_context_to_massgen_custom_tools_server(tmp_path: P
     assert args[args.index("--backend-type") + 1] == "codex"
     assert "--model" in args
     assert args[args.index("--model") + 1] == "gpt-5.4"
+
+
+def test_codex_redacts_workspace_config_preview_logs(tmp_path: Path) -> None:
+    openai_key = "sk-proj-testsecret1234567890abcdefghijklmnopqrstuvwxyz"
+    gemini_key = "AIzaSyTestSecret1234567890abcdefghijklmnop"
+    backend = CodexBackend(
+        cwd=str(tmp_path),
+        mcp_servers=[
+            {
+                "name": "secret_server",
+                "type": "stdio",
+                "command": "python",
+                "args": ["-m", "secret_server"],
+                "env": {
+                    "OPENAI_API_KEY": openai_key,
+                    "GEMINI_API_KEY": gemini_key,
+                },
+            },
+        ],
+    )
+
+    messages: list[str] = []
+    sink_id = logger_config.logger.add(
+        lambda message: messages.append(str(message)),
+        format="{message}",
+    )
+    try:
+        backend._write_workspace_config()
+    finally:
+        logger_config.logger.remove(sink_id)
+
+    written_logs = "".join(messages)
+    config_text = (tmp_path / ".codex" / "config.toml").read_text(encoding="utf-8")
+
+    assert openai_key in config_text
+    assert gemini_key in config_text
+    assert openai_key not in written_logs
+    assert gemini_key not in written_logs
+    assert 'OPENAI_API_KEY = "[REDACTED]"' in written_logs
+    assert 'GEMINI_API_KEY = "[REDACTED]"' in written_logs
 
 
 def test_codex_writes_execution_trace_markdown(tmp_path: Path):

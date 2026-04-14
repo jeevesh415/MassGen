@@ -20,9 +20,12 @@ import random
 import threading
 import time
 from dataclasses import dataclass, field
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from ..logger_config import log_backend_activity
+
+if TYPE_CHECKING:
+    from massgen.observability.prometheus import CircuitBreakerMetrics
 
 # ---------------------------------------------------------------------------
 # 429 classification
@@ -188,9 +191,11 @@ class LLMCircuitBreaker:
         self,
         config: LLMCircuitBreakerConfig | None = None,
         backend_name: str = "claude",
+        metrics: CircuitBreakerMetrics | None = None,
     ) -> None:
         self.config = config or LLMCircuitBreakerConfig()
         self.backend_name = backend_name
+        self._metrics = metrics
         self._lock = threading.Lock()
 
         # State
@@ -224,27 +229,40 @@ class LLMCircuitBreaker:
         if not self.config.enabled:
             return False
 
+        _emit_transition: tuple[str, str] | None = None
         with self._lock:
             if self._state == CircuitState.CLOSED:
-                return False
+                should_block = False
 
-            if self._state == CircuitState.OPEN:
+            elif self._state == CircuitState.OPEN:
                 now = time.monotonic()
                 if now >= self._open_until:
                     # Transition to HALF_OPEN -- allow one probe
                     self._state = CircuitState.HALF_OPEN
                     self._half_open_probe_active = True
                     self._log("Circuit breaker half-open, allowing probe request")
-                    return False
-                return True
+                    _emit_transition = ("open", "half_open")
+                    should_block = False
+                else:
+                    should_block = True
 
-            # HALF_OPEN
-            if self._half_open_probe_active:
-                # Probe already dispatched; block additional requests
-                return True
-            # No probe active -- allow one
-            self._half_open_probe_active = True
-            return False
+            else:
+                # HALF_OPEN
+                if self._half_open_probe_active:
+                    # Probe already dispatched; block additional requests
+                    should_block = True
+                else:
+                    # No probe active -- allow one
+                    self._half_open_probe_active = True
+                    should_block = False
+
+        if _emit_transition and self._metrics is not None:
+            self._safe_emit(
+                self._metrics.record_state_transition,
+                self.backend_name,
+                *_emit_transition,
+            )
+        return should_block
 
     def record_failure(
         self,
@@ -259,10 +277,12 @@ class LLMCircuitBreaker:
         if not self.config.enabled:
             return
 
+        _transition_args: tuple[str, str, str] | None = None
         with self._lock:
             self._failure_count += 1
             now = time.monotonic()
             self._last_failure_time = now
+            prev_state = self._state
 
             if self._state == CircuitState.HALF_OPEN:
                 self._state = CircuitState.OPEN
@@ -273,9 +293,10 @@ class LLMCircuitBreaker:
                     failure_count=self._failure_count,
                     error_type=error_type,
                 )
-                return
+                if self._metrics is not None:
+                    _transition_args = (self.backend_name, "half_open", "open")
 
-            if self._failure_count >= self.config.max_failures:
+            elif self._failure_count >= self.config.max_failures:
                 self._state = CircuitState.OPEN
                 self._open_until = now + self.config.reset_time_seconds
                 self._log(
@@ -283,6 +304,8 @@ class LLMCircuitBreaker:
                     failure_count=self._failure_count,
                     error_type=error_type,
                 )
+                if self._metrics is not None:
+                    _transition_args = (self.backend_name, prev_state.value, "open")
             else:
                 self._log(
                     "Failure recorded",
@@ -291,11 +314,18 @@ class LLMCircuitBreaker:
                     error_type=error_type,
                 )
 
+        if _transition_args is not None and self._metrics is not None:
+            self._safe_emit(
+                self._metrics.record_state_transition,
+                *_transition_args,
+            )
+
     def record_success(self) -> None:
         """Record a successful API call. Resets failure counter and closes circuit."""
         if not self.config.enabled:
             return
 
+        _transition_args: tuple[str, str, str] | None = None
         with self._lock:
             prev_state = self._state
             self._state = CircuitState.CLOSED
@@ -307,6 +337,14 @@ class LLMCircuitBreaker:
                     "Circuit breaker closed after success",
                     previous_state=prev_state.value,
                 )
+                if self._metrics is not None:
+                    _transition_args = (self.backend_name, prev_state.value, "closed")
+
+        if _transition_args is not None and self._metrics is not None:
+            self._safe_emit(
+                self._metrics.record_state_transition,
+                *_transition_args,
+            )
 
     def force_open(self, reason: str = "", open_for_seconds: float = 0) -> None:
         """Force the circuit to OPEN state (e.g. on 429 STOP).
@@ -319,23 +357,43 @@ class LLMCircuitBreaker:
         if not self.config.enabled:
             return
 
+        _transition_args: tuple[str, str, str] | None = None
         with self._lock:
             now = time.monotonic()
+            prev_state = self._state
             self._state = CircuitState.OPEN
             self._last_failure_time = now
             duration = max(self.config.reset_time_seconds, open_for_seconds)
             self._open_until = now + duration
             self._half_open_probe_active = False
             self._log(f"Circuit breaker force-opened: {reason}", open_for_seconds=duration)
+            if self._metrics is not None:
+                _transition_args = (self.backend_name, prev_state.value, "open")
+
+        if _transition_args is not None and self._metrics is not None:
+            self._safe_emit(
+                self._metrics.record_state_transition,
+                *_transition_args,
+            )
 
     def reset(self) -> None:
         """Reset circuit breaker to initial CLOSED state."""
+        _transition_args: tuple[str, str, str] | None = None
         with self._lock:
+            prev_state = self._state
             self._state = CircuitState.CLOSED
             self._failure_count = 0
             self._last_failure_time = 0.0
             self._open_until = 0.0
             self._half_open_probe_active = False
+            if self._metrics is not None and prev_state != CircuitState.CLOSED:
+                _transition_args = (self.backend_name, prev_state.value, "closed")
+
+        if _transition_args is not None and self._metrics is not None:
+            self._safe_emit(
+                self._metrics.record_state_transition,
+                *_transition_args,
+            )
 
     # -- 429-aware retry wrapper --------------------------------------------
 
@@ -363,15 +421,22 @@ class LLMCircuitBreaker:
             return await coro_factory()
 
         if self.should_block():
+            # Note: state is read under lock after should_block() for the error message
+            # and metric label. Under high concurrency, the state may transition between
+            # should_block() and the lock re-acquisition (e.g. OPEN->HALF_OPEN). The
+            # outcome label is best-effort; the rejection decision itself is authoritative.
             with self._lock:
                 state_label = self._state.value
+            outcome = "rejected_open" if state_label == "open" else "rejected_half_open"
+            if self._metrics is not None:
+                self._safe_emit(self._metrics.record_request, self.backend_name, outcome, 0.0)
             raise CircuitBreakerOpenError(
                 f"Circuit breaker is {state_label} for {self.backend_name}",
             )
 
         last_exc: Exception | None = None
         delay = 1.0  # initial backoff for CAP / retryable errors
-        _probe_was_half_open = self.state == CircuitState.HALF_OPEN
+        _owns_probe = self.state == CircuitState.HALF_OPEN
 
         try:
             for attempt in range(1, max_retries + 1):
@@ -379,16 +444,29 @@ class LLMCircuitBreaker:
                 if attempt > 1 and self.should_block():
                     with self._lock:
                         state_label = self._state.value
+                    outcome = "rejected_open" if state_label == "open" else "rejected_half_open"
+                    if self._metrics is not None:
+                        self._safe_emit(self._metrics.record_request, self.backend_name, outcome, 0.0)
                     raise CircuitBreakerOpenError(
                         f"Circuit breaker became {state_label} during retries for {self.backend_name}",
                     )
 
+                if attempt > 1 and not _owns_probe:
+                    with self._lock:
+                        if self._state == CircuitState.HALF_OPEN:
+                            _owns_probe = True
+
+                _t0 = time.perf_counter()
                 try:
                     result = await coro_factory()
+                    _latency = time.perf_counter() - _t0
                     self.record_success()
+                    if self._metrics is not None:
+                        self._safe_emit(self._metrics.record_request, self.backend_name, "success", _latency)
                     return result
 
                 except Exception as exc:
+                    _latency = time.perf_counter() - _t0
                     last_exc = exc
                     status_code = extract_status_code(exc)
 
@@ -406,10 +484,14 @@ class LLMCircuitBreaker:
                                 f"429 STOP: Retry-After={retry_after}s > " f"threshold={self.config.retry_after_threshold_seconds}s",
                                 open_for_seconds=retry_after or 0,
                             )
+                            if self._metrics is not None:
+                                self._safe_emit(self._metrics.record_request, self.backend_name, "failure", _latency)
                             raise
 
                         if action == RateLimitAction.WAIT:
-                            # Short wait -- retry without counting as failure
+                            # Short wait -- record per-attempt latency then retry
+                            if self._metrics is not None:
+                                self._safe_emit(self._metrics.record_request, self.backend_name, "failure", _latency)
                             if attempt >= max_retries:
                                 raise
                             wait_seconds = retry_after if retry_after is not None else 1.0
@@ -435,12 +517,17 @@ class LLMCircuitBreaker:
                                 attempt=attempt,
                                 agent_id=agent_id,
                             )
+                            # Emit per-attempt failure metric before retry sleep (BUG 2 fix)
+                            if self._metrics is not None:
+                                self._safe_emit(self._metrics.record_request, self.backend_name, "failure", _latency)
                             await asyncio.sleep(jittered)
                             delay = min(
                                 delay * self.config.backoff_multiplier,
                                 self.config.max_backoff_seconds,
                             )
                             continue
+                        if self._metrics is not None:
+                            self._safe_emit(self._metrics.record_request, self.backend_name, "failure", _latency)
                         raise
 
                     # --- Other retryable status codes ---
@@ -457,15 +544,22 @@ class LLMCircuitBreaker:
                                 attempt=attempt,
                                 agent_id=agent_id,
                             )
+                            # Emit per-attempt failure metric before retry sleep (BUG 2 fix)
+                            if self._metrics is not None:
+                                self._safe_emit(self._metrics.record_request, self.backend_name, "failure", _latency)
                             await asyncio.sleep(jittered)
                             delay = min(
                                 delay * self.config.backoff_multiplier,
                                 self.config.max_backoff_seconds,
                             )
                             continue
+                        if self._metrics is not None:
+                            self._safe_emit(self._metrics.record_request, self.backend_name, "failure", _latency)
                         raise
 
                     # --- Non-retryable error ---
+                    if self._metrics is not None:
+                        self._safe_emit(self._metrics.record_request, self.backend_name, "failure", _latency)
                     raise
 
             # Defensive fallback
@@ -476,16 +570,35 @@ class LLMCircuitBreaker:
         except BaseException:
             # Ensure HALF_OPEN probe flag is cleared on any terminal exit
             # to prevent wedging the CB in a permanently blocked state.
-            if _probe_was_half_open:
+            _transition_args: tuple[str, str, str] | None = None
+            if _owns_probe:
                 with self._lock:
                     if self._state == CircuitState.HALF_OPEN and self._half_open_probe_active:
                         self._state = CircuitState.OPEN
                         self._open_until = time.monotonic() + self.config.reset_time_seconds
                         self._half_open_probe_active = False
                         self._log("Probe terminated abnormally, circuit breaker re-opened")
+                        if self._metrics is not None:
+                            _transition_args = (self.backend_name, "half_open", "open")
+                if _transition_args is not None and self._metrics is not None:
+                    self._safe_emit(
+                        self._metrics.record_state_transition,
+                        *_transition_args,
+                    )
             raise
 
     # -- Internal helpers ---------------------------------------------------
+
+    def _safe_emit(self, method: Any, *args: Any) -> None:
+        """Call a metrics method, swallowing all exceptions.
+
+        Observability failures must never affect circuit breaker behavior or
+        cause a successful API response to be treated as a failure.
+        """
+        try:
+            method(*args)
+        except Exception:  # noqa: BLE001
+            pass
 
     def _log(self, message: str, **details: Any) -> None:
         """Log via structured backend activity logger."""

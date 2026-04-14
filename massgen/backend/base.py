@@ -891,6 +891,21 @@ class LLMBackend(ABC):
         tool_call_id = self.extract_tool_call_id(tool_call)
         return {"role": "tool", "tool_call_id": tool_call_id, "content": result_content}
 
+    def filter_enforcement_tool_calls(
+        self,
+        tool_calls: list[dict[str, Any]],
+        unknown_tool_calls: list[dict[str, Any]],
+    ) -> list[dict[str, Any]]:
+        """Return tool calls eligible for workflow-enforcement tool_result messages.
+
+        Most backends preserve all tool calls in assistant-message history, so the
+        safe default is to return the list unchanged. Backends with stricter API
+        requirements can override this and drop calls that were stripped from
+        history before enforcement.
+        """
+        _ = unknown_tool_calls
+        return tool_calls
+
     def extract_tool_result_content(self, tool_result_message: dict[str, Any]) -> str:
         """
         Extract the content/output from a tool result message in this backend's format.

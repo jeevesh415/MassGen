@@ -179,6 +179,7 @@ MassGen includes a curated registry of recommended MCP servers that are automati
 
 * **Context7** - Up-to-date code documentation for libraries and frameworks
 * **Brave Search** - Web search via Brave API (requires API key)
+* **Exa Search** - AI-powered web search via Exa API (requires API key)
 
 See :doc:`../../reference/mcp_server_registry` for complete documentation of all registry servers, including configuration examples, API key setup, and usage patterns.
 
@@ -200,13 +201,14 @@ Enable automatic inclusion of registry MCP servers:
 
 * **Context7**: Always included (no API key required)
 * **Brave Search**: Only included if ``BRAVE_API_KEY`` is set in ``.env``
+* **Exa Search**: Only included if ``EXA_API_KEY`` is set in ``.env``
 
 **Log Output Example:**
 
 .. code-block:: text
 
    [gemini] Auto-discovery enabled: Added MCP servers from registry: context7
-   [gemini] Registry servers not added (missing API keys): brave_search (needs BRAVE_API_KEY)
+   [gemini] Registry servers not added (missing API keys): brave_search (needs BRAVE_API_KEY), exa_search (needs EXA_API_KEY)
 
 **Benefits:**
 
@@ -220,6 +222,7 @@ Enable automatic inclusion of registry MCP servers:
 * ``massgen/configs/tools/mcp/auto_discovery_with_registry.yaml`` - Auto-discovery example
 * ``massgen/configs/tools/mcp/context7_documentation_example.yaml`` - Context7 usage
 * ``massgen/configs/tools/mcp/brave_search_example.yaml`` - Brave Search usage
+* ``massgen/configs/tools/web-search/exa_search_example.yaml`` - Exa Search usage
 
 Manual Configuration
 ~~~~~~~~~~~~~~~~~~~~

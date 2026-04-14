@@ -91,6 +91,22 @@ The URL is printed to the MCP server's stderr when the sub-run starts; open it m
 
 `claude mcp add` overwrites the existing entry, so just re-run it with different `-e` flags. Or edit `.mcp.json` directly. Restart Claude Code after any change so the MCP server picks up the new environment.
 
+### Add checkpoint instructions to your project
+
+The MCP tool description tells the model *how* to use checkpoint, but nothing in the model's base instructions makes it a requirement. Run `massgen-checkpoint-setup` to inject a managed instructions block into your project's `CLAUDE.md`:
+
+```bash
+# From your project directory (MassGen installed as dependency)
+uv run massgen-checkpoint-setup                          # patches ./CLAUDE.md
+uv run massgen-checkpoint-setup --target ./AGENTS.md     # or a different file
+
+# From a local MassGen checkout (not installed)
+# NOTE: uv --directory changes cwd, so --target with an absolute path is required
+uv --directory /path/to/MassGen run massgen-checkpoint-setup --target "$(pwd)/CLAUDE.md"
+```
+
+This inserts a `<!-- MASSGEN-CHECKPOINT:START -->` / `<!-- MASSGEN-CHECKPOINT:END -->` managed block with the categories (A–I) that require checkpointing, the correct workflow order (`init` → investigate → `checkpoint` → execute), and the exclusion list. Re-running the command updates the block to the latest version without touching the rest of the file.
+
 ---
 
 ## Environment variables

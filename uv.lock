@@ -2927,6 +2927,7 @@ all = [
     { name = "litellm" },
     { name = "logfire", version = "3.5.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.14' and sys_platform == 'win32'" },
     { name = "logfire", version = "4.29.0", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.14' or sys_platform != 'win32'" },
+    { name = "prometheus-client" },
 ]
 dev = [
     { name = "autoflake" },
@@ -2970,6 +2971,7 @@ litellm = [
 observability = [
     { name = "logfire", version = "3.5.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.14' and sys_platform == 'win32'" },
     { name = "logfire", version = "4.29.0", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.14' or sys_platform != 'win32'" },
+    { name = "prometheus-client" },
 ]
 video = [
     { name = "scenedetect", extra = ["opencv"] },
@@ -3035,6 +3037,8 @@ requires-dist = [
     { name = "openpyxl", specifier = ">=3.1.5" },
     { name = "pillow", specifier = ">=11.3.0" },
     { name = "pre-commit", marker = "extra == 'dev'", specifier = ">=3.0.0" },
+    { name = "prometheus-client", marker = "extra == 'all'", specifier = ">=0.20" },
+    { name = "prometheus-client", marker = "extra == 'observability'", specifier = ">=0.20" },
     { name = "pyautogen", specifier = ">=0.10.0" },
     { name = "pypdf2", specifier = ">=3.0.1" },
     { name = "pytest", specifier = ">=8.4.2" },

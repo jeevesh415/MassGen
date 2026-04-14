@@ -69,7 +69,7 @@ This project started with the "threads of thought" and "iterative refinement" id
 <details open>
 <summary><h3>🆕 Latest Features</h3></summary>
 
-- [v0.1.75 Features](#-latest-features-v0175)
+- [v0.1.76 Features](#-latest-features-v0176)
 </details>
 
 <details open>
@@ -122,15 +122,15 @@ This project started with the "threads of thought" and "iterative refinement" id
 <details open>
 <summary><h3>🗺️ Roadmap</h3></summary>
 
-- [Recent Achievements (v0.1.75)](#recent-achievements-v0175)
-- [Previous Achievements (v0.0.3 - v0.1.74)](#previous-achievements-v003---v0174)
+- [Recent Achievements (v0.1.76)](#recent-achievements-v0176)
+- [Previous Achievements (v0.0.3 - v0.1.75)](#previous-achievements-v003---v0175)
 - [Key Future Enhancements](#key-future-enhancements)
   - Bug Fixes & Backend Improvements
   - Advanced Agent Collaboration
   - Expanded Model, Tool & Agent Integrations
   - Improved Performance & Scalability
   - Enhanced Developer Experience
-- [v0.1.76 Roadmap](#v0176-roadmap)
+- [v0.1.77 Roadmap](#v0177-roadmap)
 </details>
 
 <details open>
@@ -155,19 +155,19 @@ This project started with the "threads of thought" and "iterative refinement" id
 
 ---
 
-## 🆕 Latest Features (v0.1.75)
+## 🆕 Latest Features (v0.1.76)
 
-**🎉 Released: April 10, 2026**
+**🎉 Released: April 13, 2026**
 
-**What's New in v0.1.75:**
-- **🪝 Codex Native Hooks** - Hybrid hook system for Codex backend combining native and MCP capabilities.
-- **🛡️ Checkpoint WebUI Auto-Launch** - Checkpoint workflows auto-launch the WebUI for visual monitoring.
-- **📖 Standalone MCP Server Docs** - Guide for `massgen-checkpoint-mcp` with safety policy integration.
+**What's New in v0.1.76:**
+- **🔍 Exa AI Search Tool** - New Exa AI-powered search tool added to MCP server registry.
+- **📊 Circuit Breaker Observability (Phase 3)** - Probe ownership, lock release, per-attempt latency tracking across all backends.
+- **📋 Checkpoint Agent Instructions** - Copyable custom instructions for agent memory files with checkpoint MCP information.
 
-**Try v0.1.75 Features:**
+**Try v0.1.76 Features:**
 ```bash
-pip install massgen==0.1.75
-uv run massgen --config @examples/features/fast_iteration.yaml "Create an svg of an AI agent coding."
+pip install massgen==0.1.76
+uv run massgen --config @examples/tools/web-search/exa_search_example "Research the latest breakthroughs in multi-agent AI systems"
 ```
 
 → [See full release history and examples](massgen/configs/README.md#release-history--examples)
@@ -1239,16 +1239,19 @@ MassGen is currently in its foundational stage, with a focus on parallel, asynch
 
 ⚠️ **Early Stage Notice:** As MassGen is in active development, please expect upcoming breaking architecture changes as we continue to refine and improve the system.
 
-### Recent Achievements (v0.1.75)
+### Recent Achievements (v0.1.76)
 
-**🎉 Released: April 10, 2026**
+**🎉 Released: April 13, 2026**
 
-#### Codex Hooks & Checkpoint WebUI
-- **Codex Native Hooks** ([#1053](https://github.com/massgen/MassGen/pull/1053)): Hybrid hook system for Codex backend combining native hooks and MCP capabilities
-- **Checkpoint WebUI Auto-Launch** ([#1053](https://github.com/massgen/MassGen/pull/1053)): Checkpoint workflows auto-launch WebUI with configurable host/port for visual monitoring
-- **Standalone MCP Server Docs**: Guide for `massgen-checkpoint-mcp` with safety policy integration
+#### Exa Search & Circuit Breaker Observability
+- **Exa AI Search Tool** ([#1057](https://github.com/massgen/MassGen/pull/1057)): New Exa AI-powered search tool added to MCP server registry
+- **Circuit Breaker Observability (Phase 3)** ([#1056](https://github.com/massgen/MassGen/pull/1056)): Probe ownership, lock release, per-attempt latency tracking across all backends
+- **Checkpoint Agent Instructions** ([#1058](https://github.com/massgen/MassGen/pull/1058)): Copyable custom instructions for agent memory files with checkpoint MCP information
+- **Docker Dependency Fixes** ([#1058](https://github.com/massgen/MassGen/pull/1058)): Fixed Dockerfile installs for reliable container builds
 
-### Previous Achievements (v0.0.3 - v0.1.74)
+### Previous Achievements (v0.0.3 - v0.1.75)
+
+✅ **Codex Hooks & Checkpoint WebUI (v0.1.75)**: Hybrid hook system for Codex backend. Checkpoint workflows auto-launch WebUI for visual monitoring. Standalone checkpoint MCP server docs with safety policy integration.
 
 ✅ **Checkpoint Improvements & Tool Call Fixes (v0.1.74)**: Major improvements to standalone checkpoint MCP server. Fix for duplicate tool calls in ChatCompletions and Response API backends.
 
@@ -1543,9 +1546,9 @@ MassGen is currently in its foundational stage, with a focus on parallel, asynch
 
 We welcome community contributions to achieve these goals.
 
-### v0.1.76 Roadmap
+### v0.1.77 Roadmap
 
-Version 0.1.76 focuses on cloud execution:
+Version 0.1.77 focuses on cloud execution:
 
 #### Planned Features
 - **Cloud Modal MVP** ([#982](https://github.com/massgen/MassGen/issues/982)): Run MassGen as a cloud job on Modal — progress streams to terminal, results saved locally under `.massgen/cloud_jobs/`

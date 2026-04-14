@@ -71,3 +71,32 @@ def test_console_safe_sink_downgrades_non_utf8_retry_text() -> None:
     assert "[X] Retry (1/3): Choose best answer -> then stop" in written
     assert "[!] Warning" in written
     written.encode("cp1252")
+
+
+@pytest.mark.usefixtures("_isolate_test_logs")
+def test_log_stream_chunk_redacts_secrets() -> None:
+    import massgen.logger_config as logger_config
+
+    openai_key = "sk-proj-testsecret1234567890abcdefghijklmnopqrstuvwxyz"
+    bearer_token = "AIzaSyTestSecret1234567890abcdefghijklmnop"
+    messages: list[str] = []
+    sink_id = logger_config.logger.add(
+        lambda message: messages.append(str(message)),
+        format="{message}",
+    )
+
+    try:
+        logger_config.log_stream_chunk(
+            "backend.codex",
+            "content",
+            f'OPENAI_API_KEY = "{openai_key}"\nAuthorization: Bearer {bearer_token}',
+            agent_id="agent_1",
+        )
+    finally:
+        logger_config.logger.remove(sink_id)
+
+    written = "".join(messages)
+    assert openai_key not in written
+    assert bearer_token not in written
+    assert 'OPENAI_API_KEY = "[REDACTED]"' in written
+    assert "Authorization: Bearer [REDACTED]" in written

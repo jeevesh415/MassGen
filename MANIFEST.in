@@ -5,6 +5,7 @@ include CONTRIBUTING.md
 include CHANGELOG.md
 include requirements.txt
 recursive-include massgen/configs *.yaml *.yml
+recursive-include massgen/observability/dashboards *.json
 include .env.example
 recursive-include assets *.png *.gif *.jpg *.jpeg *.ico
 recursive-include massgen/frontend/displays/textual_themes *.tcss

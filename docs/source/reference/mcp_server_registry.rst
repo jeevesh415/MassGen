@@ -129,6 +129,64 @@ Brave Search
 
    # See: massgen/configs/tools/mcp/brave_search_example.yaml
 
+Exa Search
+~~~~~~~~~~
+
+**Purpose:** AI-powered web search and page fetch via Exa's official MCP server
+
+**Type:** stdio
+
+**API Key:** Required (``EXA_API_KEY``)
+
+**Connection:**
+
+.. code-block:: yaml
+
+   mcp_servers:
+     - name: "exa_search"
+       type: "stdio"
+       command: "npx"
+       args: ["-y", "exa-mcp-server"]
+       env:
+         EXA_API_KEY: "${EXA_API_KEY}"
+
+MassGen currently wires Exa through the official npm package (``npx -y exa-mcp-server``).
+Exa's current docs also highlight a hosted MCP endpoint (``https://mcp.exa.ai/mcp``)
+for clients that support HTTP MCP directly.
+
+**Tools:**
+
+- ``web_search_exa`` - Search the web and return ready-to-use content
+- ``web_fetch_exa`` - Read a webpage's full content as clean markdown from a URL
+- ``web_search_advanced_exa`` - Advanced search with category, domain, date, highlight, and summary controls
+
+**Key Features:**
+
+- Search the web with Exa's AI-oriented ranking and content extraction
+- Fetch a known page as clean markdown for summarization or downstream analysis
+- Advanced search options documented by Exa include category, domain, and date filters
+- Official Exa docs currently prefer the hosted MCP endpoint for HTTP-capable clients,
+  while MassGen's registry uses the official npm package form above
+
+**API Key Setup:**
+
+1. Sign up at https://exa.ai/
+2. Generate API key from dashboard
+3. Add to ``.env``: ``EXA_API_KEY="your_key_here"``
+
+**Use Cases:**
+
+- Research queries requiring semantic understanding
+- Fetching and summarizing the full contents of a known page
+- Category-specific searches (research papers, news, companies)
+- Time-bounded or domain-restricted searches when advanced Exa tooling is enabled
+
+**Example:**
+
+.. code-block:: yaml
+
+   # See: massgen/configs/tools/web-search/exa_search_example.yaml
+
 Auto-Discovery
 --------------
 
@@ -142,6 +200,7 @@ MassGen automatically includes registry servers that are available:
 **Conditionally Included:**
 
 - Brave Search (only if ``BRAVE_API_KEY`` is set in ``.env``)
+- Exa Search (only if ``EXA_API_KEY`` is set in ``.env``)
 
 **Behavior:**
 
@@ -190,6 +249,11 @@ Registry Summary Table
      - Required
      - 2000/month (free)
      - Avoid parallel queries. Pro tier available for heavy usage.
+   * - Exa Search
+     - stdio
+     - Required
+     - Pay-per-use
+     - AI-powered neural search. Supports category filtering, content extraction, and deep search.
 
 Manual Configuration
 --------------------

@@ -79,6 +79,7 @@ except ImportError:
 
 from ..logger_config import get_event_emitter, logger
 from ..mcp_tools.backend_utils import MCPResourceManager
+from ..utils.redact_secrets import redact_secrets_in_text
 from ._streaming_buffer_mixin import StreamingBufferMixin
 from .base import (
     FilesystemSupport,
@@ -197,6 +198,7 @@ class CodexBackend(StreamingBufferMixin, NativeToolBackendMixin, LLMBackend):
         self._tool_id_to_name: dict[str, str] = {}
         self._workflow_call_emitted_this_turn = False
         self._workflow_mcp_item_ids_emitted: set[str] = set()
+        self._last_turn_missing_workflow_call = False
 
         # Docker execution mode
         self._docker_execution = kwargs.get("command_line_execution_mode") == "docker"
@@ -1062,8 +1064,10 @@ class CodexBackend(StreamingBufferMixin, NativeToolBackendMixin, LLMBackend):
         # Debug: read back and log the written config
         try:
             written = config_path.read_text(encoding="utf-8")
-            # Log first 500 chars to see MCP section
-            logger.info(f"Codex config.toml written ({len(written)} chars): {written[:800]}")
+            redacted_written = redact_secrets_in_text(written)
+            logger.info(
+                f"Codex config.toml written ({len(written)} chars): " f"{self._truncate_line(redacted_written, max_chars=800)}",
+            )
         except Exception:
             pass
 
@@ -1389,6 +1393,10 @@ class CodexBackend(StreamingBufferMixin, NativeToolBackendMixin, LLMBackend):
 
         return cmd
 
+    def _remove_runtime_mcp_server(self, server_name: str) -> None:
+        """Remove a transient runtime MCP server from the active server list."""
+        self.mcp_servers = [server for server in self.mcp_servers if not (isinstance(server, dict) and server.get("name") == server_name)]
+
     @staticmethod
     def _truncate_line(line: str, max_chars: int = 200) -> str:
         """Truncate long diagnostic lines to keep logs readable."""
@@ -1408,14 +1416,21 @@ class CodexBackend(StreamingBufferMixin, NativeToolBackendMixin, LLMBackend):
         Codex occasionally emits non-JSON status or hook error text alongside the
         JSON event stream. Those lines are useful diagnostics, but they are not
         protocol parse failures and should not be logged as such.
+
+        Error-shaped lines (anything containing " ERROR " or "error=") are
+        surfaced at WARNING so regressions like a failed MCP server startup
+        ("ERROR codex_core::tools::router: error=MCP startup failed: ...")
+        don't disappear into DEBUG-only logs and waste hours of debugging.
         """
         try:
             return json.loads(line_str)
         except json.JSONDecodeError:
-            truncated = self._truncate_line(line_str)
+            truncated = self._truncate_line(redact_secrets_in_text(line_str))
             if self._looks_like_json_event_line(line_str):
                 logger.warning(f"Failed to parse Codex event: {truncated}")
-            elif "Command blocked by PreToolUse hook" in line_str or "ERROR codex_core::" in line_str:
+            elif " ERROR " in line_str or "error=" in line_str:
+                logger.warning(f"Codex stderr error: {truncated}")
+            elif "Command blocked by PreToolUse hook" in line_str:
                 logger.info(f"Codex non-JSON output: {truncated}")
             else:
                 logger.debug(f"Skipping non-JSON Codex output: {truncated}")
@@ -1973,15 +1988,15 @@ class CodexBackend(StreamingBufferMixin, NativeToolBackendMixin, LLMBackend):
         tool_names = [t.get("function", {}).get("name", "?") for t in (tools or [])]
         logger.info(f"Codex stream_with_tools: received {len(tools or [])} tools: {tool_names}")
 
+        self._remove_runtime_mcp_server("massgen_workflow_tools")
+
         # Use shared mixin method to setup workflow tools
         workflow_mcp_config, self._pending_workflow_instructions = self._setup_workflow_tools(
             tools or [],
             str(Path(self.cwd) / ".codex"),
+            mcp_tool_prefix="massgen_workflow_tools/",
         )
         if workflow_mcp_config:
-            # Add workflow MCP server to mcp_servers for this session
-            # Remove any previous workflow server entry
-            self.mcp_servers = [s for s in self.mcp_servers if not (isinstance(s, dict) and s.get("name") == "massgen_workflow_tools")]
             self.mcp_servers.append(workflow_mcp_config)
 
         has_workflow_mcp = workflow_mcp_config is not None
@@ -2009,6 +2024,12 @@ class CodexBackend(StreamingBufferMixin, NativeToolBackendMixin, LLMBackend):
         # Resume session if we have one — Codex maintains server-side history,
         # so even single-message enforcement retries should resume the session
         resume_session = self.session_id is not None
+        if has_workflow_mcp and resume_session and self._last_turn_missing_workflow_call:
+            logger.info(
+                "Codex: forcing fresh session because previous workflow turn " "ended without a workflow tool decision",
+            )
+            resume_session = False
+            self.session_id = None
 
         # Start API call timing
         self.start_api_call_timing(self.model)
@@ -2040,10 +2061,12 @@ class CodexBackend(StreamingBufferMixin, NativeToolBackendMixin, LLMBackend):
                 workflow_tool_calls = parse_workflow_tool_calls(accumulated_content)
                 if workflow_tool_calls:
                     logger.info(f"Codex: parsed {len(workflow_tool_calls)} workflow tool call(s) from text")
+                    got_workflow_tool_calls = True
                     yield StreamChunk(type="tool_calls", tool_calls=workflow_tool_calls, source="codex")
             if held_done_chunk:
                 yield held_done_chunk
         finally:
+            self._last_turn_missing_workflow_call = has_workflow and not got_workflow_tool_calls
             self._finalize_streaming_buffer(agent_id=agent_id)
 
     async def _stream_docker(
@@ -2141,7 +2164,10 @@ class CodexBackend(StreamingBufferMixin, NativeToolBackendMixin, LLMBackend):
                 if event is None:
                     continue
 
-                logger.info(f"Codex raw event (docker): {json.dumps(event, default=str)[:500]}")
+                redacted_event = redact_secrets_in_text(json.dumps(event, default=str))
+                logger.info(
+                    f"Codex raw event (docker): {self._truncate_line(redacted_event, max_chars=500)}",
+                )
                 chunks = self._parse_codex_event(event)
                 for chunk in chunks:
                     if first_content and chunk.type == "content":
@@ -2218,7 +2244,10 @@ class CodexBackend(StreamingBufferMixin, NativeToolBackendMixin, LLMBackend):
                 if event is None:
                     continue
 
-                logger.info(f"Codex raw event: {json.dumps(event, default=str)[:500]}")
+                redacted_event = redact_secrets_in_text(json.dumps(event, default=str))
+                logger.info(
+                    f"Codex raw event: {self._truncate_line(redacted_event, max_chars=500)}",
+                )
                 chunks = self._parse_codex_event(event)
                 for chunk in chunks:
                     # Record first token timing
@@ -2436,6 +2465,7 @@ class CodexBackend(StreamingBufferMixin, NativeToolBackendMixin, LLMBackend):
         self._tool_id_to_name.clear()
         self._workflow_call_emitted_this_turn = False
         self._workflow_mcp_item_ids_emitted.clear()
+        self._last_turn_missing_workflow_call = False
         self._cleanup_workspace_config()
         logger.info("Codex session state reset.")
 
@@ -2447,6 +2477,7 @@ class CodexBackend(StreamingBufferMixin, NativeToolBackendMixin, LLMBackend):
         await self._disconnect_background_mcp_client()
         self.session_id = None
         self._session_file = None
+        self._last_turn_missing_workflow_call = False
         self._cleanup_workspace_config()
 
 

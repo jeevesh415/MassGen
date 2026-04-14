@@ -33,6 +33,7 @@ from typing import TYPE_CHECKING, Any, Optional
 import yaml
 from loguru import logger
 
+from massgen.utils.redact_secrets import redact_secrets
 from massgen.utils.sanitize_console_text import sanitize_console_text_for_encoding
 
 if TYPE_CHECKING:
@@ -1229,24 +1230,25 @@ def log_stream_chunk(source: str, chunk_type: str, content: Any = None, agent_id
 
     # Create a custom logger that will show the source name instead of module path
     log = logger.bind(name=f"{log_name}:{function_name}:{line_number}")
+    redacted_content = redact_secrets(content)
 
     # Handle tool_result chunks with timing info - add [SLOW] marker for operations >5s
-    if chunk_type == "tool_result" and isinstance(content, dict):
-        exec_time = content.get("execution_time", 0)
-        command = content.get("command", "")
+    if chunk_type == "tool_result" and isinstance(redacted_content, dict):
+        exec_time = redacted_content.get("execution_time", 0)
+        command = redacted_content.get("command", "")
         if exec_time > 5.0:
             command_preview = command[:50] + "..." if len(command) > 50 else command
             log.warning(f"[SLOW] {command_preview} took {exec_time:.1f}s")
             return
 
     # Handle error chunks with [ERROR] marker
-    if chunk_type == "error" or (isinstance(content, dict) and content.get("is_error")):
-        log.error(f"[ERROR] {source}: {content}")
+    if chunk_type == "error" or (isinstance(redacted_content, dict) and redacted_content.get("is_error")):
+        log.error(f"[ERROR] {source}: {redacted_content}")
         return
 
     # Normal logging for other chunks
-    if content:
-        log.info("Stream chunk [{}]: {}", chunk_type, content)
+    if redacted_content:
+        log.info("Stream chunk [{}]: {}", chunk_type, redacted_content)
     else:
         log.info("Stream chunk [{}]", chunk_type)
 

@@ -9,14 +9,39 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Recent Releases
 
+**v0.1.76 (April 13, 2026)** - Exa Search & Circuit Breaker Observability
+New Exa AI-powered search tool for MCP. Circuit breaker Phase 3 with observability — probe ownership, lock release, per-attempt latency tracking. Copyable checkpoint agent instructions and Docker dependency fixes.
+
 **v0.1.75 (April 10, 2026)** - Codex Hooks & Checkpoint WebUI
 Hybrid hook system for Codex backend combining native and MCP capabilities. Checkpoint workflows now auto-launch the WebUI for visual monitoring. Standalone checkpoint MCP server documentation and safety policy integration.
 
 **v0.1.74 (April 8, 2026)** - Checkpoint Improvements & Tool Call Fixes
 Major improvements to standalone checkpoint MCP server. Fix for duplicate tool calls in ChatCompletions (including for MiniMax on OpenRouter) and Response API backends. Pre-collab evaluation criteria refinements.
 
-**v0.1.73 (April 6, 2026)** - Eval Criteria Evolver & Checkpoint Objectives
-New eval criteria evolver subagent that evolves criteria across rounds. Initial draft of checkpoint objective mode for safety planning of irreversible actions. Improved visibility of evaluation criteria.
+---
+
+## [0.1.76] - 2026-04-13
+
+### Added
+- **Exa AI Search Tool** ([#1057](https://github.com/massgen/MassGen/pull/1057)): New Exa AI-powered search tool added to MCP server registry with example config
+- **Circuit Breaker Observability (Phase 3)** ([#1056](https://github.com/massgen/MassGen/pull/1056)): Observability module with probe ownership, lock release mechanisms, and per-attempt latency regression tracking
+- **Checkpoint Agent Instructions** ([#1058](https://github.com/massgen/MassGen/pull/1058)): Copyable custom instructions for agent memory files with checkpoint MCP information
+
+### Fixed
+- **Docker Dependencies** ([#1058](https://github.com/massgen/MassGen/pull/1058)): Fixed Dockerfile installs for reliable container builds
+- **Circuit Breaker Strengthening** ([#1056](https://github.com/massgen/MassGen/pull/1056)): Strengthened observability across all backends
+
+### Documentation, Configurations and Resources
+- **Updated MCP Server Registry**: Updated `docs/source/reference/mcp_server_registry.rst` with Exa search tool
+- **Updated MCP Integration Guide**: Updated `docs/source/user_guide/tools/mcp_integration.rst`
+- **Updated Standalone MCP README**: Updated `massgen/mcp_tools/standalone/README.md` with checkpoint instructions
+- **New Checkpoint Instructions**: New `massgen/mcp_tools/standalone/checkpoint_instructions.md`
+- **New Config**: New `massgen/configs/tools/web-search/exa_search_example.yaml`
+
+### Technical Details
+- **Major Focus**: Exa AI Search & Circuit Breaker Observability (Phase 3)
+- **PRs Merged**: [#1056](https://github.com/massgen/MassGen/pull/1056), [#1057](https://github.com/massgen/MassGen/pull/1057), [#1058](https://github.com/massgen/MassGen/pull/1058)
+- **Contributors**: @amabito, @HenryQi, @ncrispino, @teocollazo and the MassGen team
 
 ---
 

@@ -25,6 +25,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
+from .utils.redact_secrets import redact_secrets
+
 # Type for event listeners
 EventListener = Callable[["MassGenEvent"], None]
 
@@ -253,11 +255,19 @@ class EventEmitter:
         Args:
             event: The event to emit
         """
+        sanitized_event = MassGenEvent(
+            timestamp=event.timestamp,
+            event_type=event.event_type,
+            agent_id=event.agent_id,
+            round_number=event.round_number,
+            data=redact_secrets(event.data),
+        )
+
         # Write to file
         with self._lock:
             if self._file_handle:
                 try:
-                    self._file_handle.write(event.to_json() + "\n")
+                    self._file_handle.write(sanitized_event.to_json() + "\n")
                     self._file_handle.flush()
                 except Exception as e:
                     import logging as _logging
@@ -267,7 +277,7 @@ class EventEmitter:
         # Notify listeners (copy to avoid concurrent modification)
         for listener in list(self._listeners):
             try:
-                listener(event)
+                listener(sanitized_event)
             except Exception as e:
                 import logging as _logging
 

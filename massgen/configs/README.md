@@ -227,19 +227,26 @@ Most configurations use environment variables for API keys:so
 
 ## Release History & Examples
 
-### v0.1.75 - Latest
+### v0.1.76 - Latest
+**New Features:** Exa Search & Circuit Breaker Observability
+
+**Key Features:**
+- **Exa AI Search Tool**: New Exa AI-powered search tool for MCP with example config
+- **Circuit Breaker Observability (Phase 3)**: Probe ownership, lock release, per-attempt latency tracking across all backends
+- **Checkpoint Agent Instructions**: Copyable custom instructions for agent memory files with checkpoint MCP information
+
+**Try It:**
+```bash
+pip install massgen==0.1.76
+uv run massgen --config @examples/tools/web-search/exa_search_example "Research the latest breakthroughs in multi-agent AI systems"
+```
+
+### v0.1.75
 **New Features:** Codex Hooks & Checkpoint WebUI
 
 **Key Features:**
 - **Codex Native Hooks**: Hybrid hook system for Codex backend combining native and MCP capabilities
 - **Checkpoint WebUI Auto-Launch**: Checkpoint workflows auto-launch WebUI for visual monitoring
-- **Standalone MCP Server Docs**: Guide for `massgen-checkpoint-mcp` with safety policy integration
-
-**Try It:**
-```bash
-pip install massgen==0.1.75
-uv run massgen --config @examples/features/fast_iteration.yaml "Create an svg of an AI agent coding."
-```
 
 ### v0.1.74
 **New Features:** Checkpoint Improvements & Tool Call Fixes

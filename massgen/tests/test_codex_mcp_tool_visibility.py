@@ -7,6 +7,11 @@ from types import SimpleNamespace
 
 import pytest
 
+try:
+    import tomllib
+except ImportError:  # pragma: no cover - Python < 3.11 fallback
+    import tomli as tomllib
+
 from massgen.backend.codex import CodexBackend
 from massgen.mcp_tools.custom_tools_server import (
     BACKGROUND_TOOL_CANCEL_NAME,
@@ -97,6 +102,142 @@ def test_codex_custom_tools_mcp_env_sets_claude_config_dir_for_docker_mount(tmp_
     env = backend._build_custom_tools_mcp_env()
 
     assert env["CLAUDE_CONFIG_DIR"] == "/home/massgen/.claude"
+
+
+@pytest.mark.asyncio
+async def test_codex_workflow_instructions_use_server_prefixed_tool_names(
+    tmp_path: Path,
+):
+    """Codex instructions should reference the server-qualified MCP tool handles."""
+    backend = CodexBackend(cwd=str(tmp_path))
+    backend.api_key = "test"
+
+    messages = [
+        {"role": "system", "content": "system instructions"},
+        {"role": "user", "content": "Please complete the task."},
+    ]
+    tools = [
+        {
+            "type": "function",
+            "function": {
+                "name": "new_answer",
+                "description": "Submit your answer",
+            },
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "vote",
+                "description": "Vote for the best answer",
+            },
+        },
+    ]
+
+    async def mock_stream(prompt, resume_session):  # noqa: ARG001
+        from massgen.backend.base import StreamChunk
+
+        yield StreamChunk(type="done", usage={})
+
+    monkeypatch = pytest.MonkeyPatch()
+    monkeypatch.setattr(backend, "_stream_local", mock_stream)
+    try:
+        async for _ in backend.stream_with_tools(messages, tools):
+            pass
+    finally:
+        monkeypatch.undo()
+
+    agents_md = (tmp_path / ".codex" / "AGENTS.md").read_text(encoding="utf-8")
+    config = tomllib.loads((tmp_path / ".codex" / "config.toml").read_text(encoding="utf-8"))
+
+    assert "`massgen_workflow_tools/new_answer`" in agents_md
+    assert "`massgen_workflow_tools/vote`" in agents_md
+    assert "massgen_workflow_tools" in config.get("mcp_servers", {})
+
+
+@pytest.mark.asyncio
+async def test_codex_forces_fresh_session_after_missing_workflow_tool_call(
+    tmp_path: Path,
+):
+    """If a workflow turn ended without a decision, the next turn should not resume it."""
+    backend = CodexBackend(cwd=str(tmp_path))
+    backend.api_key = "test"
+    backend.session_id = "seed-session"
+
+    messages = [{"role": "user", "content": "Please complete the task."}]
+    tools = [
+        {
+            "type": "function",
+            "function": {
+                "name": "new_answer",
+                "description": "Submit your answer",
+            },
+        },
+    ]
+    resume_flags: list[bool] = []
+
+    async def mock_stream(prompt, resume_session):  # noqa: ARG001
+        from massgen.backend.base import StreamChunk
+
+        resume_flags.append(resume_session)
+        yield StreamChunk(type="content", content="plain text only")
+        yield StreamChunk(type="done", usage={})
+
+    monkeypatch = pytest.MonkeyPatch()
+    monkeypatch.setattr(backend, "_stream_local", mock_stream)
+    try:
+        async for _ in backend.stream_with_tools(messages, tools):
+            pass
+
+        backend.session_id = "next-session"
+        async for _ in backend.stream_with_tools(messages, tools):
+            pass
+    finally:
+        monkeypatch.undo()
+
+    assert resume_flags == [True, False]
+
+
+@pytest.mark.asyncio
+async def test_codex_non_workflow_turn_removes_runtime_workflow_server(
+    tmp_path: Path,
+):
+    """A later non-workflow turn should clear the runtime workflow MCP server."""
+    backend = CodexBackend(cwd=str(tmp_path))
+    backend.api_key = "test"
+
+    messages = [{"role": "user", "content": "Please complete the task."}]
+    workflow_tools = [
+        {
+            "type": "function",
+            "function": {
+                "name": "new_answer",
+                "description": "Submit your answer",
+            },
+        },
+    ]
+
+    async def mock_stream(prompt, resume_session):  # noqa: ARG001
+        from massgen.backend.base import StreamChunk
+
+        yield StreamChunk(type="done", usage={})
+
+    monkeypatch = pytest.MonkeyPatch()
+    monkeypatch.setattr(backend, "_stream_local", mock_stream)
+    try:
+        async for _ in backend.stream_with_tools(messages, workflow_tools):
+            pass
+
+        first_config = tomllib.loads((tmp_path / ".codex" / "config.toml").read_text(encoding="utf-8"))
+        assert "massgen_workflow_tools" in first_config.get("mcp_servers", {})
+
+        async for _ in backend.stream_with_tools(messages, []):
+            pass
+    finally:
+        monkeypatch.undo()
+
+    second_config = tomllib.loads((tmp_path / ".codex" / "config.toml").read_text(encoding="utf-8"))
+    assert "massgen_workflow_tools" not in second_config.get("mcp_servers", {})
+    assert not any(isinstance(server, dict) and server.get("name") == "massgen_workflow_tools" for server in backend.mcp_servers)
 
 
 @pytest.mark.asyncio

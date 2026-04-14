@@ -1,0 +1,81 @@
+# MassGen Configuration: Exa AI-Powered Web Search
+# This configuration demonstrates Exa's MCP server for AI-powered web search
+#
+# Prerequisites:
+#   1. Get an API key from https://exa.ai/
+#   2. Set EXA_API_KEY in your .env file
+#
+# Usage:
+#   uv run massgen --config @examples/tools/web-search/exa_search_example.yaml "Research the latest advances in multi-agent AI systems"
+#
+# Features:
+#   - AI-powered web search via Exa's official MCP server
+#   - Full-page fetch / content extraction for known URLs
+#   - Current Exa docs also describe advanced filtering tools for category,
+#     domain, and date constraints when enabled by the MCP configuration
+
+agents:
+  - id: "exa_research_agent"
+    backend:
+      type: "claude_code"
+      model: "claude-sonnet-4-6"
+      cwd: "workspace"
+      mcp_servers:
+        - name: "exa_search"
+          type: "stdio"
+          command: "npx"
+          args: ["-y", "exa-mcp-server"]
+          env:
+            EXA_API_KEY: "${EXA_API_KEY}"
+
+    system_message: |
+      You are a research assistant with access to Exa AI-powered web search.
+
+      Exa provides semantic web search and page fetching. Use it when you need:
+      - Current information from the web
+      - Research papers and academic content
+      - News and recent developments
+      - Company information and financial reports
+
+      When searching:
+      - Use Exa web search for broad discovery and current information
+      - Use Exa page fetch / content retrieval when you already know the URL
+      - If advanced Exa search tools are available in your MCP setup, use
+        category, domain, and date filters to narrow results
+
+      Provide comprehensive, well-sourced responses based on the search results.
+
+orchestrator:
+  snapshot_storage: snapshots
+  agent_temporary_workspace: temp_workspaces
+  voting_sensitivity: checklist_gated
+  voting_threshold: 3
+  max_new_answers_per_agent: 5
+  fairness_enabled: true
+  fairness_lead_cap_answers: 2
+  max_midstream_injections_per_round: 2
+  defer_peer_updates_until_restart: true
+  allow_midstream_peer_updates_before_checklist_submit: true
+  enable_multimodal_tools: true
+  image_generation_backend: openai
+  video_generation_backend: openai
+  audio_generation_backend: openai
+  coordination:
+    fast_iteration_mode: true
+    max_orchestration_restarts: 0
+    learning_capture_mode: verification_and_final_only
+    use_skills: true
+    skills_directory: .agent/skills
+    enable_agent_task_planning: true
+    task_planning_filesystem_mode: true
+    enable_memory_filesystem_mode: true
+    write_mode: auto
+  context_paths: []
+timeout_settings:
+  orchestrator_timeout_seconds: 3600
+  initial_round_timeout_seconds: 1200
+  subsequent_round_timeout_seconds: 900
+  round_timeout_grace_seconds: 300
+ui:
+  display_type: "textual_terminal"
+  logging_enabled: true

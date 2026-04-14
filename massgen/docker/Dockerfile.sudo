@@ -186,10 +186,11 @@ RUN ARCH="$(dpkg --print-architecture)" && \
         openskills install vercel-labs/agent-browser --universal -y; \
     fi
 
-# Install uv (modern Python package installer for optional serena skill)
-# Enables uvx for running tools like serena on-demand without permanent installation
-RUN curl -LsSf https://astral.sh/uv/install.sh | sh
-ENV PATH="/home/massgen/.local/bin:${PATH}"
+# NOTE: uv is installed system-wide later in this Dockerfile (under USER root,
+# right before the MassGen install) so it can drive a lock-respecting build.
+# That single install is on /usr/local/bin and is available to the massgen
+# user at runtime, so the optional serena skill's `uvx` invocations resolve
+# without needing a per-user uv copy here.
 
 # Install VHS terminal recorder (for terminal evaluation/recording)
 # https://github.com/charmbracelet/vhs
@@ -221,13 +222,32 @@ USER massgen
 ENV VHS_NO_SANDBOX=1
 # Install MassGen package from source
 # This provides MCP server modules and fastmcp CLI needed for agent operation
-# Installs from the git repository being built (not PyPI) to ensure version sync
+# Installs from the git repository being built (not PyPI) to ensure version sync.
+#
+# IMPORTANT: We install dependencies from uv.lock (not from pyproject.toml ranges)
+# so the container is guaranteed to use the same transitive dependency versions
+# as the host. Plain `pip install .` re-resolves from PyPI and can pick up newer
+# transitive deps that break compatibility (e.g. fakeredis 2.35 removed the
+# FakeConnection symbol that pydocket 0.18.x imports, which silently broke MCP
+# server startup inside the container).
 USER root
+# Install uv system-wide via Astral's official installer so it's available
+# for both this build step (lock-respecting MassGen install) and any later
+# runtime use. UV_INSTALL_DIR puts the binary in a path that's already on
+# PATH for both root and the massgen user.
+RUN curl -LsSf https://astral.sh/uv/install.sh \
+    | env UV_INSTALL_DIR=/usr/local/bin UV_NO_MODIFY_PATH=1 sh
 COPY --chown=massgen:massgen . /tmp/massgen-build
 WORKDIR /tmp/massgen-build
-RUN pip install --no-cache-dir . && \
+# --no-emit-project keeps the massgen package itself out of the exported
+# requirements.txt: uv would otherwise emit it as an editable install, and pip
+# refuses to install an editable requirement under the hash-checking mode that
+# uv exports use by default. We install massgen separately with --no-deps.
+RUN uv export --frozen --no-dev --no-emit-project --format requirements-txt > /tmp/requirements.txt && \
+    pip install --no-cache-dir -r /tmp/requirements.txt && \
+    pip install --no-cache-dir --no-deps . && \
     cd /workspace && \
-    rm -rf /tmp/massgen-build
+    rm -rf /tmp/massgen-build /tmp/requirements.txt
 WORKDIR /workspace
 USER massgen
 

@@ -200,6 +200,10 @@ Key Features
 Recent Releases
 ---------------
 
+**v0.1.76 (April 13, 2026)** - Exa Search & Circuit Breaker Observability
+
+New Exa AI-powered search tool for MCP. Circuit breaker Phase 3 with observability — probe ownership, lock release, per-attempt latency tracking. Checkpoint agent instructions and Docker dependency fixes.
+
 **v0.1.75 (April 10, 2026)** - Codex Hooks & Checkpoint WebUI
 
 Hybrid hook system for Codex backend combining native and MCP capabilities. Checkpoint workflows auto-launch the WebUI for visual monitoring. Standalone checkpoint MCP server documentation and safety policy integration.
@@ -207,10 +211,6 @@ Hybrid hook system for Codex backend combining native and MCP capabilities. Chec
 **v0.1.74 (April 8, 2026)** - Checkpoint Improvements & Tool Call Fixes
 
 Major improvements to standalone checkpoint MCP server. Fix for duplicate tool calls in ChatCompletions (including for MiniMax on OpenRouter) and Response API backends. Pre-collab evaluation criteria refinements.
-
-**v0.1.73 (April 6, 2026)** - Eval Criteria Evolver & Checkpoint Objectives
-
-New eval criteria evolver subagent that evolves criteria across rounds. Initial draft of checkpoint objective mode for safety planning of irreversible actions. Improved visibility of evaluation criteria.
 
 :doc:`Full changelog → <changelog>`
 

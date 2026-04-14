@@ -188,6 +188,39 @@ class TestEventEmission:
         assert received[1].event_type == "personas_set"
         assert received[2].event_type == "subtasks_set"
 
+    def test_tool_events_redact_secrets_before_writing_jsonl(self, tmp_path: Path):
+        emitter = EventEmitter(tmp_path)
+        openai_key = "sk-proj-testsecret1234567890abcdefghijklmnopqrstuvwxyz"
+        bearer_token = "AIzaSyTestSecret1234567890abcdefghijklmnop"
+
+        emitter.emit_tool_start(
+            "tool_1",
+            "read_file",
+            {
+                "OPENAI_API_KEY": openai_key,
+                "nested": {"token": bearer_token},
+            },
+        )
+        emitter.emit_tool_complete(
+            "tool_1",
+            "read_file",
+            f'OPENAI_API_KEY = "{openai_key}"\nAuthorization: Bearer {bearer_token}',
+            0.5,
+        )
+        emitter.close()
+
+        raw = (tmp_path / "events.jsonl").read_text(encoding="utf-8")
+        assert openai_key not in raw
+        assert bearer_token not in raw
+        assert "[REDACTED]" in raw
+
+        reader = EventReader(tmp_path / "events.jsonl")
+        events = reader.read_all()
+        assert events[0].data["args"]["OPENAI_API_KEY"] == "[REDACTED]"
+        assert events[0].data["args"]["nested"]["token"] == "[REDACTED]"
+        assert 'OPENAI_API_KEY = "[REDACTED]"' in events[1].data["result"]
+        assert "Authorization: Bearer [REDACTED]" in events[1].data["result"]
+
 
 # ---------------------------------------------------------------------------
 # 3. EventReader filtering works with new types
