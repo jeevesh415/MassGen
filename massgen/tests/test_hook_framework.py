@@ -10,6 +10,7 @@ Tests:
 """
 
 import json
+import time
 from datetime import datetime, timezone
 
 import pytest
@@ -27,6 +28,9 @@ from massgen.mcp_tools.hooks import (
     MidStreamInjectionHook,
     PatternHook,
     PythonCallableHook,
+    RoundTimeoutPostHook,
+    RoundTimeoutPreHook,
+    RoundTimeoutState,
 )
 
 # =============================================================================
@@ -1285,6 +1289,150 @@ class TestNativeHookAdapterBase:
                 HookResult.allow(),
                 HookType.PRE_TOOL_USE,
             )
+
+
+# =============================================================================
+# Round Timeout Hook Tests
+# =============================================================================
+
+
+class TestRoundTimeoutHooks:
+    """Tests for manual wrap-up support in round timeout hooks."""
+
+    def test_manual_wrap_up_request_can_be_consumed_immediately(self):
+        """Manual wrap-up should support immediate consumption for Answer Now flows."""
+        shared_state = RoundTimeoutState()
+        round_start = datetime.now(timezone.utc).timestamp()
+
+        post_hook = RoundTimeoutPostHook(
+            name="round_timeout_soft_agent_a",
+            get_round_start_time=lambda: round_start,
+            get_agent_round=lambda: 0,
+            initial_timeout_seconds=300,
+            subsequent_timeout_seconds=120,
+            grace_seconds=45,
+            agent_id="agent_a",
+            shared_state=shared_state,
+        )
+
+        assert post_hook.request_wrap_up() is True
+
+        injected = post_hook.consume_pending_wrap_up_injection()
+
+        assert injected is not None
+        assert "ANSWER NOW REQUESTED" in injected
+        assert post_hook.consume_pending_wrap_up_injection() is None
+
+    @pytest.mark.asyncio
+    async def test_manual_wrap_up_request_injects_on_next_post_hook_execution(self):
+        """Manual wrap-up should inject first, then start its stricter grace window."""
+        shared_state = RoundTimeoutState()
+        round_start = datetime.now(timezone.utc).timestamp()
+
+        post_hook = RoundTimeoutPostHook(
+            name="round_timeout_soft_agent_a",
+            get_round_start_time=lambda: round_start,
+            get_agent_round=lambda: 0,
+            initial_timeout_seconds=300,
+            subsequent_timeout_seconds=120,
+            grace_seconds=45,
+            agent_id="agent_a",
+            shared_state=shared_state,
+        )
+
+        pre_hook = RoundTimeoutPreHook(
+            name="round_timeout_hard_agent_a",
+            get_round_start_time=lambda: round_start,
+            get_agent_round=lambda: 0,
+            initial_timeout_seconds=300,
+            subsequent_timeout_seconds=120,
+            grace_seconds=45,
+            agent_id="agent_a",
+            shared_state=shared_state,
+        )
+
+        assert post_hook.request_wrap_up() is True
+        assert shared_state.soft_timeout_fired_at is None
+        assert shared_state.soft_timeout_reason is None
+        # Hard blocking should not start before the agent has actually received the wrap-up message.
+        allowed = await pre_hook.execute("write_file", "{}")
+        assert allowed.allowed is True
+
+        injected = await post_hook.execute("write_file", "{}")
+        assert injected.allowed is True
+        assert injected.inject is not None
+        assert "ANSWER NOW REQUESTED" in injected.inject["content"]
+        assert "Skip any optional polish" in injected.inject["content"]
+        assert "new_answer" in injected.inject["content"]
+        assert shared_state.soft_timeout_fired_at is not None
+        assert shared_state.soft_timeout_reason == "manual"
+
+    @pytest.mark.asyncio
+    async def test_manual_wrap_up_request_still_uses_configured_grace_after_delivery(self):
+        """Manual Answer Now should still respect the configured hard-timeout grace."""
+        shared_state = RoundTimeoutState()
+        round_start = datetime.now(timezone.utc).timestamp()
+
+        post_hook = RoundTimeoutPostHook(
+            name="round_timeout_soft_agent_a",
+            get_round_start_time=lambda: round_start,
+            get_agent_round=lambda: 0,
+            initial_timeout_seconds=300,
+            subsequent_timeout_seconds=120,
+            grace_seconds=45,
+            agent_id="agent_a",
+            shared_state=shared_state,
+        )
+
+        pre_hook = RoundTimeoutPreHook(
+            name="round_timeout_hard_agent_a",
+            get_round_start_time=lambda: round_start,
+            get_agent_round=lambda: 0,
+            initial_timeout_seconds=300,
+            subsequent_timeout_seconds=120,
+            grace_seconds=45,
+            agent_id="agent_a",
+            shared_state=shared_state,
+        )
+
+        assert post_hook.request_wrap_up() is True
+        assert post_hook.consume_pending_wrap_up_injection() is not None
+        assert shared_state.soft_timeout_reason == "manual"
+
+        shared_state.soft_timeout_fired_at = time.time() - 11
+        allowed = await pre_hook.execute("write_file", "{}")
+        assert allowed.allowed is True
+
+        shared_state.soft_timeout_fired_at = time.time() - 46
+        denied = await pre_hook.execute("write_file", "{}")
+        assert denied.allowed is False
+        assert "hard timeout" in (denied.reason or "").lower() or "submit" in (denied.reason or "").lower()
+
+    @pytest.mark.asyncio
+    async def test_manual_wrap_up_request_is_idempotent_after_it_is_pending(self):
+        """Repeated manual requests should not create duplicate soft-timeout deliveries."""
+        shared_state = RoundTimeoutState()
+        round_start = datetime.now(timezone.utc).timestamp()
+
+        post_hook = RoundTimeoutPostHook(
+            name="round_timeout_soft_agent_a",
+            get_round_start_time=lambda: round_start,
+            get_agent_round=lambda: 1,
+            initial_timeout_seconds=300,
+            subsequent_timeout_seconds=120,
+            grace_seconds=30,
+            agent_id="agent_a",
+            shared_state=shared_state,
+        )
+
+        assert post_hook.request_wrap_up() is True
+        assert post_hook.request_wrap_up() is False
+
+        first = await post_hook.execute("search", "{}")
+        second = await post_hook.execute("search", "{}")
+
+        assert first.inject is not None
+        assert second.inject is None
 
 
 # Only run Claude SDK adapter tests if SDK is available

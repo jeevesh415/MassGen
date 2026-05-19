@@ -144,6 +144,10 @@ class AgentState:
     # Decomposition mode fields
     stop_summary: str | None = None  # Summary from stop tool
     stop_status: str | None = None  # "complete" or "blocked"
+    # Discriminative criteria emergence (v0.1.85): proposals this agent has
+    # emitted in the current round that are pending merge into the orchestrator
+    # accumulator at round transition. Each entry: {text, category, anti_patterns?}.
+    criteria_proposals: list[dict[str, Any]] = field(default_factory=list)
 
 
 class Orchestrator(ChatAgent):
@@ -485,6 +489,13 @@ class Orchestrator(ChatAgent):
         self._generated_evaluation_criteria: list | None = generated_evaluation_criteria
         self._evaluation_criteria_generated: bool = bool(generated_evaluation_criteria)
 
+        # Discriminative criteria emergence (v0.1.85): accumulator of criteria
+        # emitted by agents (Variant A) or a between-rounds critic (Variant B).
+        # Each entry: {text, category, anti_patterns?, verify_by?}. Merged across
+        # rounds; capped by coordination_config.bootstrap_max_total.
+        self._bootstrap_criteria_accumulator: list[dict[str, Any]] = []
+        self._bootstrap_round_index: int = 0
+
         # Prompt improvement guard
         self._prompt_improved: bool = False
         # Guard to push criteria to TUI display at most once (checklist_gated does it in
@@ -798,6 +809,9 @@ class Orchestrator(ChatAgent):
         # Initialize checkpoint MCP tool if main agent is set
         self._init_checkpoint_tool()
 
+        # Inject standalone checkpoint MCP into a single agent if enabled.
+        self._init_standalone_checkpoint_tool()
+
         self._seed_plan_execution_workspaces(context="orchestrator_init")
 
     def _seed_plan_execution_workspaces(self, context: str) -> None:
@@ -928,6 +942,545 @@ class Orchestrator(ChatAgent):
 
         return None, None, None, None, None
 
+    def _drain_pending_criteria_proposals(self) -> None:
+        """Move all agents' pending criteria_proposals into the orchestrator accumulator.
+
+        Called from criteria resolution and checklist refresh paths so that
+        emissions from one round propagate to subsequent rounds (or to teammates
+        within the same round, once the resolve fires again). Dedup is exact-text
+        per ``merge_proposals``; FIFO eviction enforces ``bootstrap_max_total``.
+
+        On a successful merge the accumulator is also persisted as
+        ``bootstrap_criteria_accumulator.json`` in the session log directory for
+        offline inspection.
+
+        In ``bootstrap_subagent`` mode this method only harvests buffered/jsonl
+        emissions — the LLM-driven critic runs separately in
+        ``_run_bootstrap_discriminator_step`` and writes directly to the
+        accumulator.
+        """
+        coord = getattr(self.config, "coordination_config", None)
+        if coord is None:
+            return
+        from massgen.bootstrap_criteria import is_bootstrap_mode, merge_proposals
+
+        criteria_mode = getattr(coord, "criteria_mode", "static")
+        if not is_bootstrap_mode(criteria_mode):
+            return
+        cap = int(getattr(coord, "bootstrap_max_total", 30) or 0)
+        agent_states = getattr(self, "agent_states", {}) or {}
+        merged_any = False
+        for state in agent_states.values():
+            pending = getattr(state, "criteria_proposals", None)
+            if not pending:
+                continue
+            before = len(self._bootstrap_criteria_accumulator)
+            self._bootstrap_criteria_accumulator = merge_proposals(
+                self._bootstrap_criteria_accumulator,
+                list(pending),
+                cap=cap,
+            )
+            if len(self._bootstrap_criteria_accumulator) != before:
+                merged_any = True
+            state.criteria_proposals = []
+        # Stdio path: agents on non-SDK backends emit by appending to
+        # proposed_criteria.jsonl next to their checklist specs. Harvest and
+        # truncate so the same entries aren't re-merged on subsequent drains.
+        # Use rename-then-read so concurrent appends from the MCP server
+        # (separate process) don't get silently lost in the read/unlink window
+        # — POSIX rename atomically transfers ownership, subsequent appender
+        # opens a fresh file at the original path.
+        per_agent_cap = int(getattr(coord, "bootstrap_max_per_agent_per_round", 0) or 0)
+        agents = getattr(self, "agents", {}) or {}
+        for agent in agents.values():
+            backend = getattr(agent, "backend", None)
+            specs_path = getattr(backend, "_checklist_specs_path", None)
+            if not specs_path:
+                continue
+            jsonl_path = Path(specs_path).parent / "proposed_criteria.jsonl"
+            if not jsonl_path.exists():
+                continue
+            try:
+                # UUID rather than time.time()*1000 to avoid same-ms collisions
+                # when two drain passes overlap (e.g., resolve+session-end at
+                # session shutdown). Random suffix makes the rename target
+                # unique under all races.
+                import uuid as _uuid
+
+                drain_path = jsonl_path.with_suffix(
+                    jsonl_path.suffix + f".draining.{os.getpid()}.{_uuid.uuid4().hex[:8]}",
+                )
+                jsonl_path.rename(drain_path)
+            except FileNotFoundError:
+                continue
+            except OSError as exc:
+                logger.debug("[bootstrap_criteria] could not rename %s for drain: %s", jsonl_path, exc)
+                continue
+            harvested: list[dict[str, Any]] = []
+            truncated_by_cap = False
+            try:
+                with drain_path.open(encoding="utf-8") as fh:
+                    for line in fh:
+                        line = line.strip()
+                        if not line:
+                            continue
+                        try:
+                            entry = json.loads(line)
+                        except json.JSONDecodeError:
+                            continue
+                        if not isinstance(entry, dict):
+                            continue
+                        if not (entry.get("text") or "").strip():
+                            continue
+                        if per_agent_cap > 0 and len(harvested) >= per_agent_cap:
+                            truncated_by_cap = True
+                            break
+                        harvested.append(entry)
+            except OSError as exc:
+                logger.debug("[bootstrap_criteria] failed to read drained file %s: %s", drain_path, exc)
+            finally:
+                try:
+                    drain_path.unlink()
+                except OSError:
+                    pass
+            if truncated_by_cap:
+                logger.info(
+                    "[bootstrap_criteria] per-agent cap (%d) reached for %s; remaining JSONL entries dropped",
+                    per_agent_cap,
+                    jsonl_path.parent.name,
+                )
+            if not harvested:
+                continue
+            before = len(self._bootstrap_criteria_accumulator)
+            self._bootstrap_criteria_accumulator = merge_proposals(
+                self._bootstrap_criteria_accumulator,
+                harvested,
+                cap=cap,
+            )
+            if len(self._bootstrap_criteria_accumulator) != before:
+                merged_any = True
+        if merged_any:
+            self._persist_bootstrap_accumulator()
+
+    async def _maybe_run_bootstrap_discriminator(self, current_answers: dict[str, str]) -> int:
+        """Between-rounds gate for the Variant B discriminator.
+
+        Runs `_run_bootstrap_discriminator_step` at most once per unique
+        (agent_id, answer-content) snapshot — so each meaningful round-transition
+        (new answers from one or more agents) triggers a fresh critique, but
+        no-op re-entries during the same round do not. Returns 0 when:
+        - criteria_mode != "bootstrap_subagent"
+        - no answers yet
+        - this exact answer snapshot has already been critiqued
+        - the underlying spawn fails
+        """
+        coord = getattr(self.config, "coordination_config", None)
+        if coord is None or getattr(coord, "criteria_mode", "static") != "bootstrap_subagent":
+            return 0
+        if not current_answers:
+            return 0
+        # Signature is content-aware via a short SHA hash of each answer so the
+        # gate fires on every round where any agent's answer changes. (Keying
+        # only on `current_answers.keys()` would fire once per session, since
+        # the agent ID set is stable across rounds.)
+        import hashlib
+
+        content_signature = tuple(
+            sorted((aid, hashlib.sha1(str(content).encode("utf-8")).hexdigest()[:16]) for aid, content in current_answers.items()),
+        )
+        seen = getattr(self, "_bootstrap_discriminator_completed_signatures", None)
+        if seen is None:
+            seen = set()
+            self._bootstrap_discriminator_completed_signatures = seen
+        if content_signature in seen:
+            return 0
+        seen.add(content_signature)
+        return await self._run_bootstrap_discriminator_step()
+
+    async def _run_bootstrap_discriminator_step(self) -> int:
+        """Variant B: spawn an in-process critic to emit gap-driven criteria.
+
+        Reads each agent's latest answer from the coordination tracker and the
+        current bootstrap accumulator, asks an LLM critic for proposed_criteria
+        that distinguish a stronger answer from what's there, and merges the
+        result into the accumulator.
+
+        Returns the count of NEW criteria added (after dedup). Returns 0 and
+        is a no-op when:
+        - criteria_mode != "bootstrap_subagent"
+        - no answers exist yet (nothing to critique)
+        - SubagentManager call fails / returns unparseable output
+
+        Mirrors the pattern in EvaluationCriteriaGenerator.generate_criteria_via_subagent
+        but with a discriminator prompt and a smaller min_criteria floor.
+        """
+        coord = getattr(self.config, "coordination_config", None)
+        if coord is None or getattr(coord, "criteria_mode", "static") != "bootstrap_subagent":
+            return 0
+
+        tracker = getattr(self, "coordination_tracker", None)
+        answers_by_agent = getattr(tracker, "answers_by_agent", None) if tracker else None
+        if not answers_by_agent:
+            return 0
+        latest: dict[str, str] = {}
+        for aid, ans_list in answers_by_agent.items():
+            if not ans_list:
+                continue
+            last = ans_list[-1]
+            content = getattr(last, "content", None) or getattr(last, "answer", None) or ""
+            if content:
+                latest[aid] = content
+        if not latest:
+            return 0
+
+        task = getattr(self, "current_task", "") or ""
+        existing_accumulator = list(self._bootstrap_criteria_accumulator or [])
+
+        # Build the discriminator prompt. The critic's job is to identify
+        # quality dimensions a stronger answer would satisfy that the current
+        # answers do NOT. Per CLAUDE.md anti-pattern: describe the desired
+        # behavior in natural language; do not hardcode tool-call syntax.
+        prompt_parts: list[str] = [
+            "You are a discriminative critic for a multi-agent coordination system.",
+            "Your job: emit evaluation criteria the CURRENT ANSWERS fail to satisfy.",
+            "",
+            f"# Task\n{task}",
+            "",
+            "# Current Answers",
+        ]
+        for aid, content in latest.items():
+            preview = content if len(content) <= 4000 else content[:4000] + "..."
+            prompt_parts.append(f"\n## {aid}\n{preview}")
+        if existing_accumulator:
+            prompt_parts.append("\n# Criteria already proposed (do not repeat)")
+            for entry in existing_accumulator:
+                prompt_parts.append(f"- {entry.get('text', '')}")
+        prompt_parts.append(
+            "\n# Your Output\n"
+            'Produce a JSON object: {"aspiration": "<one-sentence vision of an ideal answer>", '
+            '"criteria": [{"text": "...", "category": "primary|standard|stretch", '
+            '"anti_patterns": ["..."]}, ...]}. '
+            "Each criterion must (a) take a position on what 'good' means on a specific "
+            "dimension, not a dimension label; (b) describe a quality the current answers "
+            "do NOT fully achieve; (c) be reusable for future similar tasks, not specific "
+            "to this exact wording. Emit 2-5 criteria.\n\n"
+            "Write the JSON to a file called `criteria.json` in your workspace and also "
+            "include it verbatim in your final answer text. The orchestrator will pick "
+            "up `criteria.json` from your workspace; the inline copy is a fallback.\n\n"
+            "Do not run a refinement loop. One pass is enough. Do not call planning, "
+            "checklist, or evaluation tools — just analyze the answers and write the JSON.",
+        )
+        prompt = "\n".join(prompt_parts)
+
+        try:
+            from massgen.subagent.manager import SubagentManager
+            from massgen.subagent.models import SubagentOrchestratorConfig
+        except ImportError as exc:
+            logger.warning("[bootstrap_criteria] SubagentManager unavailable: %s", exc)
+            return 0
+
+        # Resolve a workspace dir for the discriminator (mirror pattern from
+        # EvaluationCriteriaGenerator). Best-effort — use the first agent's
+        # workspace if resolvable, else fall back to a tmpdir.
+        parent_workspace = "."
+        for agent in (self.agents or {}).values():
+            fs = getattr(getattr(agent, "backend", None), "filesystem_manager", None)
+            cwd = getattr(fs, "cwd", None) if fs else None
+            if cwd:
+                parent_workspace = str(cwd)
+                break
+
+        # SubagentManager.spawn_subagent requires CONTEXT.md in the
+        # parent_workspace and aborts with success=False otherwise (verified
+        # live in log_20260513_090725_683824 — three discriminator spawns all
+        # failed for this reason). Mirror the EvaluationCriteriaGenerator
+        # pattern: scope a `.bootstrap_discriminator` subdir under the parent
+        # workspace, materialize CONTEXT.md there, and point SubagentManager
+        # at that subdir so we don't pollute the parent agent's workspace.
+        discriminator_workspace = parent_workspace
+        try:
+            discriminator_workspace = os.path.join(parent_workspace, ".bootstrap_discriminator")
+            os.makedirs(discriminator_workspace, exist_ok=True)
+            context_md_path = os.path.join(discriminator_workspace, "CONTEXT.md")
+            with open(context_md_path, "w", encoding="utf-8") as fh:
+                fh.write(
+                    "# Bootstrap Criteria Discriminator\n\n"
+                    f"Task being critiqued:\n{task}\n\n"
+                    "Goal: identify quality dimensions the current answers fail to satisfy "
+                    "and emit them as JSON proposed_criteria. See the spawn task for the "
+                    "exact output schema.\n",
+                )
+        except OSError as exc:
+            logger.warning(
+                "[bootstrap_criteria] failed to materialize CONTEXT.md for discriminator: %s",
+                exc,
+            )
+            discriminator_workspace = parent_workspace
+
+        # Build a simplified backend config from the first parent agent.
+        simplified_configs: list[dict[str, Any]] = []
+        for aid, agent in (self.agents or {}).items():
+            backend = getattr(agent, "backend", None)
+            cfg = getattr(backend, "config", {}) if backend else {}
+            backend_cfg = {
+                "type": cfg.get("type", "openai") if isinstance(cfg, dict) else "openai",
+                "model": cfg.get("model") if isinstance(cfg, dict) else None,
+                "enable_mcp_command_line": False,
+                "enable_code_based_tools": False,
+                "exclude_file_operation_mcps": False,
+            }
+            simplified_configs.append({"id": f"critic_{aid}", "backend": backend_cfg})
+            break  # one critic is enough
+        if not simplified_configs:
+            return 0
+
+        try:
+            # Single-shot discriminator: cap the subagent at one answer so it
+            # doesn't run a multi-round refinement loop, and turn on
+            # fast_iteration_mode to skip post-candidate scaffolding phases.
+            #
+            # Observed live (log_20260513_095325_530872): with only
+            # max_new_answers_per_agent=1 the critic still entered an R2 voting
+            # round because the default voting_threshold=3 can never be reached
+            # by a single agent — so the orchestrator kept iterating. Adding
+            # voting_threshold=1 (single-agent self-vote → consensus) and
+            # max_new_answers_global=1 (hard global cap on total new answers)
+            # forces termination after the first answer.
+            subagent_config = SubagentOrchestratorConfig(
+                enabled=True,
+                agents=simplified_configs,
+                coordination={
+                    "enable_subagents": False,
+                    "broadcast": False,
+                    "max_new_answers_per_agent": 1,
+                    "max_new_answers_global": 1,
+                    "voting_threshold": 1,
+                    "fast_iteration_mode": True,
+                },
+            )
+            log_dir = None
+            try:
+                log_dir = get_log_session_dir()
+            except Exception:
+                pass
+            manager = SubagentManager(
+                parent_workspace=discriminator_workspace,
+                parent_agent_id="bootstrap_discriminator",
+                orchestrator_id=getattr(self, "orchestrator_id", "orchestrator"),
+                parent_agent_configs=simplified_configs,
+                max_concurrent=1,
+                default_timeout=180,
+                subagent_orchestrator_config=subagent_config,
+                log_directory=str(log_dir) if log_dir else None,
+            )
+            next_round_idx = int(getattr(self, "_bootstrap_round_index", 0) or 0) + 1
+            self._bootstrap_round_index = next_round_idx
+            subagent_id = f"bootstrap_discriminator_{next_round_idx}"
+
+            # Surface this spawn to the TUI so the user can see the discriminator
+            # subagent running. SubagentManager.spawn_subagent is called directly
+            # from the orchestrator (no per-agent backend callback fires here), so
+            # without explicit notifications the discriminator runs silently for
+            # ~3 minutes per round-transition. Mirror the pattern used for
+            # decomposition/persona-generation runtime subagents.
+            display = getattr(getattr(self, "coordination_ui", None), "display", None)
+            anchor_agent_id = next(iter((self.agents or {}).keys()), None)
+            spawn_call_id = subagent_id
+            if display and anchor_agent_id and hasattr(display, "notify_runtime_subagent_started"):
+                try:
+                    display.notify_runtime_subagent_started(
+                        agent_id=anchor_agent_id,
+                        subagent_id=subagent_id,
+                        task=prompt,
+                        timeout_seconds=180,
+                        call_id=spawn_call_id,
+                    )
+                except Exception as _exc:
+                    logger.debug("[bootstrap_criteria] notify_runtime_subagent_started failed: %s", _exc)
+
+            # refine=False is the canonical single-shot knob: SubagentManager
+            # sets max_new_answers_per_agent=1, skip_voting=True, and
+            # skip_final_presentation=True at the orchestrator level (where
+            # they actually win — the coordination-dict overrides we also set
+            # above are belt-and-suspenders, but the orchestrator-level
+            # `max_new_answers_per_agent: 3` default would otherwise shadow
+            # them, as observed live in log_20260513_095921_816676's
+            # subagent_config_bootstrap_discriminator_1.yaml).
+            result = await manager.spawn_subagent(
+                task=prompt,
+                subagent_id=subagent_id,
+                timeout_seconds=180,
+                refine=False,
+            )
+        except Exception as exc:
+            logger.warning("[bootstrap_criteria] discriminator spawn failed: %s", exc, exc_info=True)
+            if "display" in locals() and display and "anchor_agent_id" in locals() and anchor_agent_id and hasattr(display, "notify_runtime_subagent_completed"):
+                try:
+                    display.notify_runtime_subagent_completed(
+                        agent_id=anchor_agent_id,
+                        subagent_id=locals().get("subagent_id", "bootstrap_discriminator"),
+                        call_id=locals().get("spawn_call_id", "bootstrap_discriminator"),
+                        status="failed",
+                        error=str(exc),
+                    )
+                except Exception:
+                    pass
+            return 0
+
+        # Require explicit success — a failed result may carry partial/error
+        # text that the parser would happily accept and pollute the accumulator.
+        if not getattr(result, "success", False):
+            logger.info(
+                "[bootstrap_criteria] discriminator subagent returned success=False; skipping merge",
+            )
+            if display and anchor_agent_id and hasattr(display, "notify_runtime_subagent_completed"):
+                try:
+                    display.notify_runtime_subagent_completed(
+                        agent_id=anchor_agent_id,
+                        subagent_id=subagent_id,
+                        call_id=spawn_call_id,
+                        status="failed",
+                    )
+                except Exception:
+                    pass
+            return 0
+        answer_text = getattr(result, "answer", "") or ""
+
+        from massgen.bootstrap_criteria import merge_proposals
+        from massgen.evaluation_criteria_generator import _parse_criteria_response
+
+        # Preferred pickup path: read criteria.json written by the subagent to
+        # its workspace. Mirrors EvaluationCriteriaGenerator._find_criteria_json.
+        # Fall back to parsing the answer text only if no artifact found.
+        criteria = []
+        artifact_log_dir = str(log_dir) if log_dir else None
+        if artifact_log_dir:
+            try:
+                from massgen.precollab_utils import find_precollab_artifact
+
+                artifact_path = find_precollab_artifact(
+                    artifact_log_dir,
+                    subagent_id,
+                    "criteria.json",
+                )
+                if artifact_path is not None:
+                    artifact_text = artifact_path.read_text(encoding="utf-8")
+                    criteria, _aspiration = _parse_criteria_response(
+                        artifact_text,
+                        min_criteria=1,
+                        max_criteria=10,
+                    )
+                    if criteria:
+                        logger.info(
+                            "[bootstrap_criteria] discriminator picked up criteria.json (%d criteria)",
+                            len(criteria),
+                        )
+            except Exception as _exc:
+                logger.debug("[bootstrap_criteria] criteria.json pickup failed: %s", _exc)
+
+        if not criteria and not answer_text:
+            if display and anchor_agent_id and hasattr(display, "notify_runtime_subagent_completed"):
+                try:
+                    display.notify_runtime_subagent_completed(
+                        agent_id=anchor_agent_id,
+                        subagent_id=subagent_id,
+                        call_id=spawn_call_id,
+                        status="completed",
+                    )
+                except Exception:
+                    pass
+            return 0
+
+        if not criteria:
+            criteria, _aspiration = _parse_criteria_response(answer_text, min_criteria=1, max_criteria=10)
+        if not criteria:
+            logger.info("[bootstrap_criteria] discriminator returned no parseable criteria")
+            if display and anchor_agent_id and hasattr(display, "notify_runtime_subagent_completed"):
+                try:
+                    display.notify_runtime_subagent_completed(
+                        agent_id=anchor_agent_id,
+                        subagent_id=subagent_id,
+                        call_id=spawn_call_id,
+                        status="completed",
+                        answer_preview="No parseable criteria returned",
+                    )
+                except Exception:
+                    pass
+            return 0
+        proposals = [
+            {
+                "text": c.text,
+                "category": c.category,
+                "anti_patterns": list(c.anti_patterns) if getattr(c, "anti_patterns", None) else None,
+            }
+            for c in criteria
+        ]
+        before = len(self._bootstrap_criteria_accumulator)
+        cap = int(getattr(coord, "bootstrap_max_total", 30) or 0)
+        self._bootstrap_criteria_accumulator = merge_proposals(
+            self._bootstrap_criteria_accumulator,
+            proposals,
+            cap=cap,
+        )
+        added = len(self._bootstrap_criteria_accumulator) - before
+        if added > 0:
+            self._persist_bootstrap_accumulator()
+            logger.info(
+                "[bootstrap_criteria] discriminator added %d new criteria (accumulator size: %d)",
+                added,
+                len(self._bootstrap_criteria_accumulator),
+            )
+        if display and anchor_agent_id and hasattr(display, "notify_runtime_subagent_completed"):
+            try:
+                preview = f"Added {added} new criterion/criteria to accumulator" if added > 0 else "No new criteria"
+                display.notify_runtime_subagent_completed(
+                    agent_id=anchor_agent_id,
+                    subagent_id=subagent_id,
+                    call_id=spawn_call_id,
+                    status="completed",
+                    answer_preview=preview,
+                )
+            except Exception:
+                pass
+        return added
+
+    def _drain_at_session_end(self) -> None:
+        """Force a final drain pass before the session ends.
+
+        Reason: `_drain_pending_criteria_proposals` is called from
+        `_resolve_effective_checklist_criteria`, which only fires while
+        coordination is active. Emissions written to stdio JSONL after the
+        last `_resolve` and before final presentation get stranded otherwise
+        (observed live: codex emitted 6 criteria across rounds, zero reached
+        the accumulator). This hook runs unconditionally as a safety net.
+        """
+        try:
+            self._drain_pending_criteria_proposals()
+        except Exception as exc:  # pragma: no cover — defensive
+            logger.debug("[bootstrap_criteria] session-end drain failed: %s", exc)
+
+    def _persist_bootstrap_accumulator(self) -> None:
+        """Write the current bootstrap accumulator snapshot to the session log dir.
+
+        Best-effort: silently skips if no session log directory is resolvable.
+        File path: ``<log_dir>/bootstrap_criteria_accumulator.json``.
+        """
+        try:
+            log_dir = get_log_session_dir()
+        except Exception:
+            log_dir = None
+        if not log_dir:
+            return
+        try:
+            out_path = Path(log_dir) / "bootstrap_criteria_accumulator.json"
+            payload = {
+                "count": len(self._bootstrap_criteria_accumulator),
+                "criteria": list(self._bootstrap_criteria_accumulator),
+            }
+            out_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+        except Exception as exc:  # pragma: no cover — best-effort logging
+            logger.debug("[bootstrap_criteria] failed to persist accumulator: %s", exc)
+
     def _resolve_effective_checklist_criteria(
         self,
         agent_id: str | None = None,
@@ -937,6 +1490,11 @@ class Orchestrator(ChatAgent):
         Returns:
             (items, categories, verify_by, source, anti_patterns, score_anchors)
         """
+        self._drain_pending_criteria_proposals()
+        from massgen.bootstrap_criteria import (
+            augment_with_accumulator,
+            is_bootstrap_mode,
+        )
         from massgen.system_prompt_sections import (
             _CHECKLIST_ITEM_ANTI_PATTERNS,
             _CHECKLIST_ITEM_ANTI_PATTERNS_CHANGEDOC,
@@ -948,13 +1506,14 @@ class Orchestrator(ChatAgent):
             _CHECKLIST_ITEMS_CHANGEDOC,
         )
 
+        coord = getattr(self.config, "coordination_config", None)
+        criteria_mode = getattr(coord, "criteria_mode", "static")
+        accumulator = list(getattr(self, "_bootstrap_criteria_accumulator", []) or [])
+        use_accumulator = is_bootstrap_mode(criteria_mode) and bool(accumulator)
+
         custom_items, item_categories, item_verify_by, item_anti_patterns, item_score_anchors = self._get_active_criteria(agent_id)
         if custom_items is not None:
-            inline = getattr(
-                getattr(self.config, "coordination_config", None),
-                "checklist_criteria_inline",
-                None,
-            )
+            inline = getattr(coord, "checklist_criteria_inline", None)
             if inline:
                 source = "inline"
             elif agent_id and self._get_decomposition_criteria_for_agent(agent_id) is not None:
@@ -963,7 +1522,29 @@ class Orchestrator(ChatAgent):
                 source = "generated"
             else:
                 source = "preset"
+            if use_accumulator:
+                items, cats, vby, anti, anchors = augment_with_accumulator(
+                    custom_items,
+                    item_categories or {},
+                    item_verify_by,
+                    item_anti_patterns,
+                    item_score_anchors,
+                    accumulator,
+                )
+                return items, cats, vby, source, anti, anchors
             return custom_items, item_categories or {}, item_verify_by, source, item_anti_patterns, item_score_anchors
+
+        if use_accumulator:
+            # No base source — accumulator stands alone with source label "bootstrap".
+            items, cats, vby, anti, anchors = augment_with_accumulator(
+                [],
+                {},
+                None,
+                None,
+                None,
+                accumulator,
+            )
+            return items, cats, vby, "bootstrap", anti, anchors
 
         if self._is_changedoc_enabled():
             return (
@@ -1018,6 +1599,23 @@ class Orchestrator(ChatAgent):
         """
         sensitivity = getattr(self.config, "voting_sensitivity", "")
         if sensitivity != "checklist_gated":
+            # bootstrap_inline + non-checklist_gated voting is a misconfiguration:
+            # the submit_checklist tool that carries proposed_criteria is never
+            # registered, so the emission channel doesn't exist and the feature
+            # silently produces zero criteria for the entire session. Refuse to
+            # start so the user sees the problem at config-load time, not after
+            # a long no-emission run.
+            coord = getattr(self.config, "coordination_config", None)
+            if coord is not None and getattr(coord, "criteria_mode", "static") == "bootstrap_inline":
+                raise ValueError(
+                    "criteria_mode='bootstrap_inline' requires "
+                    f"voting_sensitivity='checklist_gated', got {sensitivity!r}. "
+                    "The submit_checklist tool that carries proposed_criteria is "
+                    "only registered under checklist_gated voting. "
+                    "Either set voting_sensitivity to 'checklist_gated' or switch "
+                    "criteria_mode to 'bootstrap_subagent' (which uses a "
+                    "between-rounds critic instead and does not need the tool).",
+                )
             return
 
         from massgen.system_prompt_sections import (
@@ -1125,6 +1723,14 @@ class Orchestrator(ChatAgent):
                 "item_verify_by": item_verify_by or {},
                 "item_score_anchors": item_score_anchors or {},
                 "criteria_source": criteria_source,
+                # Discriminative criteria emergence (v0.1.85): exposes
+                # proposed_criteria to the stdio submit_checklist schema when
+                # bootstrap_inline is active. SDK path uses its own schema branch.
+                "criteria_mode": getattr(
+                    getattr(self.config, "coordination_config", None),
+                    "criteria_mode",
+                    "static",
+                ),
                 # Novelty subagent guidance only when novelty type is available
                 "novelty_subagent_enabled": "novelty" in _lowered_types,
                 # Critic subagent guidance only when critic type is available
@@ -1282,6 +1888,35 @@ class Orchestrator(ChatAgent):
             },
             "required": ["scores"],
         }
+        # Bootstrap criteria emergence (Variant A): expose proposed_criteria so
+        # the agent can emit criteria a stronger answer would satisfy. Schema
+        # only gains the field in bootstrap_inline mode; static-mode agents see
+        # the historical schema unchanged.
+        _criteria_mode = getattr(
+            getattr(self.config, "coordination_config", None),
+            "criteria_mode",
+            "static",
+        )
+        if _criteria_mode == "bootstrap_inline":
+            input_schema["properties"]["proposed_criteria"] = {
+                "type": "array",
+                "description": (
+                    "Optional list of new evaluation criteria a stronger answer would "
+                    "satisfy that the current answers do NOT yet satisfy. Each entry: "
+                    '{"text": str, "category": "primary"|"standard"|"stretch", '
+                    '"anti_patterns": [str, ...]}. Keep short (<=3). Skip when no gap '
+                    "is visible."
+                ),
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "text": {"type": "string"},
+                        "category": {"type": "string"},
+                        "anti_patterns": {"type": "array", "items": {"type": "string"}},
+                    },
+                    "required": ["text"],
+                },
+            }
 
         # draft_approach input schema
         propose_schema = {
@@ -1363,25 +1998,36 @@ class Orchestrator(ChatAgent):
             "diagnostic_report_artifact_paths": [],
         }
 
+        _base_description = (
+            (
+                "Submit your checklist evaluation for your current subtask output. "
+                'Use flat scores like {"E1": {"score": 8, "reasoning": "..."}, ...}. '
+                "Each score entry needs 'score' (0-10) and 'reasoning'. "
+                "Use 'report_path' to pass a markdown gap report when required."
+            )
+            if _is_decomposition
+            else (
+                "Submit your checklist evaluation. When multiple agents exist, "
+                "scores must use per-agent format: "
+                '{"agent1.1": {"E1": {"score": 8, "reasoning": "..."}, ...}, '
+                '"agent2.1": {...}}. '
+                "Each score entry needs 'score' (0-10) and 'reasoning'. "
+                "Use 'report_path' to pass a markdown gap report when required."
+            )
+        )
+        if _criteria_mode == "bootstrap_inline":
+            _base_description = _base_description + (
+                " ALSO emit 'proposed_criteria': a short list (<=3) of criterion "
+                'objects {"text": "...", "category": "primary|standard|stretch", '
+                '"anti_patterns": ["..."]} describing quality dimensions a stronger '
+                "answer would satisfy that the current answers do NOT. These flow "
+                "into subsequent rounds' checklist. Skip only when no genuine gap "
+                "is visible — at most one round in three should skip entirely."
+            )
+
         @tool(
             name="submit_checklist",
-            description=(
-                (
-                    "Submit your checklist evaluation for your current subtask output. "
-                    'Use flat scores like {"E1": {"score": 8, "reasoning": "..."}, ...}. '
-                    "Each score entry needs 'score' (0-10) and 'reasoning'. "
-                    "Use 'report_path' to pass a markdown gap report when required."
-                )
-                if _is_decomposition
-                else (
-                    "Submit your checklist evaluation. When multiple agents exist, "
-                    "scores must use per-agent format: "
-                    '{"agent1.1": {"E1": {"score": 8, "reasoning": "..."}, ...}, '
-                    '"agent2.1": {...}}. '
-                    "Each score entry needs 'score' (0-10) and 'reasoning'. "
-                    "Use 'report_path' to pass a markdown gap report when required."
-                )
-            ),
+            description=_base_description,
             input_schema=input_schema,
         )
         async def submit_checklist_handler(args, _state=state):
@@ -1487,6 +2133,35 @@ class Orchestrator(ChatAgent):
                     },
                 )
                 agent_state.checklist_calls_this_round += 1
+                # Bootstrap criteria (Variant A): capture proposed_criteria emitted with this
+                # checklist submission. They do not affect the current verdict; they accumulate
+                # for merge into subsequent rounds' effective criteria.
+                _proposed = args.get("proposed_criteria")
+                if isinstance(_proposed, list) and _proposed:
+                    _per_agent_cap = int(
+                        getattr(
+                            getattr(_orchestrator.config, "coordination_config", None),
+                            "bootstrap_max_per_agent_per_round",
+                            3,
+                        ),
+                    )
+                    _agent_round_proposals = list(agent_state.criteria_proposals)
+                    for _entry in _proposed:
+                        if not isinstance(_entry, dict):
+                            continue
+                        _text = (_entry.get("text") or "").strip()
+                        if not _text:
+                            continue
+                        _agent_round_proposals.append(
+                            {
+                                "text": _text,
+                                "category": str(_entry.get("category", "standard")).lower(),
+                                "anti_patterns": list(_entry.get("anti_patterns") or []) or None,
+                            },
+                        )
+                    if _per_agent_cap > 0 and len(_agent_round_proposals) > _per_agent_cap:
+                        _agent_round_proposals = _agent_round_proposals[-_per_agent_cap:]
+                    agent_state.criteria_proposals = _agent_round_proposals
                 if getattr(agent_state, "pending_checklist_recheck_labels", set()) and (
                     bool(_state.get("decomposition_mode", False)) or (submitted_agent_labels and getattr(agent_state, "pending_checklist_recheck_labels", set()).issubset(submitted_agent_labels))
                 ):
@@ -1793,6 +2468,147 @@ class Orchestrator(ChatAgent):
             f"[Checkpoint] Checkpoint tool active for main agent " f"'{self._main_agent_id}' (via workflow toolkit + interception)",
         )
 
+    _STANDALONE_CHECKPOINT_SERVER_NAME = "massgen_checkpoint_standalone"
+
+    def _strip_standalone_checkpoint_from_all_agents(self) -> None:
+        """Remove the standalone checkpoint MCP from every agent's backend.
+
+        Used to maintain the single-agent invariant when agents are added/removed
+        post-init: if the parent is no longer single-agent, the affordance must
+        leave every backend (and the prompt section is gated separately at
+        render time).
+
+        Mutates both `backend.config["mcp_servers"]` and `backend.mcp_servers`
+        because the backend binds the latter at its own __init__ (separate list
+        reference when mcp_servers isn't in the source YAML).
+        """
+        name = self._STANDALONE_CHECKPOINT_SERVER_NAME
+        for agent in self.agents.values():
+            backend = getattr(agent, "backend", None)
+            if backend is None or not hasattr(backend, "config") or not isinstance(backend.config, dict):
+                continue
+            servers = backend.config.get("mcp_servers")
+            if isinstance(servers, list):
+                backend.config["mcp_servers"] = [s for s in servers if not (isinstance(s, dict) and s.get("name") == name)]
+            elif isinstance(servers, dict):
+                servers.pop(name, None)
+            # Mirror to the runtime list the backend actually consumes.
+            if hasattr(backend, "mcp_servers"):
+                runtime = backend.mcp_servers
+                if isinstance(runtime, list):
+                    backend.mcp_servers = [s for s in runtime if not (isinstance(s, dict) and s.get("name") == name)]
+                elif isinstance(runtime, dict):
+                    runtime.pop(name, None)
+
+    def _init_standalone_checkpoint_tool(self) -> None:
+        """Inject the standalone checkpoint MCP into a single agent's backend.
+
+        Gated by `coordination.standalone_checkpoint.enabled`. Single-agent only —
+        the standalone server itself spawns a sub-MassGen for evaluation, so a
+        multi-agent parent would be ambiguous and is skipped with a warning.
+
+        Re-entrant: safe to call from `__init__`, `set_main_agent`, `add_agent`,
+        `remove_agent`. On re-call:
+          - single-agent → registers (idempotent on server name)
+          - multi-agent → strips the server from every backend (keeps the
+            invariant when an agent is added post-init)
+        """
+        # CoordinationConfig lives at self.config.coordination_config, NOT
+        # self.coordination_config. Reading the wrong attribute returns None
+        # which makes the gate silently bail and the prompt then promises a
+        # tool that was never registered.
+        config = getattr(self, "config", None)
+        coord = getattr(config, "coordination_config", None) if config is not None else None
+        if coord is None or not getattr(coord, "standalone_checkpoint_enabled", False):
+            return
+        if len(self.agents) != 1:
+            self._strip_standalone_checkpoint_from_all_agents()
+            logger.warning(
+                "[StandaloneCheckpoint] enabled but parent has %d agents; this mode is " "single-agent only — skipping injection (any prior registration stripped)",
+                len(self.agents),
+            )
+            return
+        team_config = getattr(coord, "standalone_checkpoint_team_config", None)
+        if not team_config:
+            logger.warning(
+                "[StandaloneCheckpoint] enabled but no team_config provided; skipping injection",
+            )
+            return
+
+        from .mcp_tools.subrun_utils import build_standalone_checkpoint_mcp_config
+
+        # Pre-wire the executor's workspace + trajectory so the agent's `init`
+        # call doesn't have to guess paths it can't easily derive. Both are
+        # known to MassGen at session start (workspace from filesystem_manager,
+        # trajectory from the logger session dir). Best-effort: if either
+        # can't be resolved here we fall through and let the agent supply
+        # them at init time.
+        agent = next(iter(self.agents.values()))
+        default_workspace_dir: str | None = None
+        default_trajectory_path: str | None = None
+        try:
+            fs = getattr(agent.backend, "filesystem_manager", None)
+            if fs is not None and hasattr(fs, "get_current_workspace"):
+                ws = fs.get_current_workspace()
+                if ws:
+                    default_workspace_dir = str(ws)
+        except Exception as e:
+            logger.debug(f"[StandaloneCheckpoint] could not resolve workspace_dir: {e}")
+        try:
+            from .logger_config import get_log_session_dir
+
+            log_dir = get_log_session_dir()
+            if log_dir:
+                default_trajectory_path = str(Path(log_dir) / "events.jsonl")
+        except Exception as e:
+            logger.debug(f"[StandaloneCheckpoint] could not resolve trajectory_path: {e}")
+
+        server_cfg = build_standalone_checkpoint_mcp_config(
+            team_config_path=str(team_config),
+            mode=getattr(coord, "standalone_checkpoint_mode", "generate"),
+            single_checkpoint=getattr(coord, "standalone_checkpoint_single", False),
+            include_workspace_context=getattr(coord, "standalone_checkpoint_include_workspace_context", False),
+            default_workspace_dir=default_workspace_dir,
+            default_trajectory_path=default_trajectory_path,
+        )
+        backend = getattr(agent, "backend", None)
+        if backend is None or not hasattr(backend, "config") or not isinstance(backend.config, dict):
+            logger.warning(
+                "[StandaloneCheckpoint] agent backend has no dict config; skipping injection",
+            )
+            return
+        servers = backend.config.setdefault("mcp_servers", [])
+        if isinstance(servers, list):
+            if any(isinstance(s, dict) and s.get("name") == server_cfg["name"] for s in servers):
+                return  # already registered
+            servers.append(server_cfg)
+        elif isinstance(servers, dict):
+            if server_cfg["name"] in servers:
+                return
+            servers[server_cfg["name"]] = server_cfg
+        else:
+            logger.warning(
+                "[StandaloneCheckpoint] unexpected mcp_servers type %s; skipping injection",
+                type(servers).__name__,
+            )
+            return
+        # Mirror to backend.mcp_servers — it's bound at backend __init__ to a
+        # separate list when mcp_servers is absent in the source YAML, so
+        # mutating only backend.config["mcp_servers"] never reaches the
+        # runtime tool list and the agent ends up with the prompt promising a
+        # tool that was never registered.
+        if hasattr(backend, "mcp_servers"):
+            runtime = backend.mcp_servers
+            if isinstance(runtime, list):
+                if not any(isinstance(s, dict) and s.get("name") == server_cfg["name"] for s in runtime):
+                    runtime.append(server_cfg)
+            elif isinstance(runtime, dict):
+                runtime.setdefault(server_cfg["name"], server_cfg)
+        logger.info(
+            "[StandaloneCheckpoint] Registered massgen_checkpoint_standalone for sole agent (team_config=%s)",
+            team_config,
+        )
+
     def _detect_convergence(self, agent_id: str) -> tuple:
         """Detect whether an agent is converging (total score plateaued).
 
@@ -2091,6 +2907,10 @@ class Orchestrator(ChatAgent):
 
         # Inject checkpoint MCP tool now that main agent is known
         self._init_checkpoint_tool()
+        # Re-evaluate standalone checkpoint registration too — main-agent
+        # designation can shift the single-agent gate for runs that build up
+        # the agent set incrementally.
+        self._init_standalone_checkpoint_tool()
 
     @property
     def is_checkpoint_mode(self) -> bool:
@@ -6072,6 +6892,15 @@ Your answer:"""
                 await asyncio.sleep(0.25)
                 continue
 
+            # Bootstrap discriminator gate (Variant B): runs once per unique
+            # answer-label set when criteria_mode == "bootstrap_subagent".
+            # Emits gap-driven criteria from a critic and merges into the
+            # accumulator before agents restart. No-op for static / inline.
+            try:
+                await self._maybe_run_bootstrap_discriminator(current_answers)
+            except Exception as exc:
+                logger.warning("[bootstrap_criteria] discriminator gate failed: %s", exc)
+
             # Start new coordination iteration only after blocking pre-round gates complete.
             self.coordination_tracker.start_new_iteration()
             for agent_id in self.agents.keys():
@@ -8849,6 +9678,12 @@ Your answer:"""
             agent_id=agent_id,
         )
         agent.backend.set_native_hooks_config(native_config)
+        # Codex's native hook surface is Bash-only, but the TUI and manual
+        # wrap-up flow still need real timeout hook objects in agent state.
+        # Register those separately so request_answer_now() and timeout status
+        # work on the hybrid path without changing the native hooks config.
+        timeout_manager = GeneralHookManager()
+        self._register_round_timeout_hooks(agent_id, timeout_manager)
         self._setup_codex_mcp_hooks(agent_id, agent, answers)
 
         hooks = native_config.get("hooks", {}) if isinstance(native_config, dict) else {}
@@ -8858,6 +9693,48 @@ Your answer:"""
             len(hooks.get("PreToolUse", [])),
             len(hooks.get("PostToolUse", [])),
         )
+
+    async def _collect_round_timeout_runtime_sections(
+        self,
+        agent_id: str,
+    ) -> list[str]:
+        """Collect timeout/wrap-up injection content for hybrid or hookless delivery paths."""
+        state = self.agent_states.get(agent_id)
+        if not state or not state.round_timeout_hooks:
+            return []
+
+        post_hook, _ = state.round_timeout_hooks
+        execute = getattr(post_hook, "execute", None)
+        if not callable(execute):
+            return []
+
+        try:
+            result = await execute(
+                "codex_runtime_timeout_flush",
+                "{}",
+                _context={"agent_id": agent_id, "hook_type": "PostToolUse"},
+            )
+        except Exception as e:
+            logger.warning(
+                "[Orchestrator] Failed to evaluate round timeout hook for %s: %s",
+                agent_id,
+                e,
+            )
+            return []
+
+        inject = getattr(result, "inject", None) or {}
+        content = inject.get("content")
+        if not content:
+            return []
+
+        display = None
+        if hasattr(self, "coordination_ui") and self.coordination_ui:
+            display = getattr(self.coordination_ui, "display", None)
+        timeout_state = self.get_agent_timeout_state(agent_id)
+        if display and hasattr(display, "update_timeout_status") and timeout_state:
+            display.update_timeout_status(agent_id, timeout_state)
+
+        return [str(content)]
 
     async def _flush_codex_hook_payloads(
         self,
@@ -8883,6 +9760,11 @@ Your answer:"""
 
         # 0. Poll runtime inbox for messages from parent (subagent mode)
         self._poll_runtime_inbox()
+
+        # 0.5. Check for soft-timeout / manual wrap-up injections.
+        injection_parts.extend(
+            await self._collect_round_timeout_runtime_sections(agent_id),
+        )
 
         # 1. Check for human input
         if self._human_input_hook:
@@ -9013,10 +9895,7 @@ Your answer:"""
             if wrote_subagent_payload:
                 self._pending_subagent_results.pop(agent_id, None)
             logger.info(
-                "[Orchestrator] Wrote %d chars to hook file for %s (%d parts)",
-                len(combined),
-                agent_id,
-                len(injection_parts),
+                f"[Orchestrator] Wrote {len(combined)} chars to hook file for {agent_id} " f"({len(injection_parts)} parts)",
             )
 
     def _backend_supports_midstream_hook_injection(self, agent: ChatAgent) -> bool:
@@ -9078,6 +9957,11 @@ Your answer:"""
 
         # 0) Poll runtime inbox for messages from parent (subagent mode)
         self._poll_runtime_inbox()
+
+        # 0.5) Round timeout / manual wrap-up
+        sections.extend(
+            await self._collect_round_timeout_runtime_sections(agent_id),
+        )
 
         # 1) Human runtime input
         has_pending_for_agent = False
@@ -10386,6 +11270,136 @@ Your answer:"""
         if display and hasattr(display, "set_subagent_continue_callback"):
             display.set_subagent_continue_callback(self.continue_subagent_from_tui)
             logger.info("[Orchestrator] Shared subagent continue callback with TUI display")
+        if display and hasattr(display, "set_answer_now_callback"):
+            display.set_answer_now_callback(self.request_answer_now)
+            logger.info("[Orchestrator] Shared Answer Now callback with TUI display")
+
+    def request_answer_now(self) -> dict[str, list[str]]:
+        """Request that all active agents enter the soft-timeout wrap-up flow."""
+        active_agents: list[str] = []
+        if hasattr(self, "_active_streams") and self._active_streams:
+            active_agents.extend(self._active_streams.keys())
+        if hasattr(self, "_active_tasks") and self._active_tasks:
+            for agent_id in self._active_tasks.keys():
+                if agent_id not in active_agents:
+                    active_agents.append(agent_id)
+
+        if not active_agents:
+            # `_active_tasks` is intentionally sparse between chunk polls, and
+            # `_active_streams` can be transiently empty while a live round is
+            # about to resume. Fall back to agent round state so the TUI button
+            # still works during those bookkeeping gaps.
+            for agent_id in self.agents.keys():
+                state = self.agent_states.get(agent_id)
+                if state is None or state.is_killed or state.has_voted:
+                    continue
+                if state.round_start_time is None or not state.round_timeout_hooks:
+                    continue
+                active_agents.append(agent_id)
+
+        requested_agents: list[str] = []
+        already_requested_agents: list[str] = []
+        skipped_agents: list[str] = []
+
+        display = None
+        if hasattr(self, "coordination_ui") and self.coordination_ui:
+            display = getattr(self.coordination_ui, "display", None)
+
+        for agent_id in active_agents:
+            state = self.agent_states.get(agent_id)
+            if state is None or state.is_killed:
+                skipped_agents.append(agent_id)
+                continue
+
+            hooks = state.round_timeout_hooks
+            if not hooks:
+                skipped_agents.append(agent_id)
+                continue
+
+            post_hook, _ = hooks
+            request_wrap_up = getattr(post_hook, "request_wrap_up", None)
+            if not callable(request_wrap_up):
+                skipped_agents.append(agent_id)
+                continue
+
+            if request_wrap_up():
+                requested_agents.append(agent_id)
+                self._prime_answer_now_hook_payload(agent_id)
+                timeout_state = self.get_agent_timeout_state(agent_id)
+                if display and hasattr(display, "update_timeout_status") and timeout_state:
+                    display.update_timeout_status(agent_id, timeout_state)
+                try:
+                    loop = asyncio.get_running_loop()
+                except RuntimeError:
+                    loop = None
+                if loop is not None:
+                    loop.create_task(
+                        self._maybe_interrupt_background_wait_for_agent(
+                            agent_id,
+                            trigger="answer_now_requested",
+                        ),
+                    )
+            else:
+                already_requested_agents.append(agent_id)
+
+        logger.info(
+            f"[Orchestrator] Answer Now requested: requested={requested_agents} " f"already_requested={already_requested_agents} skipped={skipped_agents}",
+        )
+        return {
+            "requested_agents": requested_agents,
+            "already_requested_agents": already_requested_agents,
+            "skipped_agents": skipped_agents,
+        }
+
+    def _consume_pending_answer_now_injection(self, agent_id: str) -> str | None:
+        """Return the queued manual wrap-up injection for an agent, if any."""
+        state = self.agent_states.get(agent_id)
+        if state is None or not state.round_timeout_hooks:
+            return None
+
+        post_hook, _ = state.round_timeout_hooks
+        consume_pending = getattr(post_hook, "consume_pending_wrap_up_injection", None)
+        if not callable(consume_pending):
+            return None
+
+        try:
+            content = consume_pending()
+        except Exception as e:  # noqa: BLE001
+            logger.warning(
+                f"[Orchestrator] Failed consuming Answer Now injection for {agent_id}: {e}",
+                exc_info=True,
+            )
+            return None
+
+        if not content:
+            return None
+        return str(content)
+
+    def _prime_answer_now_hook_payload(self, agent_id: str) -> bool:
+        """Immediately write the manual wrap-up payload to hook-IPC backends."""
+        agent = self.agents.get(agent_id)
+        backend = getattr(agent, "backend", None) if agent is not None else None
+        write_hook = getattr(backend, "write_post_tool_use_hook", None)
+        if not callable(write_hook):
+            return False
+
+        content = self._consume_pending_answer_now_injection(agent_id)
+        if not content:
+            return False
+
+        try:
+            write_hook(content)
+        except Exception as e:  # noqa: BLE001
+            logger.warning(
+                f"[Orchestrator] Failed priming Answer Now hook payload for {agent_id}: {e}",
+                exc_info=True,
+            )
+            return False
+
+        logger.info(
+            f"[Orchestrator] Primed Answer Now hook payload for {agent_id} ({len(content)} chars)",
+        )
+        return True
 
     def _register_round_timeout_hooks(
         self,
@@ -16060,8 +17074,8 @@ Your answer:"""
                                 external_tool_calls.append(tool_call)
                                 continue
 
-                            # Intercept checkpoint tool (both MCP and workflow name)
-                            # Add to tool_calls for post-stream workflow processing
+                            # Exact-equality only: `mcp__massgen_checkpoint_standalone__checkpoint`
+                            # must fall through (its server owns its own subprocess lifecycle).
                             if tool_name in ("checkpoint", "mcp__massgen_checkpoint__checkpoint"):
                                 logger.info(
                                     f"[Orchestrator] Agent {agent_id} called checkpoint tool '{tool_name}'",
@@ -16632,6 +17646,7 @@ Your answer:"""
                             yield ("done", None)
                             return
 
+                        # Exact-equality only — standalone server's checkpoint tool must fall through.
                         elif tool_name == "checkpoint" or tool_name == "mcp__massgen_checkpoint__checkpoint":
                             # Reject recursive checkpoint calls during active checkpoint
                             if self._checkpoint_active:
@@ -17306,6 +18321,11 @@ Your answer:"""
 
     async def _present_final_answer(self) -> AsyncGenerator[StreamChunk, None]:
         """Present the final coordinated answer with optional post-evaluation and restart loop."""
+
+        # Safety-net drain: any criteria emissions written to stdio JSONL after
+        # the last _resolve_effective_checklist_criteria call would otherwise be
+        # stranded. Catches the slow-agent / late-round case before shutdown.
+        self._drain_at_session_end()
 
         # Select the best agent based on current state
         if not self._selected_agent:
@@ -19739,6 +20759,9 @@ Then call either submit(confirmed=True) if the answer is satisfactory, or restar
         """Add a new sub-agent to the orchestrator."""
         self.agents[agent_id] = agent
         self.agent_states[agent_id] = AgentState()
+        # Standalone checkpoint is single-agent only; adding a second agent
+        # invalidates that invariant and the registration must be stripped.
+        self._init_standalone_checkpoint_tool()
 
     def remove_agent(self, agent_id: str) -> None:
         """Remove a sub-agent from the orchestrator."""
@@ -19746,6 +20769,8 @@ Then call either submit(confirmed=True) if the answer is satisfactory, or restar
             del self.agents[agent_id]
         if agent_id in self.agent_states:
             del self.agent_states[agent_id]
+        # Removing back down to a single agent may now satisfy the gate.
+        self._init_standalone_checkpoint_tool()
 
     def get_final_result(self) -> dict[str, Any] | None:
         """
@@ -20159,14 +21184,29 @@ Then call either submit(confirmed=True) if the answer is satisfactory, or restar
             elapsed = time.time() - state.round_start_time
             remaining_soft = max(0, active_timeout - elapsed)
             grace = timeout_config.round_timeout_grace_seconds or 0
-            remaining_hard = max(0, active_timeout + grace - elapsed)
+            if state.round_timeout_state and state.round_timeout_state.soft_timeout_fired_at is not None:
+                remaining_hard = max(
+                    0,
+                    grace - (time.time() - state.round_timeout_state.soft_timeout_fired_at),
+                )
+            else:
+                remaining_hard = max(0, active_timeout + grace - elapsed)
 
         # Get soft timeout fired status from hook
         soft_timeout_fired = False
+        wrap_up_requested = False
         if state.round_timeout_hooks:
             post_hook, _ = state.round_timeout_hooks
             # Access the private attribute that tracks if soft timeout fired
             soft_timeout_fired = getattr(post_hook, "_soft_timeout_fired", False)
+            wrap_up_requested = soft_timeout_fired or getattr(
+                post_hook,
+                "_manual_wrap_up_requested",
+                False,
+            )
+        if state.round_timeout_state and state.round_timeout_state.soft_timeout_fired_at is not None:
+            soft_timeout_fired = True
+            wrap_up_requested = True
 
         return {
             "round_number": round_num,
@@ -20176,7 +21216,9 @@ Then call either submit(confirmed=True) if the answer is satisfactory, or restar
             "elapsed": elapsed,
             "remaining_soft": remaining_soft,
             "remaining_hard": remaining_hard,
+            "wrap_up_requested": wrap_up_requested,
             "soft_timeout_fired": soft_timeout_fired,
+            "soft_timeout_reason": (state.round_timeout_state.soft_timeout_reason if state.round_timeout_state else None),
             "is_hard_blocked": remaining_hard == 0 if remaining_hard is not None else False,
         }
 

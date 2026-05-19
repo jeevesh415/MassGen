@@ -1475,12 +1475,20 @@ class RoundTimeoutState:
 
     def __init__(self):
         self.soft_timeout_fired_at: float | None = None
+        self.soft_timeout_reason: str | None = None
         self.consecutive_hard_denials: int = 0
         self.force_terminate: bool = False
 
-    def mark_soft_fired(self) -> None:
-        """Record the timestamp when soft timeout was injected."""
-        self.soft_timeout_fired_at = time.time()
+    def mark_soft_fired(self, reason: str = "timeout") -> None:
+        """Record when the soft-timeout phase started.
+
+        This is idempotent within a round so the grace timer starts exactly once
+        when the wrap-up guidance has actually been delivered.
+        """
+        if self.soft_timeout_fired_at is None:
+            self.soft_timeout_fired_at = time.time()
+        if self.soft_timeout_reason is None:
+            self.soft_timeout_reason = reason
 
     def record_hard_denial(self) -> bool:
         """Record a hard timeout denial and check if we should force terminate.
@@ -1504,6 +1512,7 @@ class RoundTimeoutState:
     def reset(self) -> None:
         """Reset state for a new round."""
         self.soft_timeout_fired_at = None
+        self.soft_timeout_reason = None
         self.consecutive_hard_denials = 0
         self.force_terminate = False
 
@@ -1554,6 +1563,7 @@ class RoundTimeoutPostHook(PatternHook):
         self.grace_seconds = grace_seconds
         self.agent_id = agent_id
         self._soft_timeout_fired = False
+        self._manual_wrap_up_requested = False
         self._shared_state = shared_state
         self.use_two_tier_workspace = use_two_tier_workspace
 
@@ -1568,8 +1578,99 @@ class RoundTimeoutPostHook(PatternHook):
     def reset_for_new_round(self) -> None:
         """Reset the hook state for a new round."""
         self._soft_timeout_fired = False
+        self._manual_wrap_up_requested = False
         if self._shared_state:
             self._shared_state.reset()
+
+    def request_wrap_up(self) -> bool:
+        """Request a manual soft-timeout injection on the next delivery opportunity.
+
+        Returns:
+            True if a new wrap-up request was queued, False if this round is already
+            wrapping up or the soft timeout has already fired.
+        """
+        if self._soft_timeout_fired or self._manual_wrap_up_requested:
+            return False
+        self._manual_wrap_up_requested = True
+        return True
+
+    def consume_pending_wrap_up_injection(self) -> str | None:
+        """Consume any queued manual wrap-up request and return its injection text."""
+        if self._soft_timeout_fired or not self._manual_wrap_up_requested:
+            return None
+
+        timeout = self._get_timeout_for_current_round()
+        if timeout is None:
+            return None
+
+        elapsed = time.time() - self.get_round_start_time()
+        self._manual_wrap_up_requested = False
+        self._soft_timeout_fired = True
+        if self._shared_state:
+            self._shared_state.mark_soft_fired(reason="manual")
+
+        logger.info(
+            f"[RoundTimeoutPostHook] Manual wrap-up requested for {self.agent_id} after {elapsed:.0f}s",
+        )
+        return self._build_wrap_up_injection(
+            elapsed=elapsed,
+            timeout=timeout,
+            manual=True,
+        )
+
+    def _build_wrap_up_injection(
+        self,
+        *,
+        elapsed: float,
+        timeout: int,
+        manual: bool,
+    ) -> str:
+        """Build the wrap-up guidance message for manual or timed soft timeout."""
+        round_num = self.get_agent_round()
+        round_type = "initial answer" if round_num == 0 else "voting"
+
+        # Add deliverable guidance if two-tier workspace is enabled
+        deliverable_guidance = ""
+        if self.use_two_tier_workspace:
+            deliverable_guidance = """
+IMPORTANT: Before submitting, ensure your `deliverable/` directory is COMPLETE and SELF-CONTAINED.
+Voters will evaluate `deliverable/` as a standalone package. It must include:
+- ALL files needed to use your output (not just one component)
+- Any assets, dependencies, or supporting files
+- A README if helpful for understanding how to run/use it
+
+Do NOT leave partial work in deliverable/ - include everything needed or nothing.
+"""
+
+        grace_seconds = self.grace_seconds
+
+        if manual:
+            intro = f"A teammate requested that this {round_type} round move to resolution now.\n" f"You have spent {elapsed:.0f}s in this round so far " f"(configured soft limit: {timeout}s)."
+            title = "⏰ ANSWER NOW REQUESTED - PLEASE WRAP UP"
+            urgency_guidance = "Skip any optional polish, verification, or extra tool use.\n" "Submit the best answer you have as soon as possible."
+        else:
+            intro = f"You have exceeded the soft time limit for this {round_type} round ({elapsed:.0f}s / {timeout}s)."
+            title = "⏰ ROUND TIME LIMIT APPROACHING - PLEASE WRAP UP"
+            urgency_guidance = "You may finish any final touches to make your work presentable, but please"
+
+        return f"""
+============================================================
+{title}
+============================================================
+
+{intro}
+{deliverable_guidance}
+{urgency_guidance}
+Please wrap up your current work and submit soon:
+1. `new_answer` - Submit your current best answer (can be a work-in-progress)
+2. `vote` - Vote for an existing answer if one is satisfactory
+
+Submit within the next {grace_seconds} seconds. After that, tool calls
+will be blocked and you'll need to submit immediately.
+
+The next coordination round will allow further iteration if needed.
+============================================================
+"""
 
     async def execute(
         self,
@@ -1587,6 +1688,17 @@ class RoundTimeoutPostHook(PatternHook):
             return HookResult.allow()
 
         elapsed = time.time() - self.get_round_start_time()
+
+        manual_injection = self.consume_pending_wrap_up_injection()
+        if manual_injection is not None:
+            return HookResult(
+                allowed=True,
+                inject={
+                    "content": manual_injection,
+                    "strategy": "tool_result",
+                },
+            )
+
         logger.debug(
             f"[RoundTimeoutPostHook] Agent {self.agent_id}: " f"elapsed={elapsed:.0f}s, soft_timeout={timeout}s, soft_fired={self._soft_timeout_fired}",
         )
@@ -1596,47 +1708,17 @@ class RoundTimeoutPostHook(PatternHook):
         self._soft_timeout_fired = True
         # Record timestamp for hard timeout coordination
         if self._shared_state:
-            self._shared_state.mark_soft_fired()
-        round_num = self.get_agent_round()
-        round_type = "initial answer" if round_num == 0 else "voting"
-
-        # Add deliverable guidance if two-tier workspace is enabled
-        deliverable_guidance = ""
-        if self.use_two_tier_workspace:
-            deliverable_guidance = """
-IMPORTANT: Before submitting, ensure your `deliverable/` directory is COMPLETE and SELF-CONTAINED.
-Voters will evaluate `deliverable/` as a standalone package. It must include:
-- ALL files needed to use your output (not just one component)
-- Any assets, dependencies, or supporting files
-- A README if helpful for understanding how to run/use it
-
-Do NOT leave partial work in deliverable/ - include everything needed or nothing.
-"""
-
-        injection = f"""
-============================================================
-⏰ ROUND TIME LIMIT APPROACHING - PLEASE WRAP UP
-============================================================
-
-You have exceeded the soft time limit for this {round_type} round ({elapsed:.0f}s / {timeout}s).
-{deliverable_guidance}
-Please wrap up your current work and submit soon:
-1. `new_answer` - Submit your current best answer (can be a work-in-progress)
-2. `vote` - Vote for an existing answer if one is satisfactory
-
-You may finish any final touches to make your work presentable, but please
-submit within the next {self.grace_seconds} seconds. After that, tool calls
-will be blocked and you'll need to submit immediately.
-
-The next coordination round will allow further iteration if needed.
-============================================================
-"""
+            self._shared_state.mark_soft_fired(reason="timeout")
 
         logger.info(f"[RoundTimeoutPostHook] Soft timeout reached for {self.agent_id} after {elapsed:.0f}s")
         return HookResult(
             allowed=True,
             inject={
-                "content": injection,
+                "content": self._build_wrap_up_injection(
+                    elapsed=elapsed,
+                    timeout=timeout,
+                    manual=False,
+                ),
                 "strategy": "tool_result",
             },
         )

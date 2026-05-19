@@ -227,19 +227,117 @@ Most configurations use environment variables for API keys:so
 
 ## Release History & Examples
 
-### v0.1.76 - Latest
+### v0.1.87 - Latest
+**New Features:** Documentation: Framework Comparisons & `llms.txt`
+
+**Key Features:**
+- **Framework Comparison Pages**: Three new "MassGen vs ..." pages — CrewAI, LangGraph, AutoGen/AG2 — under `docs/source/reference/comparisons/`
+- **`llms.txt` Index**: Curated [llmstxt.org](https://llmstxt.org)-spec index plus full-corpus `llms-full.txt` (~1 MB, 59 files) published at the docs site root
+- **Landing Page Update**: "How Does MassGen Compare?" now lists all four comparisons; parent `comparisons.rst` drops "coming soon" and gains a toctree
+- **`bootstrap_subagent` Single-Shot Fix**: `_run_bootstrap_discriminator_step` now passes `refine=False` to `spawn_subagent` — the canonical knob `SubagentManager` respects at the orchestrator level
+
+**Try It:**
+```bash
+pip install massgen==0.1.87
+# Browse the new comparisons:
+# https://docs.massgen.ai/en/latest/reference/comparisons.html
+```
+
+### v0.1.86
+**New Features:** `bootstrap_subagent` Discriminator + Codex MCP Approval Fix
+
+**Key Features:**
+- **`bootstrap_subagent` Variant**: Fully functional critic-driven path — the orchestrator runs a between-rounds LLM critic, merges `proposed_criteria` into the accumulator, and augments the next round's checklist automatically
+- **Session-End Drain**: Late stdio criteria emissions are drained before final presentation
+- **Codex MCP Approval Fix**: Non-interactive Codex workspaces write the approval bypasses needed for external MCP tools under `codex exec`
+- **Example Configs**: `massgen/configs/coordination/bootstrap_subagent_criteria.yaml` and `bootstrap_inline_criteria.yaml`
+
+### v0.1.85
+**New Features:** Discriminative Criteria Emergence (`criteria_mode`)
+
+**Key Features:**
+- **`bootstrap_inline` Variant**: Fully functional on all backends with checklist tool support — agents emit `proposed_criteria` alongside `submit_checklist`, the accumulator dedupes/caps, and the next round's checklist is augmented automatically
+- **`bootstrap_subagent` Variant**: Same accumulator pipeline, LLM discriminator pass queued for v0.1.86
+- **Anti-Goodhart by Construction**: Criteria come from observed gaps, not priors — and no cold-start friction for new tasks
+- **Cross-Backend Coverage**: SDK path (Claude Code) wires the field into the in-process tool schema; stdio backends emit through a JSONL channel drained by the orchestrator
+- **Example Configs**: `massgen/configs/coordination/bootstrap_inline_criteria.yaml` and `bootstrap_subagent_criteria.yaml`
+
+**Try It:**
+```bash
+pip install massgen==0.1.85
+uv run massgen --config massgen/configs/coordination/bootstrap_inline_criteria.yaml "Create an SVG of an AI agent coding."
+```
+
+### v0.1.84
+**New Features:** TUI Consensus Map
+
+**Key Features:**
+- **TUI Consensus Map**: Compact visual map below the agent status ribbon during multi-agent runs that summarizes coordination state without replacing the timeline. Shows one node per agent with latest answer labels, vote arrows, current vote leader, winner state, and waiting/working indicators
+- **Visibility Logic**: Hidden on welcome screen and single-agent runs — only shown when more than one active agent is coordinating
+- **Event-Driven State Updates**: Driven by existing coordination events without backend schema changes
+- **Direct-Callback Fallback**: Map remains accurate when direct TUI callbacks update agent status or votes
+
+### v0.1.83
+**New Features:** In-Session Standalone Checkpoint MCP Integration
+
+**Key Features:**
+- **In-Session Standalone Checkpoint**: Standalone checkpoint MCP server can now run inside a normal MassGen single-agent session, exposing richer `init` + `checkpoint` tools backed by its own reviewer team
+- **`coordination.standalone_checkpoint` Config Block**: New YAML block with `enabled`, `team_config`, `mode` (`generate` | `verify`), `single_checkpoint`, `include_workspace_context`; invalid `mode` falls back to `generate` with a warning
+- **Single-Agent-Only Affordance Gating**: Multi-agent parents skip the standalone server with a warning
+- **Enhanced Checkpoint Tool Card**: TUI tool card distinguishes primary checkpoint operations from system tasks
+- **Example Configs**: `massgen/configs/checkpoint/standalone_mcp/fast_iteration.yaml` and `reviewers.yaml`
+
+### v0.1.82
+**New Features:** TUI Copy Mode & Checkpoint Quality Improvements
+
+**Key Features:**
+- **TUI Copy Mode**: New `Ctrl+Shift+S` toggle releases terminal mouse tracking so users can drag-select text natively and copy with the terminal's built-in shortcut
+- **Checkpoint Workspace Context**: New `include_workspace_context` config option for the standalone checkpoint MCP server (default `false`)
+- **Checkpoint Plan Quality Criteria**: Mode-aware quality criteria score selective branch depth and fallback handling in generated plans
+- **Single-Checkpoint Agent Recovery**: Recovery workflow in `checkpoint_instructions.md` for when a plan branch resolves to `terminate`
+
+### v0.1.81
+**New Features:** Multi-Region Circuit Breaker Failover (Phase 6)
+
+**Key Features:**
+- **Multi-Region Failover**: LLM circuit breaker fails over to backup regions when the primary trips OPEN, with automatic recovery when the primary returns to healthy
+- **Production-Grade Resilience**: Builds on Phase 4 (distributed store) and Phase 5 (adaptive thresholds)
+
+### v0.1.80
+**New Features:** Adaptive Circuit Breaker & Checkpoint Modes
+
+**Key Features:**
+- **Circuit Breaker Adaptive Thresholds (Phase 5)**: Self-tuning thresholds that respond to each backend's actual failure patterns
+- **Single Checkpoint Mode**: New standalone checkpoint mode — no recheckpointing within a single operation
+- **Draft Plan Verify Mode**: New standalone checkpoint mode — verify a draft plan before executing
+
+### v0.1.79
+**New Features:** Fast Mode Speed Control & Broader Checkpoint Framing
+
+**Key Features:**
+- **Better Fast Mode Options**: New options to control coordination speed — fine-grained speed vs. quality tradeoff
+- **Broader Checkpoint Framing**: Checkpoint mode framing broadened from safety-only to high-stakes and coordinated phases
+
+### v0.1.78
+**New Features:** Circuit Breaker Distributed Store (Phase 4)
+
+**Key Features:**
+- **Pluggable Circuit Breaker State Store**: LLM circuit breaker state can now be shared across workers and processes via `CircuitBreakerStore` Protocol
+- **In-Memory CB Store**: Thread-safe, zero-dependency implementation
+- **Redis-Backed CB Store**: Distributes CB state across processes via Redis; install with `pip install massgen[redis-store]`
+
+### v0.1.77
+**New Features:** Answer Now Button
+
+**Key Features:**
+- **Answer Now Button**: Agents can submit answers more quickly, both within a round, and bypassing additional refinement rounds when quality is sufficient
+
+### v0.1.76
 **New Features:** Exa Search & Circuit Breaker Observability
 
 **Key Features:**
 - **Exa AI Search Tool**: New Exa AI-powered search tool for MCP with example config
 - **Circuit Breaker Observability (Phase 3)**: Probe ownership, lock release, per-attempt latency tracking across all backends
-- **Checkpoint Agent Instructions**: Copyable custom instructions for agent memory files with checkpoint MCP information
-
-**Try It:**
-```bash
-pip install massgen==0.1.76
-uv run massgen --config @examples/tools/web-search/exa_search_example "Research the latest breakthroughs in multi-agent AI systems"
-```
 
 ### v0.1.75
 **New Features:** Codex Hooks & Checkpoint WebUI

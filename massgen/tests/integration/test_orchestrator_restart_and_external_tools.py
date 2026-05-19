@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import time
 from pathlib import Path
 
 import pytest
@@ -718,6 +719,82 @@ def test_setup_hook_manager_for_codex_hybrid_sets_native_and_mcp(mock_orchestrat
     assert native_config["hooks"]["PostToolUse"][0]["matcher"] == "Bash"
     assert agent_id in orchestrator._codex_mcp_hook_agents
     assert callable(captured.get("wait_provider"))
+
+
+def test_setup_hook_manager_for_codex_hybrid_registers_round_timeout_hooks(
+    mock_orchestrator,
+    tmp_path: Path,
+):
+    """Codex hybrid setup should still initialize round-timeout state for runtime controls."""
+    from massgen.mcp_tools.native_hook_adapters.codex_adapter import (
+        CodexNativeHookAdapter,
+    )
+
+    orchestrator = mock_orchestrator(num_agents=1)
+    agent_id = "agent_a"
+    agent = orchestrator.agents[agent_id]
+    orchestrator.config.timeout_config.initial_round_timeout_seconds = 1200
+    orchestrator.config.timeout_config.subsequent_round_timeout_seconds = 900
+    orchestrator.config.timeout_config.round_timeout_grace_seconds = 300
+
+    adapter = CodexNativeHookAdapter(hook_dir=tmp_path / ".codex")
+
+    agent.backend._provider_name = "codex"
+    agent.backend.supports_native_hooks = lambda: True
+    agent.backend.supports_mcp_server_hooks = lambda: True
+    agent.backend.get_native_hook_adapter = lambda: adapter
+    agent.backend.set_native_hooks_config = lambda _config: None
+    agent.backend.set_background_wait_interrupt_provider = lambda _provider: None
+
+    orchestrator._setup_hook_manager_for_agent(agent_id, agent, {})
+
+    assert orchestrator.agent_states[agent_id].round_timeout_hooks is not None
+    assert orchestrator.agent_states[agent_id].round_timeout_state is not None
+
+
+@pytest.mark.asyncio
+async def test_codex_answer_now_flushes_manual_wrap_up_payload(
+    mock_orchestrator,
+    tmp_path: Path,
+):
+    """Codex hybrid path should prime manual wrap-up payloads as soon as Answer Now is clicked."""
+    from massgen.mcp_tools.native_hook_adapters.codex_adapter import (
+        CodexNativeHookAdapter,
+    )
+
+    orchestrator = mock_orchestrator(num_agents=1)
+    agent_id = "agent_a"
+    agent = orchestrator.agents[agent_id]
+    orchestrator.config.timeout_config.initial_round_timeout_seconds = 1200
+    orchestrator.config.timeout_config.subsequent_round_timeout_seconds = 900
+    orchestrator.config.timeout_config.round_timeout_grace_seconds = 300
+
+    adapter = CodexNativeHookAdapter(hook_dir=tmp_path / ".codex")
+
+    agent.backend._provider_name = "codex"
+    agent.backend.supports_native_hooks = lambda: True
+    agent.backend.supports_mcp_server_hooks = lambda: True
+    agent.backend.get_native_hook_adapter = lambda: adapter
+    agent.backend.set_native_hooks_config = lambda _config: None
+    agent.backend.set_background_wait_interrupt_provider = lambda _provider: None
+
+    written_payloads: list[str] = []
+    setattr(
+        agent.backend,
+        "write_post_tool_use_hook",
+        lambda content, tool_matcher="*", ttl_seconds=30.0: written_payloads.append(content),
+    )
+
+    orchestrator._setup_hook_manager_for_agent(agent_id, agent, {})
+    orchestrator._active_streams = {}
+    orchestrator._active_tasks = {}
+    orchestrator.agent_states[agent_id].round_start_time = time.time() - 5
+
+    result = orchestrator.request_answer_now()
+    assert result["requested_agents"] == ["agent_a"]
+
+    assert len(written_payloads) == 1
+    assert "ANSWER NOW REQUESTED" in written_payloads[0]
 
 
 # =============================================================================

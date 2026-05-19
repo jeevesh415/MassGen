@@ -1869,9 +1869,7 @@ class GeminiCLIBackend(NativeToolBackendMixin, StreamingBufferMixin, LLMBackend)
             tmp_file.replace(hook_file)
 
             logger.info(
-                "Wrote hook_payload.json (seq=%d, %d chars)",
-                self._hook_sequence,
-                len(content),
+                f"Wrote hook_payload.json (seq={self._hook_sequence}, {len(content)} chars)",
             )
 
     def read_unconsumed_hook_content(self) -> str | None:

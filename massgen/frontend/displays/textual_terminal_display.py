@@ -82,11 +82,15 @@ try:
         AnalysisSkillLifecycleChanged,
         AnalysisTargetChanged,
         AnalysisTargetTypeChanged,
+        AnswerNowClicked,
         BackgroundTasksClicked,
         BackgroundTasksModal,
         BroadcastModeChanged,
         CompletionFooter,
+        ConsensusMap,
+        ConsensusMapState,
         ContextPathsClicked,
+        CopyModeBanner,
         ExecuteAutoContinueChanged,
         ExecutePrefillRequested,
         ExecuteRefinementModeChanged,
@@ -121,6 +125,10 @@ try:
         ViewAnalysisRequested,
         ViewPlanRequested,
         ViewSelected,
+    )
+    from .textual_widgets.copy_mode_banner import (
+        COPY_MODE_BINDING,
+        set_terminal_mouse_capture,
     )
     from .tui_event_pipeline import TimelineEventAdapter
     from .tui_modes import TuiModeState
@@ -998,6 +1006,11 @@ class TextualTerminalDisplay(TerminalDisplay):
         """Set the callback for continuing terminal subagents from TUI."""
         if self._app and hasattr(self._app, "set_subagent_continue_callback"):
             self._app.set_subagent_continue_callback(callback)
+
+    def set_answer_now_callback(self, callback) -> None:
+        """Set the callback for the status-bar Answer Now control."""
+        if self._app and hasattr(self._app, "set_answer_now_callback"):
+            self._app.set_answer_now_callback(callback)
 
     def initialize(self, question: str, log_filename: str | None = None):
         """Initialize display with file output."""
@@ -2855,6 +2868,9 @@ if TEXTUAL_AVAILABLE:
     class StatusBarCancelClicked(Message):
         """Message emitted when the cancel button in StatusBar is clicked."""
 
+    class StatusBarAnswerNowClicked(Message):
+        """Message emitted when the Answer Now button in StatusBar is clicked."""
+
     class StatusBarCwdClicked(Message):
         """Message emitted when the CWD display in StatusBar is clicked."""
 
@@ -2903,6 +2919,7 @@ if TEXTUAL_AVAILABLE:
             self._agent_votes_received: dict[str, int] = {}  # agent_id -> votes received for their answers
             # CWD context mode: "off", "read", or "write"
             self._cwd_context_mode = "off"
+            self._timeout_states: dict[str, dict[str, Any]] = {}
             # Initialize vote counts to 0 for all agents and register agents
             for idx, agent_id in enumerate(self._agent_ids):
                 self._vote_counts[agent_id] = 0
@@ -2942,6 +2959,7 @@ if TEXTUAL_AVAILABLE:
             yield Static("📋 0 events", id="status_events", classes="clickable")
             yield Static("[dim]?:help[/]", id="status_hints")  # Always visible, shows q:cancel during coordination
             yield Static("⏱️ 0:00", id="status_timer")
+            yield Static("", id="status_answer_now", classes="answer-now-button hidden")
             yield Static("", id="status_cancel", classes="cancel-button hidden")
 
         def on_click(self, event: events.Click) -> None:
@@ -2951,6 +2969,8 @@ if TEXTUAL_AVAILABLE:
             if widget and hasattr(widget, "id"):
                 if widget.id == "status_events":
                     self.post_message(StatusBarEventsClicked())
+                elif widget.id == "status_answer_now":
+                    self.post_message(StatusBarAnswerNowClicked())
                 elif widget.id == "status_cancel":
                     self.post_message(StatusBarCancelClicked())
                 elif widget.id == "status_tools":
@@ -3028,6 +3048,8 @@ if TEXTUAL_AVAILABLE:
                 self.add_class("phase-presentation")
             else:
                 self.add_class("phase-idle")
+
+            self._update_answer_now_display()
 
         def update_mcp_status(self, server_count: int, tool_count: int) -> None:
             """Update MCP indicator in status bar."""
@@ -3218,6 +3240,66 @@ if TEXTUAL_AVAILABLE:
             except Exception as e:
                 tui_log(f"[TextualDisplay] {e}")  # Widget not mounted yet
 
+        @staticmethod
+        def _format_compact_duration(seconds: float | int | None) -> str:
+            """Format a compact duration for status-bar labels."""
+            if seconds is None:
+                return "--:--"
+            total_seconds = max(0, int(seconds))
+            return f"{total_seconds // 60}:{total_seconds % 60:02d}"
+
+        def set_timeout_state(self, agent_id: str, timeout_state: dict[str, Any]) -> None:
+            """Store timeout state for Answer Now and wrap-up display."""
+            self._timeout_states[agent_id] = dict(timeout_state)
+            self._update_answer_now_display()
+
+        def _update_answer_now_display(self) -> None:
+            """Update the Answer Now control based on wrap-up state."""
+            try:
+                answer_widget = self.query_one("#status_answer_now", Static)
+            except Exception as e:
+                tui_log(f"[TextualDisplay] {e}")
+                return
+
+            is_execution_phase = self._current_phase not in ("idle", "presenting", "presentation")
+            for class_name in ("wrapping-up", "blocked"):
+                answer_widget.remove_class(class_name)
+
+            active_states = [timeout_state for timeout_state in self._timeout_states.values() if timeout_state.get("active_timeout")]
+
+            # Only expose the Answer Now control when at least one agent has a
+            # soft timeout configured — otherwise the click is a no-op because
+            # the orchestrator has no wrap-up hook to trigger.
+            if not is_execution_phase or not active_states:
+                answer_widget.add_class("hidden")
+                return
+
+            answer_widget.remove_class("hidden")
+
+            wrapping_states = [timeout_state for timeout_state in active_states if timeout_state.get("soft_timeout_fired")]
+            pending_states = [timeout_state for timeout_state in active_states if timeout_state.get("wrap_up_requested") and not timeout_state.get("soft_timeout_fired")]
+
+            if any(timeout_state.get("is_hard_blocked") for timeout_state in wrapping_states):
+                answer_widget.update("🚫 Blocked")
+                answer_widget.add_class("blocked")
+                return
+
+            if wrapping_states:
+                remaining_values = [timeout_state.get("remaining_hard") for timeout_state in wrapping_states if timeout_state.get("remaining_hard") is not None]
+                remaining_text = ""
+                if remaining_values:
+                    remaining_text = f" {self._format_compact_duration(min(remaining_values))}"
+                answer_widget.update(f"⚠ Wrapping up{remaining_text}")
+                answer_widget.add_class("wrapping-up")
+                return
+
+            if pending_states:
+                answer_widget.update("⚠ Wrap-up pending")
+                answer_widget.add_class("wrapping-up")
+                return
+
+            answer_widget.update("⚡ Answer Now")
+
         def stop_timer(self) -> None:
             """Stop the timer updates."""
             if self._timer_interval:
@@ -3229,6 +3311,7 @@ if TEXTUAL_AVAILABLE:
             self._vote_counts = {agent_id: 0 for agent_id in self._agent_ids}
             self._event_count = 0
             self._start_time = None
+            self._timeout_states = {}
             self.stop_timer()
             self.update_phase("idle")
             self._update_votes_display()
@@ -3572,6 +3655,8 @@ if TEXTUAL_AVAILABLE:
             Binding("ctrl+shift+i", "toggle_human_input_target", "Inject Target", priority=True, show=False),
             # Theme toggle
             Binding("ctrl+shift+t", "toggle_theme", "Theme", priority=True, show=False),
+            # Copy mode - releases the mouse so the user can drag-select text
+            Binding(COPY_MODE_BINDING, "toggle_copy_mode", "Copy Mode", priority=True, show=False),
             # Evaluation criteria viewer
             Binding("ctrl+e", "show_evaluation_criteria", "Criteria", priority=True, show=False),
         ]
@@ -3624,6 +3709,11 @@ if TEXTUAL_AVAILABLE:
             self.safe_indicator = None
             self._tab_bar: AgentTabBar | None = None
             self._status_ribbon: AgentStatusRibbon | None = None
+            self._consensus_map: ConsensusMap | None = None
+            self._consensus_map_state = ConsensusMapState(
+                self.coordination_display.agent_ids,
+                getattr(self.coordination_display, "agent_models", {}),
+            )
             self._execution_status_line: ExecutionStatusLine | None = None
             # Side panel removed - using separate SubagentScreen
             # self._subagent_side_panel: Optional[Container] = None
@@ -3688,6 +3778,7 @@ if TEXTUAL_AVAILABLE:
             self._human_input_hook = None  # Set by orchestrator via set_human_input_hook()
             self._subagent_message_callback = None  # Set by orchestrator via set_subagent_message_callback()
             self._subagent_continue_callback = None  # Set by orchestrator via set_subagent_continue_callback()
+            self._answer_now_callback = None
             self._queued_input_banner: QueuedInputBanner | None = None
             self._queued_input_region: Container | None = None
             self._queued_input_row: Horizontal | None = None
@@ -3827,6 +3918,77 @@ if TEXTUAL_AVAILABLE:
 
             # Ensure status-bar tool indicators reset between turns.
             self._update_running_tools_count()
+
+            if hasattr(self, "_consensus_map_state"):
+                self._consensus_map_state.reset_turn(
+                    self.coordination_display.agent_ids,
+                    getattr(self.coordination_display, "agent_models", {}),
+                )
+                self._refresh_consensus_map()
+
+        def _refresh_consensus_map(self) -> None:
+            """Refresh the compact consensus map from current state."""
+            if not getattr(self, "_consensus_map", None):
+                return
+            try:
+                self._consensus_map.set_state(self._consensus_map_state.snapshot())
+                if self._showing_welcome:
+                    self._consensus_map.add_class("hidden")
+            except Exception as e:
+                tui_log(f"[TextualDisplay] consensus map refresh failed: {e}")
+
+        def _apply_consensus_event(self, event) -> None:
+            """Apply a structured event to the compact consensus map."""
+            if not hasattr(self, "_consensus_map_state"):
+                return
+            try:
+                self._consensus_map_state.apply_event(event)
+                self._refresh_consensus_map()
+            except Exception as e:
+                tui_log(f"[TextualDisplay] consensus map event failed: {e}")
+
+        def _record_consensus_tool_complete(self, agent_id: str, tool_data: Any, round_number: int = 1) -> None:
+            """Fallback: update consensus state from completed workflow tool cards."""
+            tool_name = str(getattr(tool_data, "tool_name", "") or "").lower()
+            if "new_answer" not in tool_name and "vote" not in tool_name:
+                return
+
+            from massgen.events import EventType, MassGenEvent
+
+            if "new_answer" in tool_name:
+                self._apply_consensus_event(
+                    MassGenEvent.create(
+                        EventType.ANSWER_SUBMITTED,
+                        agent_id=agent_id,
+                        round_number=round_number,
+                        answer_number=1,
+                    ),
+                )
+                return
+
+            target_id = ""
+            args_full = getattr(tool_data, "args_full", None)
+            if isinstance(args_full, str) and args_full.strip():
+                import ast
+                import json
+
+                for parser in (json.loads, ast.literal_eval):
+                    try:
+                        parsed = parser(args_full)
+                    except Exception:
+                        continue
+                    if isinstance(parsed, dict):
+                        target_id = str(parsed.get("agent_id") or parsed.get("target_id") or "")
+                        break
+            if target_id:
+                self._apply_consensus_event(
+                    MassGenEvent.create(
+                        EventType.VOTE,
+                        agent_id=agent_id,
+                        round_number=round_number,
+                        target_id=target_id,
+                    ),
+                )
 
         _BACKEND_PROVIDER_SLUGS: dict[str, str] = {
             "openai": "openai",
@@ -3992,6 +4154,8 @@ if TEXTUAL_AVAILABLE:
             # === BOTTOM DOCKED WIDGETS (yield order: last yielded = very bottom) ===
             # Input area container - dock: bottom
             with Container(id="input_area"):
+                # Copy mode banner (hidden by default; Ctrl+Shift+S toggles)
+                yield CopyModeBanner(id="copy_mode_banner")
                 # Runtime injection queue strip above mode/status rows.
                 with Vertical(id="queued_input_region") as queued_input_region:
                     self._queued_input_region = queued_input_region
@@ -4076,6 +4240,12 @@ if TEXTUAL_AVAILABLE:
             if self._showing_welcome:
                 self._status_ribbon.add_class("hidden")
             yield self._status_ribbon
+
+            self._consensus_map = ConsensusMap(id="consensus_map")
+            self._refresh_consensus_map()
+            if self._showing_welcome:
+                self._consensus_map.add_class("hidden")
+            yield self._consensus_map
 
             # Set initial active agent
             self._active_agent_id = agent_ids[0] if agent_ids else None
@@ -4311,6 +4481,14 @@ if TEXTUAL_AVAILABLE:
                 pass
             self._heartbeat_timer = None
             self._stop_stall_watchdog()
+            # If the user exits while copy mode is on, the terminal is left without
+            # mouse tracking. Restore it before the driver tears down.
+            if getattr(self, "_copy_mode_active", False):
+                try:
+                    self._set_terminal_mouse_capture(True)
+                except Exception:
+                    pass
+                self._copy_mode_active = False
 
         def set_hover_updates_suppressed(self, suppressed: bool, reason: str = "") -> None:
             """Enable/disable hover-style recalculation for responsiveness."""
@@ -4541,6 +4719,7 @@ if TEXTUAL_AVAILABLE:
                 self._tab_bar.remove_class("hidden")
             if self._status_ribbon:
                 self._status_ribbon.remove_class("hidden")
+            self._refresh_consensus_map()
             if self._execution_status_line:
                 self._execution_status_line.remove_class("hidden")
             if self._status_bar:
@@ -4683,6 +4862,7 @@ if TEXTUAL_AVAILABLE:
                 "evaluation_criteria_evolved",
                 "subtasks_set",
                 "orchestrator_timeout",
+                "phase_change",
             },
         )
 
@@ -4779,6 +4959,8 @@ if TEXTUAL_AVAILABLE:
             (notify_vote, notify_new_answer, highlight_winner_quick).
             """
             import time
+
+            self._apply_consensus_event(event)
 
             if event.event_type == "answer_submitted":
                 agent_id = event.agent_id or ""
@@ -5379,6 +5561,10 @@ if TEXTUAL_AVAILABLE:
         def set_subagent_continue_callback(self, callback) -> None:
             """Set callback for continuing terminal subagents from SubagentScreen."""
             self._subagent_continue_callback = callback
+
+        def set_answer_now_callback(self, callback) -> None:
+            """Set callback for the status-bar Answer Now action."""
+            self._answer_now_callback = callback
 
         def _submit_question(
             self,
@@ -6125,6 +6311,9 @@ Type your question and press Enter to ask the agents.
 
         def update_agent_status(self, agent_id: str, status: str):
             """Update agent status."""
+            if hasattr(self, "_consensus_map_state"):
+                self._consensus_map_state.set_agent_status(agent_id, status)
+                self._refresh_consensus_map()
             if agent_id in self.agent_widgets:
                 self.agent_widgets[agent_id].update_status(status)
                 # Only jump to latest if this is the active agent
@@ -6222,6 +6411,9 @@ Type your question and press Enter to ask the agents.
             """
             if agent_id in self.agent_widgets:
                 self.agent_widgets[agent_id].update_timeout(timeout_state)
+
+            if self._status_bar:
+                self._status_bar.set_timeout_state(agent_id, timeout_state)
 
             # Also update the status ribbon timeout display
             if self._status_ribbon:
@@ -7565,6 +7757,16 @@ Type your question and press Enter to ask the agents.
                 return  # Final presentation banner already added
             self._winner_quick_highlighted = True
 
+            from massgen.events import EventType, MassGenEvent
+
+            self._apply_consensus_event(
+                MassGenEvent.create(
+                    EventType.WINNER_SELECTED,
+                    agent_id=winner_id,
+                    vote_results=vote_results,
+                ),
+            )
+
             # 1. Auto-switch to winner's tab and mark with trophy
             if self._tab_bar:
                 self._tab_bar.set_active(winner_id)
@@ -8102,6 +8304,16 @@ Type your question and press Enter to ask the agents.
                 vote_counts: Optional dict of {agent_id: vote_count} for vote summary display
                 answer_labels: Optional dict of {agent_id: label} for display (e.g., {"agent1": "A1.1"})
             """
+            from massgen.events import EventType, MassGenEvent
+
+            self._apply_consensus_event(
+                MassGenEvent.create(
+                    EventType.FINAL_PRESENTATION_START,
+                    agent_id=agent_id,
+                    vote_counts=vote_counts or {},
+                    answer_labels=answer_labels or {},
+                ),
+            )
             panel = self.agent_widgets.get(agent_id)
             if panel:
                 # Use start_final_presentation which shows distinct green banner
@@ -10441,6 +10653,31 @@ Type your question and press Enter to ask the agents.
             self._update_theme_indicator()
             self.notify(f"Theme: {new_theme.title()}", timeout=1.5)
 
+        def action_toggle_copy_mode(self) -> None:
+            """Toggle copy mode (Ctrl+Shift+S).
+
+            Releases the terminal mouse so the user can drag-select text natively
+            and copy with the terminal's built-in shortcut. Press again to restore
+            Textual's normal mouse behavior.
+            """
+            try:
+                banner = self.query_one(CopyModeBanner)
+            except Exception:
+                logger.warning("[copy_mode] banner not mounted; cannot toggle")
+                return
+            new_state = not banner.active
+            banner.set_active(new_state)
+            self._set_terminal_mouse_capture(not new_state)
+            self._copy_mode_active = new_state
+            self.notify(
+                "Copy mode ON — drag to select, then Cmd/Ctrl+C in your terminal" if new_state else "Copy mode OFF",
+                timeout=2.0,
+            )
+
+        def _set_terminal_mouse_capture(self, enabled: bool) -> None:
+            """Toggle terminal mouse-tracking escape codes via the Textual driver."""
+            set_terminal_mouse_capture(getattr(self, "_driver", None), enabled)
+
         def action_show_help(self) -> None:
             """Show help modal (Ctrl+/ binding)."""
             self._show_help_modal()
@@ -10948,6 +11185,55 @@ Type your question and press Enter to ask the agents.
             """Handle click on status bar running/background tools indicator."""
             self.action_open_background_tools()
 
+        def on_status_bar_answer_now_clicked(self, event: StatusBarAnswerNowClicked) -> None:
+            """Handle click on status bar Answer Now control."""
+            self._trigger_answer_now()
+
+        def on_answer_now_clicked(self, event: AnswerNowClicked) -> None:
+            """Handle click on ribbon Answer Now control."""
+            self._trigger_answer_now()
+
+        def _trigger_answer_now(self) -> None:
+            """Trigger the shared Answer Now callback and show user feedback."""
+            callback = getattr(self, "_answer_now_callback", None)
+            if not callable(callback):
+                self.notify("Answer Now is unavailable for this run.", severity="warning", timeout=2)
+                return
+
+            result = callback() or {}
+            requested_agents = list(result.get("requested_agents") or [])
+            already_requested_agents = list(result.get("already_requested_agents") or [])
+            skipped_agents = list(result.get("skipped_agents") or [])
+
+            if requested_agents:
+                self.add_orchestrator_event(
+                    f"Answer Now requested for: {', '.join(requested_agents)}",
+                )
+                self.notify(
+                    f"Asked {len(requested_agents)} agent(s) to wrap up and answer now.",
+                    severity="warning",
+                    timeout=3,
+                )
+                return
+
+            if already_requested_agents:
+                self.notify(
+                    "Wrap-up is already in progress for the active agents.",
+                    severity="information",
+                    timeout=2,
+                )
+                return
+
+            if skipped_agents:
+                self.notify(
+                    "No active agents are available to wrap up.",
+                    severity="information",
+                    timeout=2,
+                )
+                return
+
+            self.notify("Nothing is currently running.", severity="information", timeout=2)
+
         def on_status_bar_cwd_clicked(self, event: StatusBarCwdClicked) -> None:
             """Handle CWD mode change from status bar click."""
             if self._is_cwd_context_toggle_blocked():
@@ -11126,7 +11412,19 @@ Type your question and press Enter to ask the agents.
             import time
             from datetime import datetime
 
+            from massgen.events import EventType, MassGenEvent
+
             from .content_handlers import ToolDisplayData
+
+            self._apply_consensus_event(
+                MassGenEvent.create(
+                    EventType.VOTE,
+                    agent_id=voter,
+                    round_number=submission_round,
+                    target_id=voted_for,
+                    reason=reason,
+                ),
+            )
 
             # Get model names for richer display
             voter_model = self.coordination_display.agent_models.get(voter, "")
@@ -11261,6 +11559,20 @@ Type your question and press Enter to ask the agents.
                     even if panel._current_round has advanced due to restart.
             """
             import time
+
+            from massgen.events import EventType, MassGenEvent
+
+            self._apply_consensus_event(
+                MassGenEvent.create(
+                    EventType.ANSWER_SUBMITTED,
+                    agent_id=agent_id,
+                    round_number=submission_round,
+                    answer_label=answer_label or f"{agent_id}.{answer_number}",
+                    answer_number=answer_number,
+                    content=content,
+                    workspace_path=workspace_path,
+                ),
+            )
 
             # Get model name for richer display
             model_name = self.coordination_display.agent_models.get(agent_id, "")
@@ -13908,6 +14220,7 @@ Type your question and press Enter to ask the agents.
             round_start_time = self._timeout_state.get("round_start_time")
             grace_seconds = self._timeout_state.get("grace_seconds", 0)
             soft_timeout_fired = self._timeout_state.get("soft_timeout_fired", False)
+            wrap_up_requested = self._timeout_state.get("wrap_up_requested", False)
 
             if round_start_time is None:
                 return None
@@ -13936,6 +14249,8 @@ Type your question and press Enter to ask the agents.
             elif soft_timeout_fired:
                 # In grace period - show remaining time until hard block
                 return f"| [bold yellow]⚠️ Round {round_num} grace: {fmt_time(remaining_hard)} left[/bold yellow]"
+            elif wrap_up_requested:
+                return f"| [yellow]⚠️ Round {round_num}: wrap up requested[/yellow]"
             elif remaining_soft <= 60:
                 # Less than 1 minute - show warning in yellow
                 return f"| [yellow]⏰ Round {round_num}: {fmt_time(remaining_soft)} / {limit_str}[/yellow]"

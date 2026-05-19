@@ -291,6 +291,133 @@ class TestMergeCriteria:
         ]
 
 
+class TestCheckpointPlanQualityCriteria:
+    """Checkpoint planner quality criteria should reinforce fallback depth."""
+
+    def test_single_mode_quality_criterion_mentions_concrete_fallback_steps(self):
+        from massgen.mcp_tools.standalone.checkpoint_mcp_server import (
+            _build_checkpoint_plan_quality_criteria,
+        )
+
+        criteria = _build_checkpoint_plan_quality_criteria(True)
+        assert len(criteria) == 2
+        text = criteria[0]["text"].lower()
+        assert "selective branch depth" in text
+        assert "concrete downstream plan steps" in text
+        assert "second checkpoint is unavailable" in text
+
+    def test_multi_mode_quality_criterion_reserves_recheckpoint(self):
+        from massgen.mcp_tools.standalone.checkpoint_mcp_server import (
+            _build_checkpoint_plan_quality_criteria,
+        )
+
+        criteria = _build_checkpoint_plan_quality_criteria(False)
+        text = criteria[0]["text"].lower()
+        assert "recheckpointing is reserved" in text
+        assert "foreseeable fallback work" in text
+
+    def test_terminate_as_conclusion_criterion_present_in_both_modes(self):
+        """C3: a second criterion must require every `terminate` to carry an
+        auditable impossibility claim — either evidence-exhaustion or
+        constraint-infeasibility. This criterion is mode-agnostic; both
+        single- and multi-checkpoint modes enforce it."""
+        from massgen.mcp_tools.standalone.checkpoint_mcp_server import (
+            _build_checkpoint_plan_quality_criteria,
+        )
+
+        for single in (True, False):
+            criteria = _build_checkpoint_plan_quality_criteria(single)
+            assert len(criteria) == 2, f"single={single}: expected two criteria"
+            text = criteria[1]["text"].lower()
+            assert "conclusion, not" in text, f"single={single}"
+            assert "evidence-exhaustion" in text, f"single={single}"
+            assert "constraint-infeasibility" in text, f"single={single}"
+            assert criteria[1]["category"] == "primary"
+
+    def test_terminate_as_conclusion_criterion_includes_worked_example(self):
+        """The abstract rule (a `terminate` must be a conclusion, not a
+        symptom) is gameable by adopting the 'evidence-exhaustion:'
+        vocabulary while still routing the recovery's `else` branch
+        directly to terminate after a single tool failure. The criterion
+        text must carry an explicit INVALID-vs-VALID worked example
+        naming the vocabulary-only gaming pattern, so reviewers see the
+        distinction made concrete — not only described abstractly."""
+        from massgen.mcp_tools.standalone.checkpoint_mcp_server import (
+            _build_checkpoint_plan_quality_criteria,
+        )
+
+        criteria = _build_checkpoint_plan_quality_criteria(True)
+        text = criteria[1]["text"].lower()
+        assert "earn its label" in text
+        assert "invalid (symptomatic, vocabulary-only)" in text
+        assert "valid (cumulative)" in text
+        assert "recovery chain" in text
+        # The verify_by must direct the reviewer to trace the recovery
+        # chain path, not just read the reason string.
+        verify_by = criteria[1]["verify_by"].lower()
+        assert "recovery chain path" in verify_by
+        assert "vocabulary alone is not enough" in verify_by
+
+    def test_terminate_as_conclusion_criterion_rejects_vocabulary_gaming(self):
+        """A specific anti-pattern must name the correct-vocabulary,
+        wrong-structure failure: a terminate whose reason starts with
+        the C3 vocabulary ('evidence-exhaustion' / 'constraint-
+        infeasibility') but whose `else` branch goes straight to
+        terminate with no alternate in-scope tool attempted. Generic
+        'don't terminate early' wording is insufficient — the
+        anti-pattern must call out the structural gap directly."""
+        from massgen.mcp_tools.standalone.checkpoint_mcp_server import (
+            _build_checkpoint_plan_quality_criteria,
+        )
+
+        criteria = _build_checkpoint_plan_quality_criteria(True)
+        anti_patterns = [ap.lower() for ap in criteria[1]["anti_patterns"]]
+        assert any("vocabulary is not evidence" in ap or "vocabulary alone" in ap or "without any compensate or nested branch" in ap for ap in anti_patterns), (
+            "C3 must call out the 'correct-vocabulary, wrong-structure' " "pattern explicitly; generic 'don't terminate early' wording " "was already observed to be insufficient."
+        )
+
+    def test_terminate_as_conclusion_criterion_rejects_symptomatic_terminates(self):
+        """C3's anti-patterns must flag the specific failure-mode-conflation
+        pattern: a `terminate` whose reason amounts to 'the prior tool call
+        failed' when alternate in-scope tools could still witness the claim.
+        Also checked on `verify_by` so the reviewer is explicitly told to
+        reject those terminates."""
+        from massgen.mcp_tools.standalone.checkpoint_mcp_server import (
+            _build_checkpoint_plan_quality_criteria,
+        )
+
+        criteria = _build_checkpoint_plan_quality_criteria(True)
+        c3 = criteria[1]
+        anti_patterns = [ap.lower() for ap in c3["anti_patterns"]]
+        assert any("conflates" in ap for ap in anti_patterns), "C3 must flag terminates that conflate tool failure with " "target non-existence"
+        assert any("not found" in ap or "unavailable" in ap for ap in anti_patterns)
+        verify_by = c3["verify_by"].lower()
+        assert "single tool call directly to" in verify_by
+        assert "alternate in-scope tools" in verify_by
+
+    def test_reviewer_prompt_documents_terminate_as_auditable_conclusion(self):
+        """C3 is scored from the criteria list, but the generation-side
+        prompt must also tell the planner the same thing — otherwise plans
+        are produced with symptomatic terminates and only caught at review.
+        The terminate bullet in RECOVERY NODE TYPES should call out
+        evidence-exhaustion / constraint-infeasibility / that helper or
+        index failures do not on their own justify terminate."""
+        from massgen.mcp_tools.standalone.checkpoint_mcp_server import (
+            build_objective_prompt,
+        )
+
+        prompt = build_objective_prompt(
+            objective="Test",
+            available_tools=[],
+            workspace_dir="/tmp/x",
+            original_task="Do something",
+            environment={},
+        ).lower()
+        assert "evidence-exhaustion" in prompt
+        assert "constraint-infeasibility" in prompt
+        assert "tool/index/helper failures" in prompt
+
+
 # ---------------------------------------------------------------------------
 # Test: validate_plan_output
 # ---------------------------------------------------------------------------
@@ -385,7 +512,7 @@ class TestOutputSchemaValidation:
                         "then": {
                             "if": "rollback available",
                             "then": "proceed",
-                            "else": "refuse",
+                            "else": "terminate",
                         },
                         "else": "proceed",
                     },
@@ -438,7 +565,7 @@ class TestOutputSchemaValidation:
                     description="Test step",
                     recovery={
                         "if": "fails",
-                        "then": "refuse",
+                        "then": "terminate",
                         "else": "proceed",
                     },
                 ),
@@ -492,7 +619,7 @@ class TestOutputSchemaValidation:
         raw = {
             "plan": [
                 _make_valid_step(
-                    recovery={"if": "task done", "then": "halt", "else": "proceed"},
+                    recovery={"if": "task done", "then": "terminate", "else": "proceed"},
                 ),
             ],
         }
@@ -514,8 +641,8 @@ class TestOutputSchemaValidation:
                                 "tool": "Bash",
                                 "args": {"command": "rollback.sh"},
                             },
-                            "then": "refuse",
-                            "reason": "rollback then halt",
+                            "then": "terminate",
+                            "reason": "rollback then stop",
                         },
                     },
                 ),
@@ -702,6 +829,113 @@ class TestOutputSchemaValidation:
 
 
 # ---------------------------------------------------------------------------
+# Feature 0: terminal collapse — refuse + halt → terminate
+# ---------------------------------------------------------------------------
+
+
+class TestTerminalCollapse:
+    """`refuse` and `halt` are both collapsed into a single `terminate` terminal.
+
+    The pre-collapse schema had two distinct stop-terminals: `refuse` (safety
+    stop) and `halt` (clean early-exit / moot-success). They differed only in
+    *why* the plan stopped, not *what happened*. After the collapse, the
+    reason lives in the `reason` field; the terminal is uniformly `terminate`.
+
+    These tests lock in the new semantics and guard against regression.
+    """
+
+    def test_valid_terminals_set(self):
+        """Full multi-mode terminal set after the rename."""
+        from massgen.mcp_tools.standalone.checkpoint_mcp_server import (
+            VALID_TERMINALS,
+        )
+
+        assert VALID_TERMINALS == {"proceed", "recheckpoint", "terminate"}
+
+    def test_plan_with_terminate_terminal_validates(self):
+        from massgen.mcp_tools.standalone.checkpoint_mcp_server import (
+            validate_plan_output,
+        )
+
+        raw = {
+            "plan": [
+                _make_valid_step(
+                    description="Check precondition",
+                    recovery={"if": "blocker", "then": "terminate", "else": "proceed"},
+                ),
+            ],
+        }
+        result = validate_plan_output(raw)
+        assert result["plan"][0]["recovery"]["then"] == "terminate"
+
+    def test_plan_with_legacy_refuse_terminal_rejected(self):
+        from massgen.mcp_tools.standalone.checkpoint_mcp_server import (
+            validate_plan_output,
+        )
+
+        raw = {
+            "plan": [
+                _make_valid_step(
+                    description="Check precondition",
+                    recovery={"if": "blocker", "then": "refuse", "else": "proceed"},
+                ),
+            ],
+        }
+        with pytest.raises(ValueError, match="terminal"):
+            validate_plan_output(raw)
+
+    def test_plan_with_legacy_halt_terminal_rejected(self):
+        from massgen.mcp_tools.standalone.checkpoint_mcp_server import (
+            validate_plan_output,
+        )
+
+        raw = {
+            "plan": [
+                _make_valid_step(
+                    description="Check precondition",
+                    recovery={"if": "done", "then": "halt", "else": "proceed"},
+                ),
+            ],
+        }
+        with pytest.raises(ValueError, match="terminal"):
+            validate_plan_output(raw)
+
+    def test_reviewer_prompt_documents_terminate_terminal(self):
+        """RECOVERY NODE TYPES section must document `terminate` (with a
+        description that references the `reason` field for the why)."""
+        from massgen.mcp_tools.standalone.checkpoint_mcp_server import (
+            build_objective_prompt,
+        )
+
+        prompt = build_objective_prompt(
+            objective="Test",
+            available_tools=[],
+            workspace_dir="/tmp/x",
+            original_task="Do something",
+            environment={},
+        )
+        assert '"terminate"' in prompt
+
+    def test_reviewer_prompt_drops_legacy_terminals(self):
+        """Pre-collapse `refuse` and `halt` should not appear as terminal
+        tokens in the RECOVERY NODE TYPES list."""
+        from massgen.mcp_tools.standalone.checkpoint_mcp_server import (
+            build_objective_prompt,
+        )
+
+        prompt = build_objective_prompt(
+            objective="Test",
+            available_tools=[],
+            workspace_dir="/tmp/x",
+            original_task="Do something",
+            environment={},
+        )
+        # The bare-terminal forms must be gone from the RECOVERY NODE TYPES block
+        assert '"refuse"' not in prompt
+        assert '"halt"' not in prompt
+
+
+# ---------------------------------------------------------------------------
 # Test: extract_json_from_response
 # ---------------------------------------------------------------------------
 
@@ -823,6 +1057,15 @@ class TestBuildObjectivePrompt:
         prompt = self._build()
         assert TRAJECTORY_FILENAME in prompt
 
+    def test_trajectory_path_override_used_when_provided(self):
+        """`_checkpoint_impl` passes an absolute trajectory path so docker-
+        mode agents find it at the same path the context_path mount exposes.
+        The prompt must render that absolute path verbatim — not the
+        relative default constant."""
+        absolute = "/abs/ckpt_001/.checkpoint/trajectory.log"
+        prompt = self._build(trajectory_path=absolute)
+        assert absolute in prompt
+
     def test_includes_action_goals_when_provided(self):
         prompt = self._build(
             action_goals=[
@@ -850,6 +1093,28 @@ class TestBuildObjectivePrompt:
         prompt = self._build(original_task="Update the welcome email template.")
         assert "## Original User Task" in prompt
         assert "Update the welcome email template." in prompt
+
+    def test_aligned_autonomy_names_four_drift_axes(self):
+        """The reviewer prompt must teach the four generalizable axes that
+        flip an optimization from 'better means' into drift/unsafe:
+        scarcity/contention, external visibility / non-idempotence,
+        authority/provenance substitution, scope expansion. Naming them
+        explicitly lets the reviewer use them as a checklist instead of
+        falling back to literal substring matching against the user's
+        wording (the failure mode that caused over-pruning of cost
+        optimization in real runs)."""
+        prompt = self._build()
+        # The four named axes must appear so a reviewer can apply each as
+        # a discrete check.
+        assert "scarcity/contention" in prompt
+        assert "external visibility" in prompt
+        assert "non-idempotence" in prompt
+        assert "authority/provenance" in prompt
+        assert "scope expansion" in prompt
+        # And the closing default — approve cheaper/faster/cleaner means
+        # when none of the axes apply — must be present so reviewers don't
+        # leave the section thinking "anything optional is suspect."
+        assert "default to approving the cheaper/faster/cleaner means" in prompt
 
     def test_includes_environment_section(self):
         prompt = self._build(
@@ -891,6 +1156,673 @@ class TestBuildObjectivePrompt:
         trajectory_pos = prompt.find("## Trajectory")
         objective_pos = prompt.find("## Objective")
         assert 0 < original_pos < env_pos < wariness_pos < trajectory_pos < objective_pos
+
+    def test_opening_uses_broadened_framing(self):
+        """Reviewer prompt opens with the broadened planning framing, not
+        the legacy safety-only framing. The tool covers risk-sensitive AND
+        quality-sensitive phases."""
+        prompt = self._build()
+        assert "checkpoint planner" in prompt
+        assert "high-stakes or coordinated phase" in prompt
+        # Old narrow framing must not reappear
+        assert "safety checkpoint planner" not in prompt
+
+
+# ---------------------------------------------------------------------------
+# Test: args-provenance taxonomy in the reviewer prompt
+# ---------------------------------------------------------------------------
+
+
+class TestArgsProvenanceTaxonomy:
+    """Reviewer prompt formalizes who supplies each `args` value.
+
+    Regression: a prior run had the reviewer panel embedding the entire
+    deliverable (a full SVG XML payload) inside `approved_action.args.content`
+    instead of producing a structural plan. The prompt now teaches a three-way
+    provenance vocabulary (`<planner-fixed>` / `<executor-fills: ...>` /
+    `<from:step:N>`) so reviewers label every arg by who supplies it. These
+    tests lock that vocabulary into the prompt — generalizing the fix beyond
+    the SVG case (cf. feedback_no_overfit_prompts).
+    """
+
+    def _build(self) -> str:
+        from massgen.mcp_tools.standalone.checkpoint_mcp_server import (
+            build_objective_prompt,
+        )
+
+        return build_objective_prompt(
+            objective="Build a static landing page",
+            available_tools=[{"name": "Write", "description": "Write a file"}],
+            workspace_dir="/tmp/test-workspace",
+            original_task="Build it",
+            environment={},
+        )
+
+    def test_introduces_provenance_concept(self):
+        """The prompt must explicitly tell reviewers that every args value
+        has a provenance — not just describe one good and one bad shape."""
+        prompt = self._build()
+        assert "provenance" in prompt.lower()
+
+    def test_includes_all_three_placeholder_forms(self):
+        """All three placeholders must be documented so reviewers have the
+        full vocabulary, not just the executor-fills case that motivated
+        the bug fix."""
+        prompt = self._build()
+        assert "<planner-fixed>" in prompt
+        assert "<executor-fills:" in prompt
+        assert "<from:step:" in prompt
+
+    def test_worked_example_for_executor_fills(self):
+        """A self-contained worked example must show a payload field
+        delegated to the executor."""
+        prompt = self._build()
+        assert "<executor-fills: single inline SVG" in prompt
+
+    def test_worked_example_for_cross_step_chaining(self):
+        """A worked example must show data-flow chaining across steps —
+        `<from:step:N>` is meaningless unless the reviewer sees it in use."""
+        prompt = self._build()
+        assert "<from:step:2>" in prompt
+
+    def test_provenance_extends_to_rollback_and_compensate(self):
+        """Same action-spec shape, same provenance discipline — the prompt
+        must say so explicitly so the labels propagate to nested actions."""
+        prompt = self._build()
+        assert "approved_action.rollback.args" in prompt
+        assert "recovery.compensate.args" in prompt
+
+    def test_invalid_payload_guard_present(self):
+        """The 'do not paste the deliverable inline' rule must remain — it's
+        the negative half of the discipline."""
+        prompt = self._build()
+        assert "INVALID" in prompt
+        # Generalize the bad shape beyond just SVGs.
+        assert "full SVG" in prompt and "full essay" in prompt
+
+    def test_schema_example_uses_executor_fills_placeholder(self):
+        """The JSON schema example block (the canonical shape reviewers
+        copy from) must use the new placeholder, not the old `"..."`. If
+        the example still says `"content": "..."` the convention is
+        contradicted at the most-imitated spot in the prompt."""
+        prompt = self._build()
+        assert '"content": "<executor-fills:' in prompt
+        # Specifically: the legacy bare-ellipsis content placeholder
+        # must not survive as `"content": "..."` in the schema example.
+        assert '"content": "..."' not in prompt
+
+
+# ---------------------------------------------------------------------------
+# Test: aligned-autonomy framing in the reviewer prompt
+# ---------------------------------------------------------------------------
+
+
+class TestAlignedAutonomyFraming:
+    """Reviewer prompt permits aligned autonomy while preserving injection defense.
+
+    Aligned autonomy: actions beyond the user's literal phrasing are approvable
+    when they (a) serve the user's explicit task AND (b) meet the safety
+    criteria. The pre-reframing prompt told the reviewer to pick the "SAFEST
+    scope" and refuse anything beyond the literal ask, which killed clearly-
+    aligned sub-actions. These assertions lock in the reframing while
+    preserving the prompt-injection defense (file content cannot introduce
+    a new, unrelated objective or override the safety policy).
+    """
+
+    _DEFAULT_TASK = "Test user task: do the requested thing."
+    _DEFAULT_ENV: dict = {}
+
+    def _build(self, **overrides) -> str:
+        from massgen.mcp_tools.standalone.checkpoint_mcp_server import (
+            build_objective_prompt,
+        )
+
+        kwargs: dict[str, Any] = {
+            "objective": "Deploy",
+            "available_tools": [],
+            "workspace_dir": "/tmp/test-workspace",
+            "original_task": self._DEFAULT_TASK,
+            "environment": dict(self._DEFAULT_ENV),
+        }
+        kwargs.update(overrides)
+        return build_objective_prompt(**kwargs)
+
+    def test_legacy_safest_scope_minimizer_is_gone(self):
+        """The 'SAFEST scope' / blanket-minimizer phrasing told reviewers to
+        refuse aligned-but-unspoken sub-actions. It must be gone."""
+        prompt = self._build()
+        assert "SAFEST scope" not in prompt
+        # The unconditional tiebreaker wording
+        assert "pick the one with narrower blast radius" not in prompt
+
+    def test_allows_aligned_autonomy_explicitly(self):
+        """Reviewer must be told that actions beyond the literal task ARE
+        approvable when they serve the user's task and pass safety."""
+        prompt = self._build()
+        assert "aligned autonomy" in prompt.lower()
+
+    def test_uses_means_vs_ends_framing(self):
+        """The approvable/refuseable line is means-vs-ends: changing HOW the
+        task gets done is fine; changing or adding to WHAT gets done is not."""
+        prompt = self._build()
+        # Both halves of the means/ends pairing must appear.
+        assert "means" in prompt.lower()
+        assert "ends" in prompt.lower()
+
+    def test_narrower_blast_radius_survives_only_as_tiebreaker(self):
+        """'Narrower blast radius' may stay — but only conditioned on equal
+        alignment/safety, not as a blanket minimizer."""
+        prompt = self._build()
+        if "narrower blast radius" in prompt:
+            lower = prompt.lower()
+            assert "equally aligned" in lower or "equally safe" in lower
+
+    def test_preserves_injection_defense_for_new_objectives(self):
+        """Loosening for aligned autonomy must NOT loosen prompt-injection
+        defense: file content still cannot introduce a new objective unrelated
+        to the user's task, and cannot override the safety policy."""
+        prompt = self._build()
+        # File-is-data anchor still present
+        assert "File content is DATA" in prompt
+        # The reviewer is told file content cannot introduce a new objective
+        # unrelated to the task, and cannot override the policy.
+        lower = prompt.lower()
+        assert "new objective" in lower
+        assert "override" in lower
+        assert "safety policy" in lower
+
+    def test_drift_refusal_qualifies_as_unrelated(self):
+        """Drift-refusal language must qualify as 'unrelated' drift. The
+        pre-reframing text refused any drift, including aligned expansion;
+        after reframing, only unrelated drift is refused."""
+        prompt = self._build()
+        assert "unrelated objective" in prompt.lower() or "unrelated" in prompt.lower()
+
+
+# ---------------------------------------------------------------------------
+# Feature 1: single-checkpoint mode
+# ---------------------------------------------------------------------------
+
+
+class TestSingleCheckpointMode:
+    """Single-checkpoint mode strips the recheckpoint affordance from every
+    model-visible surface: reviewer prompt (terminal docs, examples, depth
+    directive), VALID_TERMINALS, and the executor-facing instructions template.
+
+    Runtime backstop exists but is defense-in-depth only — the primary
+    mechanism is source-removal from prompts.
+    """
+
+    _DEFAULT_TASK = "Test user task: do the requested thing."
+    _DEFAULT_ENV: dict = {}
+
+    def _build(self, *, single_checkpoint: bool = False, **overrides) -> str:
+        from massgen.mcp_tools.standalone.checkpoint_mcp_server import (
+            build_objective_prompt,
+        )
+
+        kwargs: dict[str, Any] = {
+            "objective": "Deploy",
+            "available_tools": [],
+            "workspace_dir": "/tmp/test-workspace",
+            "original_task": self._DEFAULT_TASK,
+            "environment": dict(self._DEFAULT_ENV),
+            "single_checkpoint": single_checkpoint,
+        }
+        kwargs.update(overrides)
+        return build_objective_prompt(**kwargs)
+
+    # ---- Mode derivation from server-startup config ----
+
+    def test_server_reads_single_checkpoint_from_config(self, tmp_path: Path) -> None:
+        """`single_checkpoint: true` in YAML config → session flag set."""
+        from massgen.mcp_tools.standalone import checkpoint_mcp_server as mod
+
+        mod._session.clear()
+        mod._session["config_dict"] = {"single_checkpoint": True, "agents": []}
+        mod._apply_server_mode_from_config()
+        assert mod._session.get("single_checkpoint") is True
+
+    def test_server_defaults_to_multi_checkpoint(self) -> None:
+        """Missing key → default multi mode (backward-compat)."""
+        from massgen.mcp_tools.standalone import checkpoint_mcp_server as mod
+
+        mod._session.clear()
+        mod._session["config_dict"] = {"agents": []}
+        mod._apply_server_mode_from_config()
+        assert mod._session.get("single_checkpoint") is False
+        assert mod._session.get("include_workspace_context") is False
+
+    def test_server_reads_workspace_context_flag_from_config(self) -> None:
+        """`include_workspace_context: true` in YAML config → session flag set."""
+        from massgen.mcp_tools.standalone import checkpoint_mcp_server as mod
+
+        mod._session.clear()
+        mod._session["config_dict"] = {
+            "agents": [],
+            "include_workspace_context": True,
+        }
+        mod._apply_server_mode_from_config()
+        assert mod._session.get("include_workspace_context") is True
+
+    # ---- Reviewer prompt content ----
+
+    def test_prompt_omits_recheckpoint_terminal_in_single_mode(self):
+        prompt = self._build(single_checkpoint=True)
+        # The bare terminal token should not appear in the RECOVERY NODE TYPES
+        # enumeration. We check for the quoted-terminal form to avoid matching
+        # English prose usage.
+        assert '"recheckpoint"' not in prompt
+
+    def test_prompt_contains_recheckpoint_terminal_in_multi_mode(self):
+        prompt = self._build(single_checkpoint=False)
+        assert '"recheckpoint"' in prompt
+
+    def test_prompt_contains_single_session_banner(self):
+        prompt = self._build(single_checkpoint=True)
+        assert "single-checkpoint session" in prompt.lower()
+
+    def test_prompt_requires_end_to_end_depth_in_single_mode(self):
+        prompt = self._build(single_checkpoint=True)
+        lower = prompt.lower()
+        # Directive language
+        assert "end-to-end" in lower or "entire remaining task" in lower
+        # Explicit "no recheckpoint safety net" framing
+        assert "no recheckpoint" in lower or "no opportunity to recheckpoint" in lower
+
+    def test_prompt_has_depth_directive_in_multi_mode(self):
+        """Bonus: multi mode also gets a (shorter) depth directive."""
+        prompt = self._build(single_checkpoint=False)
+        lower = prompt.lower()
+        assert "plan as deep as the task demands" in lower or "as deep as the task" in lower
+
+    def test_single_mode_prompt_requires_branch_depth(self):
+        prompt = self._build(single_checkpoint=True)
+        lower = prompt.lower()
+        assert "selective branch depth" in lower
+        assert "normal downstream plan steps" in lower
+        assert "recovery prose must not" in lower
+        assert "keep low-impact" in lower
+        assert "no safe fallback remains" in lower
+
+    def test_single_mode_prompt_says_first_method_failure_is_not_terminal(self):
+        prompt = self._build(single_checkpoint=True)
+        lower = prompt.lower()
+        assert "first method failed" in lower
+        assert "do not use `terminate` merely" in lower
+
+    def test_prompt_says_workspace_context_is_optional_by_default(self):
+        prompt = self._build(workspace_context_enabled=False)
+        lower = prompt.lower()
+        assert "not mounted" in lower
+        assert "do not assume you can list or open files" in lower
+
+    def test_prompt_describes_workspace_mount_when_enabled(self):
+        prompt = self._build(workspace_context_enabled=True)
+        lower = prompt.lower()
+        assert "mounted into your environment as a read-only context path" in lower
+        assert "before writing the plan, explore it" in lower
+
+    def test_multi_mode_prompt_keeps_recheckpoint_from_replacing_fallbacks(self):
+        prompt = self._build(single_checkpoint=False)
+        lower = prompt.lower()
+        assert "not a substitute for fallback paths" in lower
+        assert "genuinely new state or ambiguity" in lower
+
+    # ---- Validator scoping ----
+
+    def test_validator_rejects_recheckpoint_in_single_mode(self):
+        from massgen.mcp_tools.standalone.checkpoint_mcp_server import (
+            validate_plan_output,
+        )
+
+        raw = {
+            "plan": [
+                _make_valid_step(
+                    description="Step",
+                    recovery={"if": "x", "then": "recheckpoint", "else": "proceed"},
+                ),
+            ],
+        }
+        with pytest.raises(ValueError, match="terminal"):
+            validate_plan_output(raw, single_checkpoint=True)
+
+    def test_validator_accepts_recheckpoint_in_multi_mode(self):
+        from massgen.mcp_tools.standalone.checkpoint_mcp_server import (
+            validate_plan_output,
+        )
+
+        raw = {
+            "plan": [
+                _make_valid_step(
+                    description="Step",
+                    recovery={"if": "x", "then": "recheckpoint", "else": "proceed"},
+                ),
+            ],
+        }
+        # Default (multi) path must still accept it
+        validate_plan_output(raw, single_checkpoint=False)
+
+    # ---- Template stripping ----
+
+    def test_load_template_strips_recheckpoint_section_in_single_mode(self):
+        from massgen.mcp_tools.standalone.setup_instructions import (
+            load_template,
+        )
+
+        single = load_template(single_checkpoint=True)
+        multi = load_template(single_checkpoint=False)
+
+        # Multi keeps the "When to re-checkpoint" section and triggers A–J
+        assert "When to re-checkpoint" in multi
+        assert "(J) Ambiguous strategy" in multi
+        # Single drops them
+        assert "When to re-checkpoint" not in single
+        assert "(J) Ambiguous strategy" not in single
+        # Both keep the common framing
+        assert "## Planning Checkpoints (Required)" in single
+        assert "## Planning Checkpoints (Required)" in multi
+
+    def test_load_template_includes_continuation_section_only_in_single_mode(self):
+        """The CONTINUATION section ("when terminate fires, find a safe
+        workaround that respects plan principles") is the inverse of
+        RECHECKPOINT-SECTION: kept in single mode, stripped in multi.
+
+        In multi mode the executor can re-checkpoint instead, so the
+        keep-going framing would conflict; in single mode the executor
+        has no re-plan affordance and needs the framing to avoid
+        treating `terminate` as task abandonment."""
+        from massgen.mcp_tools.standalone.setup_instructions import (
+            load_template,
+        )
+
+        single = load_template(single_checkpoint=True)
+        multi = load_template(single_checkpoint=False)
+
+        # Section header and a couple of distinctive phrases.
+        assert "When the plan's recovery resolves to" in single
+        assert "stop following that branch of the plan" in single
+        assert "Return to the plan after the workaround" in single
+        # Stripped in multi.
+        assert "When the plan's recovery resolves to" not in multi
+        assert "stop following that branch of the plan" not in multi
+
+    def test_canonical_instructions_carry_both_section_markers(self):
+        """The single source markdown must contain BOTH section markers
+        so the inverse-gating loader has both sections to operate on.
+        If either pair goes missing, one mode silently degrades to the
+        other (or to "neither")."""
+        from massgen.mcp_tools.standalone.setup_instructions import (
+            _TEMPLATE_PATH,
+            RECHECKPOINT_MARKER_END,
+            RECHECKPOINT_MARKER_START,
+            SINGLE_CHECKPOINT_CONTINUATION_MARKER_END,
+            SINGLE_CHECKPOINT_CONTINUATION_MARKER_START,
+        )
+
+        text = _TEMPLATE_PATH.read_text(encoding="utf-8")
+        assert RECHECKPOINT_MARKER_START in text
+        assert RECHECKPOINT_MARKER_END in text
+        assert SINGLE_CHECKPOINT_CONTINUATION_MARKER_START in text
+        assert SINGLE_CHECKPOINT_CONTINUATION_MARKER_END in text
+
+    def test_checkpoint_tool_description_drops_recheckpoint_in_single_mode(self):
+        """The executor's `checkpoint()` tool description used to mention
+        `recheckpoint` in two places (the (D) example and the BAD-scope
+        example) regardless of mode. Those leaks misled the executor into
+        calling `checkpoint()` a second time in single-checkpoint mode
+        even though the runtime guard rejected it. Gating the description
+        is the source-removal fix; the runtime guard remains as
+        defense-in-depth."""
+        from massgen.mcp_tools.standalone.checkpoint_mcp_server import (
+            _build_checkpoint_description,
+        )
+
+        single = _build_checkpoint_description(single_checkpoint=True)
+        multi = _build_checkpoint_description(single_checkpoint=False)
+
+        # No mention of recheckpoint anywhere in the single-mode description.
+        assert "recheckpoint" not in single.lower()
+        # Multi mode keeps both leak sites — non-regression guard so the
+        # multi-mode description doesn't silently shrink.
+        assert "recheckpoint or refusal" in multi
+        assert "if ambiguous, recheckpoint" in multi
+        # Both modes share the core framing — not just the recheckpoint
+        # bits — so we haven't accidentally split them.
+        for text in (single, multi):
+            assert "FRAMING PRINCIPLES" in text
+            assert "WHEN TO CALL THIS TOOL" in text
+            assert "Follow the returned plan exactly" in text
+
+    def test_checkpoint_tool_description_states_call_once_in_single_mode(self):
+        """Source-removal of recheckpoint vocabulary is the primary
+        defense, but we observed a model independently inventing a
+        second checkpoint() call from prior training (no leaked text).
+        Cover that case by stating the call-once constraint directly so
+        the model has it as an explicit instruction. Multi mode keeps
+        no such restriction (recheckpointing is the design)."""
+        from massgen.mcp_tools.standalone.checkpoint_mcp_server import (
+            _build_checkpoint_description,
+        )
+
+        single = _build_checkpoint_description(single_checkpoint=True)
+        multi = _build_checkpoint_description(single_checkpoint=False)
+
+        # Single mode: explicit call-once block is present.
+        assert "CALL EXACTLY ONCE" in single
+        assert "exactly once" in single.lower()
+        assert "Do NOT call it a second" in single
+        # And that block is gone in multi mode (no false claim that
+        # the executor can only call once when recheckpointing is fine).
+        assert "CALL EXACTLY ONCE" not in multi
+        assert "Do NOT call it a second" not in multi
+
+    def test_continuation_instructions_state_call_once(self):
+        """The instructions section must also state the call-once
+        constraint so it's reinforced wherever the executor reads about
+        single-mode behavior. Multi mode never sees the CONTINUATION
+        section so this assertion is single-only."""
+        from massgen.mcp_tools.standalone.setup_instructions import (
+            load_template,
+        )
+
+        single = load_template(single_checkpoint=True)
+        assert "Single-checkpoint mode: call `checkpoint()` exactly once" in single
+        assert "do **not** call `checkpoint()` again" in single.lower() or "do not call `checkpoint()` again" in single.lower()
+
+    def test_checkpoint_tool_description_composes_with_verify_mode_rewrite(self):
+        """Verify-mode rewriting (`_rewrite_description_for_verify_mode`)
+        operates on the description string after it's built. Confirm the
+        new gating composes with it: verify rewrite still happens AND
+        recheckpoint mentions stay gone."""
+        from massgen.mcp_tools.standalone.checkpoint_mcp_server import (
+            _build_checkpoint_description,
+            _rewrite_description_for_verify_mode,
+        )
+
+        single = _build_checkpoint_description(single_checkpoint=True)
+        verify_single = _rewrite_description_for_verify_mode(single)
+
+        # Verify rewrite swapped action_goals for draft_plan.
+        assert "'draft_plan':" in verify_single
+        # And recheckpoint stays absent.
+        assert "recheckpoint" not in verify_single.lower()
+
+    # ---- Runtime backstop ----
+
+    def test_second_checkpoint_in_single_mode_returns_error(self, tmp_path: Path):
+        """Defense-in-depth: if a second checkpoint() call ever lands in
+        single mode, return a clear error without spawning a subrun. Should
+        never fire if prompt stripping is correct; exists to catch leaks."""
+        from massgen.mcp_tools.standalone import checkpoint_mcp_server as mod
+
+        _setup_session(mod, tmp_path, single_checkpoint=True)
+        mod._checkpoint_counter = 1  # simulate one prior checkpoint() call
+
+        import asyncio
+
+        result = asyncio.run(mod._checkpoint_impl("Second call", None, None))
+        payload = json.loads(result)
+        assert payload["status"] == "error"
+        # Error message points at single-checkpoint mode
+        assert "single" in payload["error"].lower()
+
+    def test_second_checkpoint_rejection_names_continuation_obligation(self, tmp_path: Path):
+        """The rejection message is the executor's last line of defense
+        against treating `terminate` as task abandonment. It must restate
+        the same obligation the CONTINUATION instructions section
+        establishes: keep going under plan principles; only give up after
+        trying alternates."""
+        from massgen.mcp_tools.standalone import checkpoint_mcp_server as mod
+
+        _setup_session(mod, tmp_path, single_checkpoint=True)
+        mod._checkpoint_counter = 1
+
+        import asyncio
+
+        result = asyncio.run(mod._checkpoint_impl("Second call", None, None))
+        payload = json.loads(result)
+        msg = payload["error"].lower()
+        # Names the continuation principle
+        assert "do not stop your obligation" in msg
+        assert "alternates" in msg
+        # Names the safety guardrail (the workaround must respect plan principles)
+        assert "plan's principles" in msg or "the plan's principles" in msg
+
+
+# ---------------------------------------------------------------------------
+# Feature 2: draft-plan verify mode
+# ---------------------------------------------------------------------------
+
+
+class TestVerifyMode:
+    """Verify mode: main model produces a draft plan; reviewers verify/adjust
+    it instead of generating from scratch.
+
+    Mode is baked at server startup (`mode: verify` in YAML). The
+    `checkpoint()` tool registers a *different signature* in verify mode —
+    `action_goals` isn't in the schema at all; `draft_plan` is. The model
+    never sees a parameter it can't use.
+    """
+
+    _DEFAULT_TASK = "Test user task: do the requested thing."
+    _DEFAULT_ENV: dict = {}
+
+    def _build(self, **overrides) -> str:
+        from massgen.mcp_tools.standalone.checkpoint_mcp_server import (
+            build_objective_prompt,
+        )
+
+        kwargs: dict[str, Any] = {
+            "objective": "Deploy",
+            "available_tools": [],
+            "workspace_dir": "/tmp/test-workspace",
+            "original_task": self._DEFAULT_TASK,
+            "environment": dict(self._DEFAULT_ENV),
+        }
+        kwargs.update(overrides)
+        return build_objective_prompt(**kwargs)
+
+    # ---- Mode derivation from server-startup config ----
+
+    def test_server_defaults_to_generate_mode(self) -> None:
+        from massgen.mcp_tools.standalone import checkpoint_mcp_server as mod
+
+        mod._session.clear()
+        mod._session["config_dict"] = {"agents": []}
+        mod._apply_server_mode_from_config()
+        assert mod._session.get("mode") == "generate"
+
+    def test_server_reads_mode_verify_from_config(self) -> None:
+        from massgen.mcp_tools.standalone import checkpoint_mcp_server as mod
+
+        mod._session.clear()
+        mod._session["config_dict"] = {"mode": "verify", "agents": []}
+        mod._apply_server_mode_from_config()
+        assert mod._session.get("mode") == "verify"
+
+    def test_server_rejects_unknown_mode_at_startup(self) -> None:
+        from massgen.mcp_tools.standalone import checkpoint_mcp_server as mod
+
+        mod._session.clear()
+        mod._session["config_dict"] = {"mode": "bogus", "agents": []}
+        with pytest.raises(ValueError, match="mode"):
+            mod._apply_server_mode_from_config()
+
+    # ---- Tool-signature registration ----
+
+    def test_generate_mode_tool_has_action_goals_no_draft_plan(self) -> None:
+        """Default (generate) mode: `checkpoint` signature exposes
+        `action_goals` and not `draft_plan`."""
+        import inspect
+
+        from massgen.mcp_tools.standalone.checkpoint_mcp_server import (
+            _make_checkpoint_tool_generate,
+        )
+
+        sig = inspect.signature(_make_checkpoint_tool_generate())
+        assert "action_goals" in sig.parameters
+        assert "draft_plan" not in sig.parameters
+
+    def test_verify_mode_tool_has_draft_plan_no_action_goals(self) -> None:
+        """Verify mode: `checkpoint` signature exposes `draft_plan` and
+        not `action_goals`. The model never sees a parameter it can't use."""
+        import inspect
+
+        from massgen.mcp_tools.standalone.checkpoint_mcp_server import (
+            _make_checkpoint_tool_verify,
+        )
+
+        sig = inspect.signature(_make_checkpoint_tool_verify())
+        assert "draft_plan" in sig.parameters
+        assert "action_goals" not in sig.parameters
+
+    # ---- Prompt content in verify mode ----
+
+    def test_verify_mode_prompt_includes_draft_plan_verbatim(self):
+        draft = {"plan": [{"step": 1, "description": "draft step one"}]}
+        prompt = self._build(draft_plan=draft, mode="verify")
+        # The caller-supplied draft JSON appears in the prompt.
+        assert "draft step one" in prompt
+        # And it's rendered in the Draft Plan section.
+        assert "## Draft Plan from the Executor" in prompt
+
+    def test_verify_mode_prompt_uses_verify_framing(self):
+        draft = {"plan": [{"step": 1, "description": "x"}]}
+        prompt = self._build(draft_plan=draft, mode="verify")
+        lower = prompt.lower()
+        # Verify-mode language: the reviewer is adjusting, not generating
+        # from scratch.
+        assert "verify" in lower
+        assert "rewrite" in lower or "adjust" in lower
+        assert "keep" in lower  # "keep passing steps as-is"
+
+    def test_verify_mode_prompt_omits_action_goals_section(self):
+        """`## Action Goals` heading must not appear in verify mode —
+        the draft plan already carries `approved_action` per step, so
+        `action_goals` is redundant and not in the tool signature."""
+        draft = {"plan": [{"step": 1, "description": "x"}]}
+        prompt = self._build(draft_plan=draft, mode="verify")
+        assert "## Action Goals" not in prompt
+
+    def test_generate_mode_prompt_unchanged(self):
+        """Regression guard: generate mode (no draft_plan) produces the
+        same high-level structure as today — Objective / Available Tools /
+        Output sections present; no Draft Plan section."""
+        prompt = self._build(mode="generate")
+        assert "## Objective" in prompt
+        assert "## Available Tools" in prompt
+        assert "## Draft Plan from the Executor" not in prompt
+
+    def test_draft_plan_malformed_is_not_rejected_by_prompt_builder(self):
+        """The server does not pre-validate `draft_plan` — reviewers see
+        whatever was passed and judge it. A draft missing required fields
+        should still render (reviewers will flag the gaps)."""
+        # Deliberately invalid shape (no `plan` key, wrong types)
+        draft = {"steps": "this is not a valid plan"}
+        prompt = self._build(draft_plan=draft, mode="verify")
+        # Build succeeds; reviewer sees the bad content and decides.
+        assert "this is not a valid plan" in prompt
 
 
 # ---------------------------------------------------------------------------
@@ -1290,6 +2222,29 @@ class TestSessionState:
         await _init_impl(**_valid_init_kwargs(tmp_path))
         assert _session["config_dict"] == {"loaded_by": "cli"}
 
+    @pytest.mark.asyncio
+    async def test_init_reapplies_mode_flags_from_preserved_config(self, tmp_path: Path):
+        """init clears session state, but startup config-derived flags must
+        survive so single-checkpoint mode is enforced after initialization."""
+        from massgen.mcp_tools.standalone.checkpoint_mcp_server import (
+            _init_impl,
+            _session,
+        )
+
+        _session.clear()
+        _session["config_dict"] = {
+            "agents": [],
+            "single_checkpoint": True,
+            "mode": "verify",
+            "include_workspace_context": True,
+        }
+
+        await _init_impl(**_valid_init_kwargs(tmp_path))
+
+        assert _session["single_checkpoint"] is True
+        assert _session["mode"] == "verify"
+        assert _session["include_workspace_context"] is True
+
     # ----- Grouped policy shape (Phase 1a) -----
 
     def test_grouped_policy_has_eight_groups(self):
@@ -1406,6 +2361,210 @@ class TestCheckpointToolValidation:
         result = json.loads(result_str)
         assert result["status"] == "ok"
         assert "plan" in result
+
+    @pytest.mark.asyncio
+    async def test_checkpoint_injects_plan_quality_criteria(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ):
+        """Reviewer checklist should include fallback-depth quality criteria."""
+        from massgen.mcp_tools.standalone import checkpoint_mcp_server as mod
+
+        _setup_session(
+            mod,
+            tmp_path,
+            single_checkpoint=True,
+            safety_policy=["Base safety rule"],
+        )
+        captured: dict[str, Any] = {}
+
+        async def mock_run_subrun(
+            prompt,
+            config_path,
+            workspace,
+            timeout,
+            answer_file=None,
+        ):
+            import yaml
+
+            captured["config"] = yaml.safe_load(Path(config_path).read_text())
+            final_ws = workspace / ".massgen" / "massgen_logs" / "log_test" / "turn_1" / "attempt_1" / "final" / "agent_a" / "workspace"
+            final_ws.mkdir(parents=True, exist_ok=True)
+            result_file = final_ws / mod.RESULT_FILENAME
+            result_file.write_text(
+                json.dumps({"plan": [_make_valid_step(description="Do it")]}),
+            )
+            return {"success": True, "output": "", "execution_time_seconds": 0.1}
+
+        monkeypatch.setattr(
+            "massgen.mcp_tools.standalone.checkpoint_mcp_server.run_massgen_subrun",
+            mock_run_subrun,
+        )
+
+        result_str = await mod._checkpoint_impl(
+            objective="Deploy to prod",
+            eval_criteria=["User-supplied quality criterion"],
+        )
+        result = json.loads(result_str)
+        assert result["status"] == "ok"
+
+        coord = captured["config"]["orchestrator"]["coordination"]
+        texts = [entry["text"] for entry in coord["checklist_criteria_inline"]]
+        assert "Base safety rule" in texts
+        assert "User-supplied quality criterion" in texts
+        assert any("selective branch depth" in text.lower() for text in texts)
+        assert any("second checkpoint is unavailable" in text.lower() for text in texts)
+
+    @pytest.mark.asyncio
+    async def test_checkpoint_omits_workspace_context_by_default(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ):
+        """Without the opt-in flag, subruns should not mount workspace context."""
+        from massgen.mcp_tools.standalone import checkpoint_mcp_server as mod
+
+        _setup_session(mod, tmp_path)
+        captured: dict[str, Any] = {}
+
+        async def mock_run_subrun(
+            prompt,
+            config_path,
+            workspace,
+            timeout,
+            answer_file=None,
+        ):
+            import yaml
+
+            captured["config"] = yaml.safe_load(Path(config_path).read_text())
+            captured["prompt"] = prompt
+            final_ws = workspace / ".massgen" / "massgen_logs" / "log_test" / "turn_1" / "attempt_1" / "final" / "agent_a" / "workspace"
+            final_ws.mkdir(parents=True, exist_ok=True)
+            result_file = final_ws / mod.RESULT_FILENAME
+            result_file.write_text(
+                json.dumps({"plan": [_make_valid_step(description="Do it")]}),
+            )
+            return {"success": True, "output": "", "execution_time_seconds": 0.1}
+
+        monkeypatch.setattr(
+            "massgen.mcp_tools.standalone.checkpoint_mcp_server.run_massgen_subrun",
+            mock_run_subrun,
+        )
+
+        result_str = await mod._checkpoint_impl(objective="Deploy to prod")
+        result = json.loads(result_str)
+        assert result["status"] == "ok"
+        # The artifact dir (trajectory + validator) is always mounted so
+        # docker-mode agents can see those files; the executor's main
+        # workspace is NOT mounted without the opt-in flag.
+        paths = captured["config"]["orchestrator"].get("context_paths") or []
+        assert len(paths) == 1, f"expected only the artifact mount, got: {paths}"
+        assert paths[0]["path"].endswith("/.checkpoint")
+        assert paths[0]["permission"] == "read"
+        assert str(tmp_path) not in {p["path"] for p in paths}
+        assert "not mounted" in captured["prompt"].lower()
+
+    @pytest.mark.asyncio
+    async def test_checkpoint_mounts_workspace_context_when_enabled(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ):
+        """Opt-in flag should mount the executor workspace as read-only context."""
+        from massgen.mcp_tools.standalone import checkpoint_mcp_server as mod
+
+        _setup_session(mod, tmp_path, include_workspace_context=True)
+        captured: dict[str, Any] = {}
+
+        async def mock_run_subrun(
+            prompt,
+            config_path,
+            workspace,
+            timeout,
+            answer_file=None,
+        ):
+            import yaml
+
+            captured["config"] = yaml.safe_load(Path(config_path).read_text())
+            captured["prompt"] = prompt
+            final_ws = workspace / ".massgen" / "massgen_logs" / "log_test" / "turn_1" / "attempt_1" / "final" / "agent_a" / "workspace"
+            final_ws.mkdir(parents=True, exist_ok=True)
+            result_file = final_ws / mod.RESULT_FILENAME
+            result_file.write_text(
+                json.dumps({"plan": [_make_valid_step(description="Do it")]}),
+            )
+            return {"success": True, "output": "", "execution_time_seconds": 0.1}
+
+        monkeypatch.setattr(
+            "massgen.mcp_tools.standalone.checkpoint_mcp_server.run_massgen_subrun",
+            mock_run_subrun,
+        )
+
+        result_str = await mod._checkpoint_impl(objective="Deploy to prod")
+        result = json.loads(result_str)
+        assert result["status"] == "ok"
+        # Opt-in: artifact dir is first (always mounted), then the main
+        # workspace. Both are read-only.
+        paths = captured["config"]["orchestrator"]["context_paths"]
+        assert len(paths) == 2, f"expected artifact + workspace mounts, got: {paths}"
+        assert paths[0]["path"].endswith("/.checkpoint")
+        assert paths[0]["permission"] == "read"
+        assert paths[1] == {"path": str(tmp_path), "permission": "read"}
+        assert "mounted into your environment as a read-only context path" in captured["prompt"].lower()
+
+    @pytest.mark.asyncio
+    async def test_checkpoint_stages_artifacts_under_checkpoint_dir(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ):
+        """Trajectory and validator must both land in `ckpt_NNN/.checkpoint/`
+        so the single always-on context_path mount covers both. The prompt
+        must reference both at absolute paths under that dir — otherwise
+        docker-mode agents can't find them even with the mount, because
+        relative paths resolve to the agent's nested workspace, not
+        ckpt_NNN."""
+        from massgen.mcp_tools.standalone import checkpoint_mcp_server as mod
+
+        _setup_session(mod, tmp_path)
+        captured: dict[str, Any] = {}
+
+        async def mock_run_subrun(
+            prompt,
+            config_path,
+            workspace,
+            timeout,
+            answer_file=None,
+        ):
+            captured["prompt"] = prompt
+            captured["workspace"] = workspace
+            final_ws = workspace / ".massgen" / "massgen_logs" / "log_test" / "turn_1" / "attempt_1" / "final" / "agent_a" / "workspace"
+            final_ws.mkdir(parents=True, exist_ok=True)
+            result_file = final_ws / mod.RESULT_FILENAME
+            result_file.write_text(
+                json.dumps({"plan": [_make_valid_step(description="Do it")]}),
+            )
+            return {"success": True, "output": "", "execution_time_seconds": 0.1}
+
+        monkeypatch.setattr(
+            "massgen.mcp_tools.standalone.checkpoint_mcp_server.run_massgen_subrun",
+            mock_run_subrun,
+        )
+
+        result_str = await mod._checkpoint_impl(objective="Deploy to prod")
+        assert json.loads(result_str)["status"] == "ok"
+
+        artifact_dir = captured["workspace"] / ".checkpoint"
+        assert (artifact_dir / "trajectory.log").exists(), "trajectory must be copied into the artifact dir"
+        assert (artifact_dir / "validate_plan.py").exists(), "validator must live beside the trajectory so one mount covers both"
+        # Validator must NOT also live at the old workspace-root location —
+        # that location isn't mounted and would silently regress the fix.
+        assert not (captured["workspace"] / "validate_plan.py").exists()
+
+        prompt = captured["prompt"]
+        assert str(artifact_dir / "trajectory.log") in prompt
+        assert str(artifact_dir / "validate_plan.py") in prompt
 
 
 # ---------------------------------------------------------------------------

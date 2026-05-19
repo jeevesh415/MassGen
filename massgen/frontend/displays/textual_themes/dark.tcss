@@ -3437,6 +3437,30 @@ StatusBar.consensus-reached #status_votes {
 }
 
 /* StatusBar Cancel button */
+#status_answer_now {
+    width: auto;
+    color: #d29922;
+    margin-left: 2;
+    text-style: bold;
+}
+
+#status_answer_now:hover {
+    background: $bg-surface-2;
+    color: #e3b341;
+}
+
+#status_answer_now.wrapping-up {
+    color: #e3b341;
+}
+
+#status_answer_now.blocked {
+    color: #ff7b72;
+}
+
+#status_answer_now.hidden {
+    display: none;
+}
+
 #status_cancel {
     width: auto;
     color: $accent-error;

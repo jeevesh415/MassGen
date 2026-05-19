@@ -258,14 +258,37 @@ class CoordinationConfig:
     improvements: dict[str, Any] = field(default_factory=dict)  # Quality gate config for draft_approach
     checklist_criteria_preset: str | None = None  # "persona" | "decomposition" | "evaluation" | "prompt" | "analysis" | "planning" | "spec" | "round_evaluator"
     checklist_criteria_inline: list[dict[str, str]] | None = None  # [{text, category: primary|standard|stretch, anti_patterns?, verify_by?}]
+    # Discriminative criteria emergence (v0.1.85):
+    #   "static" (default, current behavior — criteria fixed at session start)
+    #   "bootstrap_inline" (agents emit criteria with each round's submission)
+    #   "bootstrap_subagent" (a between-rounds critic agent emits criteria)
+    # Emitted criteria accumulate across rounds and are merged into the
+    # effective checklist criteria for subsequent rounds.
+    criteria_mode: str = "static"
+    bootstrap_max_per_agent_per_round: int = 3  # Cap per agent per round
+    bootstrap_max_total: int = 30  # Global FIFO cap on accumulator size (0 = unlimited)
     resume_from_log: dict[str, Any] | None = None  # {log_path: str, round: int}
     # Checkpoint coordination fields
     checkpoint_enabled: bool = False  # Enable checkpoint coordination mode
     checkpoint_mode: str = "conversation"  # "conversation" | "task"
     checkpoint_guidance: str = ""  # Appended to main agent system prompt
     checkpoint_gated_patterns: list[str] = field(default_factory=list)  # fnmatch patterns for gated tools
+    # Standalone checkpoint MCP — exposes massgen_checkpoint_standalone (init+checkpoint)
+    # to a single-agent session. The standalone server reads its team YAML and spawns
+    # its own sub-MassGen for evaluation, so this is only meaningful with one main agent.
+    standalone_checkpoint_enabled: bool = False
+    standalone_checkpoint_team_config: str | None = None  # path to team YAML the standalone server runs
+    standalone_checkpoint_mode: str = "generate"  # "generate" | "verify"
+    standalone_checkpoint_single: bool = False  # one-shot checkpoint per session
+    standalone_checkpoint_include_workspace_context: bool = False  # mount parent workspace read-only for reviewers
     web_review: bool = False  # Enable change review modal in WebUI (requires --web)
     fast_iteration_mode: bool = False  # Streamline post-candidate phases to submit faster and iterate across rounds
+    # Orthogonal speed knobs — set individually or together via `--fast` preset.
+    # All enforcement is prompt-only (no hook injection) so these shape initial
+    # system-prompt guidance, not mid-stream behavior.
+    max_verifications_per_round: int | None = None  # None = unlimited; e.g. 1 = one verify pass then submit
+    max_internal_fix_loops: int | None = None  # None = unlimited; 0 = no fix-after-verify loops within a round
+    skip_redundant_scaffolding: bool = False  # When True + scaffolding files exist, prompt agents to continue instead of recreating
 
     def __post_init__(self):
         """Validate configuration after initialization."""
@@ -278,6 +301,21 @@ class CoordinationConfig:
         self._validate_learning_capture_mode()
         self._validate_pre_collab_voting_threshold()
         self._validate_improvements()
+        self._validate_criteria_mode()
+
+    def _validate_criteria_mode(self):
+        """Validate criteria_mode and bootstrap caps."""
+        from .bootstrap_criteria import validate_criteria_mode
+
+        validate_criteria_mode(self.criteria_mode)
+        if isinstance(self.bootstrap_max_per_agent_per_round, bool) or not isinstance(self.bootstrap_max_per_agent_per_round, int) or self.bootstrap_max_per_agent_per_round < 0:
+            raise ValueError(
+                "bootstrap_max_per_agent_per_round must be a non-negative integer",
+            )
+        if isinstance(self.bootstrap_max_total, bool) or not isinstance(self.bootstrap_max_total, int) or self.bootstrap_max_total < 0:
+            raise ValueError(
+                "bootstrap_max_total must be a non-negative integer (0 = unlimited)",
+            )
 
     def _validate_timeout_config(self):
         """Validate subagent timeout configuration."""
@@ -1227,8 +1265,19 @@ class AgentConfig:
             "checkpoint_mode": self.coordination_config.checkpoint_mode,
             "checkpoint_guidance": self.coordination_config.checkpoint_guidance,
             "checkpoint_gated_patterns": self.coordination_config.checkpoint_gated_patterns,
+            "standalone_checkpoint_enabled": self.coordination_config.standalone_checkpoint_enabled,
+            "standalone_checkpoint_team_config": self.coordination_config.standalone_checkpoint_team_config,
+            "standalone_checkpoint_mode": self.coordination_config.standalone_checkpoint_mode,
+            "standalone_checkpoint_single": self.coordination_config.standalone_checkpoint_single,
+            "standalone_checkpoint_include_workspace_context": self.coordination_config.standalone_checkpoint_include_workspace_context,
             "web_review": self.coordination_config.web_review,
             "fast_iteration_mode": self.coordination_config.fast_iteration_mode,
+            "max_verifications_per_round": self.coordination_config.max_verifications_per_round,
+            "max_internal_fix_loops": self.coordination_config.max_internal_fix_loops,
+            "skip_redundant_scaffolding": self.coordination_config.skip_redundant_scaffolding,
+            "criteria_mode": self.coordination_config.criteria_mode,
+            "bootstrap_max_per_agent_per_round": self.coordination_config.bootstrap_max_per_agent_per_round,
+            "bootstrap_max_total": self.coordination_config.bootstrap_max_total,
         }
 
         # Handle debug fields

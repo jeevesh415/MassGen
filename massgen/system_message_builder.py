@@ -23,6 +23,7 @@ from massgen.system_prompt_sections import (
     DecompositionSection,
     EvaluationSection,
     EvolvingSkillsSection,
+    FastModeGuidanceSection,
     FileSearchSection,
     FilesystemBestPracticesSection,
     FilesystemOperationsSection,
@@ -37,6 +38,7 @@ from massgen.system_prompt_sections import (
     PostEvaluationSection,
     ProjectInstructionsSection,
     SkillsSection,
+    StandaloneCheckpointSection,
     SubagentSection,
     SystemPromptBuilder,
     TaskContextSection,
@@ -281,6 +283,11 @@ class SystemMessageBuilder:
                 ),
             ),
         )
+
+        # PRIORITY 2 (HIGH): Fast-mode guidance — initial prompt shaping for the
+        # --fast preset and its orthogonal speed knobs. Only added when at least
+        # one knob is active so we don't bloat normal-mode prompts.
+        self._maybe_add_fast_mode_section(builder, agent)
         enable_subagents = bool(getattr(getattr(self.config, "coordination_config", None), "enable_subagents", False))
         # Check if agent-spawnable subagent types exist (None = defaults, [] = none)
         _subagent_types_cfg = getattr(
@@ -383,6 +390,11 @@ class SystemMessageBuilder:
                         getattr(self.config, "coordination_config", None),
                         "fast_iteration_mode",
                         False,
+                    ),
+                    criteria_mode=getattr(
+                        getattr(self.config, "coordination_config", None),
+                        "criteria_mode",
+                        "static",
                     ),
                 ),
             )
@@ -665,6 +677,30 @@ class SystemMessageBuilder:
                 ),
             )
 
+        # PRIORITY 5 (HIGH): Standalone Checkpoint MCP (single-agent in-session use).
+        # Affordance is stripped at the source when disabled OR when the parent
+        # is multi-agent (the orchestrator skips MCP injection in that case;
+        # rendering the prompt section anyway would promise an unregistered tool).
+        _standalone_ckpt_enabled = (
+            hasattr(self.config, "coordination_config")
+            and self.config.coordination_config
+            and getattr(self.config.coordination_config, "standalone_checkpoint_enabled", False)
+            and len(self.agents) == 1
+        )
+        if _standalone_ckpt_enabled:
+            _coord_sc = self.config.coordination_config
+            builder.add_section(
+                StandaloneCheckpointSection(
+                    mode=getattr(_coord_sc, "standalone_checkpoint_mode", "generate"),
+                    single_checkpoint=getattr(_coord_sc, "standalone_checkpoint_single", False),
+                    include_workspace_context=getattr(
+                        _coord_sc,
+                        "standalone_checkpoint_include_workspace_context",
+                        False,
+                    ),
+                ),
+            )
+
         # PRIORITY 10 (MEDIUM): Evolving Skills (when auto-discovery AND task planning are both enabled)
         # Both gates must be true: evolving skills are structured work plans that complement task planning
         auto_discover_enabled = False
@@ -685,7 +721,17 @@ class SystemMessageBuilder:
                     except Exception as e:
                         logger.warning(f"[SystemMessageBuilder] Failed to read plan.json: {e}")
 
-            builder.add_section(EvolvingSkillsSection(plan_context=plan_context))
+            _fast_iter = getattr(
+                getattr(self.config, "coordination_config", None),
+                "fast_iteration_mode",
+                False,
+            )
+            builder.add_section(
+                EvolvingSkillsSection(
+                    plan_context=plan_context,
+                    fast_iteration_mode=_fast_iter,
+                ),
+            )
             logger.info(f"[SystemMessageBuilder] Added evolving skills section for {agent_id}")
 
         # PRIORITY 10 (MEDIUM): Broadcast Communication (conditional)
@@ -996,6 +1042,41 @@ This makes the work reusable for similar future tasks."""
         if hasattr(agent, "backend") and isinstance(agent.backend, NativeToolBackendMixin):
             return agent.backend.get_tool_category_overrides()
         return {}
+
+    def _maybe_add_fast_mode_section(self, builder: SystemPromptBuilder, agent) -> None:
+        """Add FastModeGuidanceSection when any fast-mode knob is active.
+
+        Detects scaffolding-file presence in the agent's current workspace to
+        decide whether the skip-redundant-scaffolding hint should fire. Cheap:
+        two path existence checks.
+        """
+        coord_cfg = getattr(self.config, "coordination_config", None)
+        if coord_cfg is None:
+            return
+
+        max_verifications = getattr(coord_cfg, "max_verifications_per_round", None)
+        max_fix_loops = getattr(coord_cfg, "max_internal_fix_loops", None)
+        skip_scaffolding = getattr(coord_cfg, "skip_redundant_scaffolding", False)
+
+        if max_verifications is None and max_fix_loops is None and not skip_scaffolding:
+            return
+
+        scaffolding_exists = False
+        if skip_scaffolding and hasattr(agent, "backend") and hasattr(agent.backend, "filesystem_manager") and agent.backend.filesystem_manager:
+            try:
+                workspace_path = Path(agent.backend.filesystem_manager.get_current_workspace())
+                scaffolding_exists = (workspace_path / "tasks" / "changedoc.md").exists() or (workspace_path / "CONTEXT.md").exists() or (workspace_path / "tasks" / "plan.json").exists()
+            except Exception as e:  # pragma: no cover - defensive
+                logger.debug(f"[SystemMessageBuilder] scaffolding check failed: {e}")
+
+        builder.add_section(
+            FastModeGuidanceSection(
+                max_verifications_per_round=max_verifications,
+                max_internal_fix_loops=max_fix_loops,
+                skip_redundant_scaffolding=skip_scaffolding,
+                scaffolding_exists=scaffolding_exists,
+            ),
+        )
 
     def _build_filesystem_sections(
         self,

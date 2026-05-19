@@ -17,6 +17,24 @@ from pathlib import Path
 MARKER_START = "<!-- MASSGEN-CHECKPOINT:START -->"
 MARKER_END = "<!-- MASSGEN-CHECKPOINT:END -->"
 
+# Inline markers delimiting two mutually-exclusive sections in the canonical
+# instructions file:
+#
+#   - RECHECKPOINT-SECTION: the "When to re-checkpoint" triggers. Kept in
+#     multi-checkpoint mode, stripped in single-checkpoint mode (the executor
+#     must not be told it can call checkpoint() again).
+#   - SINGLE-CHECKPOINT-CONTINUATION: the "what to do when the plan's recovery
+#     resolves to terminate" guidance. Kept ONLY in single-checkpoint mode —
+#     in multi mode the executor can re-checkpoint instead, and showing both
+#     sections would conflict.
+#
+# Inverse gating: each mode keeps exactly one section. Keeping both sections
+# in one source markdown avoids drift between a single/multi pair.
+RECHECKPOINT_MARKER_START = "<!-- RECHECKPOINT-SECTION:START -->"
+RECHECKPOINT_MARKER_END = "<!-- RECHECKPOINT-SECTION:END -->"
+SINGLE_CHECKPOINT_CONTINUATION_MARKER_START = "<!-- SINGLE-CHECKPOINT-CONTINUATION:START -->"
+SINGLE_CHECKPOINT_CONTINUATION_MARKER_END = "<!-- SINGLE-CHECKPOINT-CONTINUATION:END -->"
+
 _TEMPLATE_PATH = Path(__file__).parent / "checkpoint_instructions.md"
 
 # Regex that matches the full managed block (markers + content between them).
@@ -26,10 +44,39 @@ _BLOCK_RE = re.compile(
     re.DOTALL,
 )
 
+# Regex matching the recheckpoint section between its markers. Uses
+# DOTALL plus trailing-whitespace eating so a stripped section doesn't
+# leave a double-blank-line gap behind.
+_RECHECKPOINT_SECTION_RE = re.compile(
+    re.escape(RECHECKPOINT_MARKER_START) + r".*?" + re.escape(RECHECKPOINT_MARKER_END) + r"\n*",
+    re.DOTALL,
+)
 
-def load_template() -> str:
-    """Return the checkpoint instructions template content."""
-    return _TEMPLATE_PATH.read_text(encoding="utf-8")
+_SINGLE_CHECKPOINT_CONTINUATION_SECTION_RE = re.compile(
+    re.escape(SINGLE_CHECKPOINT_CONTINUATION_MARKER_START) + r".*?" + re.escape(SINGLE_CHECKPOINT_CONTINUATION_MARKER_END) + r"\n*",
+    re.DOTALL,
+)
+
+
+def load_template(single_checkpoint: bool = False) -> str:
+    """Return the checkpoint instructions template content.
+
+    The canonical file carries both the recheckpoint-triggers section and
+    the single-checkpoint-continuation section. They are mutually
+    exclusive at render time:
+
+    - `single_checkpoint=True`: strip RECHECKPOINT (the executor must
+      not be told it can recheckpoint), keep CONTINUATION.
+    - `single_checkpoint=False`: keep RECHECKPOINT, strip CONTINUATION
+      (the executor can recheckpoint instead, so the
+      terminate-but-keep-going framing would conflict).
+    """
+    content = _TEMPLATE_PATH.read_text(encoding="utf-8")
+    if single_checkpoint:
+        content = _RECHECKPOINT_SECTION_RE.sub("", content)
+    else:
+        content = _SINGLE_CHECKPOINT_CONTINUATION_SECTION_RE.sub("", content)
+    return content
 
 
 def _build_block(template: str) -> str:

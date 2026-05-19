@@ -6,6 +6,8 @@ This module provides reusable Textual widgets for the production TUI interface.
 
 from .agent_status_ribbon import (
     AgentStatusRibbon,
+    AnswerNowClicked,
+    AnswerNowLabel,
     BackgroundTasksClicked,
     BackgroundTasksLabel,
     ContextPathsClicked,
@@ -17,6 +19,7 @@ from .agent_status_ribbon import (
     ViewSelected,
 )
 from .background_tasks_modal import BackgroundTasksModal
+from .consensus_map import ConsensusMap, ConsensusMapState
 from .content_sections import (
     CompletionFooter,
     FinalPresentationCard,
@@ -28,6 +31,7 @@ from .content_sections import (
     TimelineSection,
     ToolSection,
 )
+from .copy_mode_banner import CopyModeBanner
 from .execution_status_line import ExecutionStatusLine
 from .final_answer_view import FinalAnswerView
 from .injection_card import InjectionSubCard
@@ -89,6 +93,8 @@ from .wizard_base import (
 
 __all__ = [
     # Mode bar
+    "ConsensusMap",
+    "ConsensusMapState",
     "ModeBar",
     "ModeToggle",
     "ModeChanged",
@@ -121,6 +127,8 @@ __all__ = [
     "SessionInfoClicked",
     # Agent status ribbon
     "AgentStatusRibbon",
+    "AnswerNowClicked",
+    "AnswerNowLabel",
     "BackgroundTasksClicked",
     "BackgroundTasksLabel",
     "ContextPathsClicked",
@@ -175,6 +183,7 @@ __all__ = [
     "FinalAnswerView",
     # Input widgets
     "MultiLineInput",
+    "CopyModeBanner",
     "QueuedInputBanner",
     # Path autocomplete
     "PathSuggestion",

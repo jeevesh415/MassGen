@@ -5,7 +5,7 @@ Checkpoint has two modes dispatched by which field is present in the tool call:
 | Mode | Trigger | Use case | Output |
 |------|---------|----------|--------|
 | **Delegation** | `task` present | Team solves a problem, returns deliverables | Consensus text + workspace changes |
-| **Objective** | `objective` present | Plan a sequence of irreversible actions safely | `criteria_applied` + structured `plan` |
+| **Objective** | `objective` present | Plan a high-stakes or coordinated phase (safety + quality) | `criteria_applied` + structured `plan` |
 
 Both present → error. Neither present → error.
 
@@ -197,6 +197,34 @@ log_session_dir/
 | `massgen/mcp_tools/checkpoint/_subprocess_manager.py` | Subprocess launch, workspace clone, event relay |
 | `massgen/tool/workflow_toolkits/checkpoint.py` | Checkpoint tool schema definition |
 | `massgen/events.py` | `checkpoint_activated` / `checkpoint_completed` event types |
+
+## Standalone Checkpoint MCP (in-session)
+
+Separate from the in-orchestrator checkpoint above. The standalone server
+(`massgen/mcp_tools/standalone/checkpoint_mcp_server.py`) was originally
+intended for *external* hosts (Claude Code etc.) calling MassGen as a
+checkpoint. It can also be exposed *inside* a normal MassGen run so a
+single-agent session can call its richer `init` + `checkpoint` tools.
+
+Enable it under `coordination.standalone_checkpoint`:
+
+```yaml
+orchestrator:
+  coordination:
+    standalone_checkpoint:
+      enabled: true
+      team_config: path/to/team.yaml   # team yaml the standalone server runs
+      mode: generate                   # generate | verify
+      single_checkpoint: false         # one-shot per session if true
+      include_workspace_context: false # mount parent workspace read-only
+```
+
+| Concern | Behavior |
+|---------|----------|
+| Single-agent only | Multi-agent parents are skipped with a warning — the standalone server runs its own panel |
+| Affordance gating | When disabled, the system prompt section and MCP server are absent entirely (no runtime guard) |
+| Mode composition | `single_checkpoint: true` strips re-checkpointing from the rendered prompt |
+| Sample config | `massgen/configs/checkpoint/standalone_mcp/in_session.yaml` |
 
 ## Design Decisions
 

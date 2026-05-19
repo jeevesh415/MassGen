@@ -68,7 +68,7 @@ This project started with the "threads of thought" and "iterative refinement" id
 <details open>
 <summary><h3>🆕 Latest Features</h3></summary>
 
-- [v0.1.76 Features](#-latest-features-v0176)
+- [v0.1.81 Features](#-latest-features-v0181)
 </details>
 
 <details open>
@@ -121,15 +121,15 @@ This project started with the "threads of thought" and "iterative refinement" id
 <details open>
 <summary><h3>🗺️ Roadmap</h3></summary>
 
-- [Recent Achievements (v0.1.76)](#recent-achievements-v0176)
-- [Previous Achievements (v0.0.3 - v0.1.75)](#previous-achievements-v003---v0175)
+- [Recent Achievements (v0.1.87)](#recent-achievements-v0187)
+- [Previous Achievements (v0.0.3 - v0.1.86)](#previous-achievements-v003---v0186)
 - [Key Future Enhancements](#key-future-enhancements)
   - Bug Fixes & Backend Improvements
   - Advanced Agent Collaboration
   - Expanded Model, Tool & Agent Integrations
   - Improved Performance & Scalability
   - Enhanced Developer Experience
-- [v0.1.77 Roadmap](#v0177-roadmap)
+- [v0.1.88 Roadmap](#v0188-roadmap)
 </details>
 
 <details open>
@@ -154,19 +154,20 @@ This project started with the "threads of thought" and "iterative refinement" id
 
 ---
 
-## 🆕 Latest Features (v0.1.76)
+## 🆕 Latest Features (v0.1.87)
 
-**🎉 Released: April 13, 2026**
+**🎉 Released: May 15, 2026**
 
-**What's New in v0.1.76:**
-- **🔍 Exa AI Search Tool** - New Exa AI-powered search tool added to MCP server registry.
-- **📊 Circuit Breaker Observability (Phase 3)** - Probe ownership, lock release, per-attempt latency tracking across all backends.
-- **📋 Checkpoint Agent Instructions** - Copyable custom instructions for agent memory files with checkpoint MCP information.
+**What's New in v0.1.87:**
+- **📚 Framework Comparison Pages** - Three new "MassGen vs ..." pages — CrewAI, LangGraph, AutoGen/AG2 — under `docs/source/reference/comparisons/`, positioning MassGen's parallel-refinement-with-voting model against each framework's coordination shape.
+- **🤖 `llms.txt` for AI Agents** - A curated [`llms.txt`](https://docs.massgen.ai/en/latest/llms.txt) index plus a full-corpus [`llms-full.txt`](https://docs.massgen.ai/en/latest/llms-full.txt) dump (per [llmstxt.org spec](https://llmstxt.org)), so AI agents and crawlers can discover MassGen's docs cleanly.
+- **🔧 `bootstrap_subagent` Single-Shot Fix** - `Orchestrator._run_bootstrap_discriminator_step` now passes `refine=False` to `spawn_subagent` — the canonical knob `SubagentManager` actually respects at the orchestrator level.
 
-**Try v0.1.76 Features:**
+**Try v0.1.87 Features:**
 ```bash
-pip install massgen==0.1.76
-uv run massgen --config @examples/tools/web-search/exa_search_example "Research the latest breakthroughs in multi-agent AI systems"
+pip install massgen==0.1.87
+# Read the framework comparisons:
+# https://docs.massgen.ai/en/latest/reference/comparisons.html
 ```
 
 → [See full release history and examples](massgen/configs/README.md#release-history--examples)
@@ -217,6 +218,8 @@ This collaborative approach ensures that the final output leverages collective i
 ---
 
 > 📖 **Complete Documentation:** For comprehensive guides, API reference, and detailed examples, visit **[MassGen Official Documentation](https://docs.massgen.ai/)**
+>
+> 🤖 **For AI agents:** A curated [`llms.txt`](https://docs.massgen.ai/en/latest/llms.txt) index and full [`llms-full.txt`](https://docs.massgen.ai/en/latest/llms-full.txt) dump are published with the docs ([llmstxt.org spec](https://llmstxt.org)).
 
 ---
 
@@ -1238,17 +1241,41 @@ MassGen is currently in its foundational stage, with a focus on parallel, asynch
 
 ⚠️ **Early Stage Notice:** As MassGen is in active development, please expect upcoming breaking architecture changes as we continue to refine and improve the system.
 
-### Recent Achievements (v0.1.76)
+### Recent Achievements (v0.1.87)
 
-**🎉 Released: April 13, 2026**
+**🎉 Released: May 15, 2026**
 
-#### Exa Search & Circuit Breaker Observability
-- **Exa AI Search Tool** ([#1057](https://github.com/massgen/MassGen/pull/1057)): New Exa AI-powered search tool added to MCP server registry
-- **Circuit Breaker Observability (Phase 3)** ([#1056](https://github.com/massgen/MassGen/pull/1056)): Probe ownership, lock release, per-attempt latency tracking across all backends
-- **Checkpoint Agent Instructions** ([#1058](https://github.com/massgen/MassGen/pull/1058)): Copyable custom instructions for agent memory files with checkpoint MCP information
-- **Docker Dependency Fixes** ([#1058](https://github.com/massgen/MassGen/pull/1058)): Fixed Dockerfile installs for reliable container builds
+#### Documentation: Framework Comparisons & `llms.txt`
+- **Framework Comparison Pages** ([#1094](https://github.com/massgen/MassGen/pull/1094)): Three new "MassGen vs ..." pages — `crewai.rst`, `langgraph.rst`, `autogen.rst` — under `docs/source/reference/comparisons/`, positioning MassGen against each framework's coordination shape and listing when to reach for one versus the other
+- **`llms.txt` Index** ([#1094](https://github.com/massgen/MassGen/pull/1094)): Curated [llmstxt.org](https://llmstxt.org)-spec index published at the docs root via Sphinx `html_extra_path`
+- **`llms-full.txt` Corpus** ([#1094](https://github.com/massgen/MassGen/pull/1094)): Concatenated full-docs dump (~1 MB, 59 files), generated by a Sphinx `build-finished` hook in `conf.py`
+- **Landing Page Update** ([#1094](https://github.com/massgen/MassGen/pull/1094)): "How Does MassGen Compare?" now lists all four comparisons; parent `comparisons.rst` drops "coming soon" and gains a toctree
+- **README Pointer**: One-line pointer to `llms.txt` / `llms-full.txt` for AI agents/crawlers
+- **`bootstrap_subagent` Single-Shot Fix** ([#1094](https://github.com/massgen/MassGen/pull/1094)): `_run_bootstrap_discriminator_step` now passes `refine=False` to `spawn_subagent` — without it the orchestrator's `max_new_answers_per_agent: 3` default shadowed the coordination-dict overrides and let the discriminator refine instead of running single-shot
 
-### Previous Achievements (v0.0.3 - v0.1.75)
+### Previous Achievements (v0.0.3 - v0.1.86)
+
+✅ **`bootstrap_subagent` Discriminator + Codex MCP Approval Fix (v0.1.86)**: Variant B is now functional — the orchestrator runs an in-process LLM critic between rounds, merges critic-proposed criteria into the accumulator, and augments the next round's checklist. Codex MCP tool calls under `codex exec` now write both approval bypasses needed for non-interactive runs.
+
+✅ **Discriminative Criteria Emergence (`criteria_mode`) (v0.1.85)**: New `orchestrator.coordination.criteria_mode` lets evaluation criteria emerge from observed gaps across rounds. `bootstrap_inline` is fully functional on all backends with checklist tool support, with `proposed_criteria` persisted, deduped, capped, and merged into the next round's effective checklist.
+
+✅ **TUI Consensus Map (v0.1.84)**: Compact visual map below the agent status ribbon during multi-agent runs that summarizes coordination state — agent nodes with latest answer labels, vote arrows, current leader, winner state — driven by existing coordination events without backend schema changes.
+
+✅ **In-Session Standalone Checkpoint MCP Integration (v0.1.83)**: The standalone checkpoint MCP server can now run inside a normal MassGen single-agent session via `coordination.standalone_checkpoint` config block. Enhanced TUI tool card visualization distinguishes primary checkpoint operations from system tasks.
+
+✅ **TUI Copy Mode & Checkpoint Quality Improvements (v0.1.82)**: `Ctrl+Shift+S` copy mode toggle for native text selection. Checkpoint quality criteria with selective branch depth scoring, optional workspace context for reviewer agents, and single-checkpoint agent recovery guidance.
+
+✅ **Multi-Region Circuit Breaker Failover (v0.1.81)**: LLM circuit breaker fails over to backup regions when the primary trips OPEN, with automatic recovery when the primary returns to healthy. Completes the circuit breaker series (Phase 1-6).
+
+✅ **Adaptive Circuit Breaker & Checkpoint Modes (v0.1.80)**: Circuit breaker Phase 5 with self-tuning adaptive thresholds. New standalone checkpoint modes: single checkpoint and draft plan verify.
+
+✅ **Fast Mode Speed Control & Broader Checkpoint Framing (v0.1.79)**: New fast mode options for fine-grained speed vs. quality control. Checkpoint framing broadened from safety-only to high-stakes and coordinated phases.
+
+✅ **Circuit Breaker Distributed Store (v0.1.78)**: Pluggable distributed state store for the LLM circuit breaker — share state across workers/processes. In-memory (zero-deps) and Redis-backed implementations with atomic state transitions.
+
+✅ **Answer Now Button (v0.1.77)**: New "Answer Now" button lets agents submit answers more quickly, both within a round, and bypassing additional refinement rounds when quality is sufficient.
+
+✅ **Exa Search & Circuit Breaker Observability (v0.1.76)**: New Exa AI-powered search tool for MCP. Circuit breaker Phase 3 with observability. Checkpoint agent instructions and Docker dependency fixes.
 
 ✅ **Codex Hooks & Checkpoint WebUI (v0.1.75)**: Hybrid hook system for Codex backend. Checkpoint workflows auto-launch WebUI for visual monitoring. Standalone checkpoint MCP server docs with safety policy integration.
 
@@ -1545,12 +1572,13 @@ MassGen is currently in its foundational stage, with a focus on parallel, asynch
 
 We welcome community contributions to achieve these goals.
 
-### v0.1.77 Roadmap
+### v0.1.88 Roadmap
 
-Version 0.1.77 focuses on cloud execution:
+Version 0.1.88 picks up the multimodal work deferred from v0.1.86/v0.1.87 and continues refinement of the discriminative criteria pipeline:
 
 #### Planned Features
-- **Cloud Modal MVP** ([#982](https://github.com/massgen/MassGen/issues/982)): Run MassGen as a cloud job on Modal — progress streams to terminal, results saved locally under `.massgen/cloud_jobs/`
+- **Image/Video Edit Capabilities** ([#959](https://github.com/massgen/MassGen/issues/959)): Image and video editing across providers with multi-turn editing workflows via continuation IDs
+- **Discriminative Criteria Refinements**: Selection, ranking, and retirement of stale criteria for long-running refinement loops
 
 ---
 

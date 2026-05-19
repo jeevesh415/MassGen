@@ -121,6 +121,32 @@ class BackgroundTasksLabel(Label):
         self.post_message(BackgroundTasksClicked(self._agent_id))
 
 
+class AnswerNowClicked(Message):
+    """Message emitted when the ribbon Answer Now control is clicked."""
+
+    def __init__(self, agent_id: str) -> None:
+        self.agent_id = agent_id
+        super().__init__()
+
+
+class AnswerNowLabel(Label):
+    """Clickable Answer Now label for the active agent."""
+
+    can_focus = True
+
+    def __init__(self, agent_id: str = "", **kwargs) -> None:
+        super().__init__(**kwargs)
+        self._agent_id = agent_id
+
+    def set_agent_id(self, agent_id: str) -> None:
+        """Update the agent ID."""
+        self._agent_id = agent_id
+
+    async def on_click(self) -> None:
+        """Handle click on Answer Now."""
+        self.post_message(AnswerNowClicked(self._agent_id))
+
+
 class DropdownItem(Label):
     """Clickable dropdown item that emits its ID when clicked."""
 
@@ -454,6 +480,32 @@ class AgentStatusRibbon(Widget):
     AgentStatusRibbon #background_tasks_divider.hidden {
         display: none;
     }
+
+    AgentStatusRibbon #answer_now_btn {
+        color: $warning;
+        width: auto;
+    }
+
+    AgentStatusRibbon #answer_now_btn:hover {
+        color: $primary;
+        text-style: underline;
+    }
+
+    AgentStatusRibbon #answer_now_btn.wrapping-up {
+        color: $warning;
+    }
+
+    AgentStatusRibbon #answer_now_btn.blocked {
+        color: $error;
+    }
+
+    AgentStatusRibbon #answer_now_btn.hidden {
+        display: none;
+    }
+
+    AgentStatusRibbon #answer_now_divider.hidden {
+        display: none;
+    }
     """
 
     # Reactive attributes
@@ -517,15 +569,17 @@ class AgentStatusRibbon(Widget):
             yield Static("", classes="spacer")
             # Right: Stats (anchored right)
             yield ContextPathsLabel("📂", id="context_paths_btn", classes="ribbon-section")
-            yield Static("│", classes="ribbon-divider", id="context_divider")
+            yield Static("·", classes="ribbon-divider", id="context_divider")
             yield TasksLabel(agent_id=self.current_agent, id="tasks_display", classes="ribbon-section")
-            yield Static("│", classes="ribbon-divider", id="tasks_divider")
+            yield Static("·", classes="ribbon-divider", id="tasks_divider")
             yield BackgroundTasksLabel(agent_id=self.current_agent, id="background_tasks_display", classes="ribbon-section hidden")
-            yield Static("│", classes="ribbon-divider hidden", id="background_tasks_divider")
+            yield Static("·", classes="ribbon-divider hidden", id="background_tasks_divider")
+            yield AnswerNowLabel(agent_id=self.current_agent, id="answer_now_btn", classes="ribbon-section hidden")
+            yield Static("·", classes="ribbon-divider hidden", id="answer_now_divider")
             yield Label("⏱ --:--", id="timeout_display", classes="ribbon-section")
-            yield Static("│", classes="ribbon-divider")
+            yield Static("·", classes="ribbon-divider")
             yield Label("-", id="token_count", classes="ribbon-section")
-            yield Static("│", classes="ribbon-divider")
+            yield Static("·", classes="ribbon-divider")
             yield Label("$--.---", id="cost_display", classes="ribbon-section")
 
     def on_mount(self) -> None:
@@ -900,6 +954,7 @@ class AgentStatusRibbon(Widget):
         self._timeout_state[agent_id] = timeout_state
 
         if agent_id == self.current_agent:
+            self._update_answer_now_display()
             self._update_timeout_display()
 
     def _get_total_elapsed(self, agent_id: str) -> int | None:
@@ -952,15 +1007,23 @@ class AgentStatusRibbon(Widget):
             if ts and ts.get("active_timeout"):
                 limit = int(ts["active_timeout"])
                 soft_fired = ts.get("soft_timeout_fired", False)
+                wrap_up_requested = ts.get("wrap_up_requested", False)
                 hard_blocked = ts.get("is_hard_blocked", False)
+                remaining_hard = ts.get("remaining_hard")
                 limit_str = self._fmt_time(limit)
 
                 # Stage indicator
                 if hard_blocked:
-                    stage = " ✋"
+                    stage = " BLOCKED"
                     timeout_label.add_class("critical")
                 elif soft_fired:
-                    stage = " ⚠"
+                    grace_text = ""
+                    if remaining_hard is not None:
+                        grace_text = f" {self._fmt_time(int(remaining_hard))}"
+                    stage = f" Grace{grace_text}"
+                    timeout_label.add_class("warning")
+                elif wrap_up_requested:
+                    stage = " Wrap up"
                     timeout_label.add_class("warning")
                 else:
                     stage = ""
@@ -971,6 +1034,50 @@ class AgentStatusRibbon(Widget):
                 timeout_label.update(f"⏱ {round_str}")
         except Exception:
             pass
+
+    def _update_answer_now_display(self) -> None:
+        """Update the ribbon Answer Now control based on timeout state."""
+        try:
+            answer_label = self.query_one("#answer_now_btn", AnswerNowLabel)
+            answer_divider = self.query_one("#answer_now_divider", Static)
+        except Exception:
+            return
+
+        answer_label.set_agent_id(self.current_agent)
+        for class_name in ("hidden", "wrapping-up", "blocked"):
+            answer_label.remove_class(class_name)
+
+        ts = self._timeout_state.get(self.current_agent) or {}
+        if not ts.get("active_timeout"):
+            answer_label.add_class("hidden")
+            answer_divider.add_class("hidden")
+            return
+
+        answer_divider.remove_class("hidden")
+        hard_blocked = ts.get("is_hard_blocked", False)
+        soft_fired = ts.get("soft_timeout_fired", False)
+        wrap_up_requested = ts.get("wrap_up_requested", False)
+        remaining_hard = ts.get("remaining_hard")
+
+        if hard_blocked:
+            answer_label.update("Blocked")
+            answer_label.add_class("blocked")
+            return
+
+        if soft_fired:
+            remaining_text = ""
+            if remaining_hard is not None:
+                remaining_text = f" {self._fmt_time(int(remaining_hard))}"
+            answer_label.update(f"Wrapping up{remaining_text}")
+            answer_label.add_class("wrapping-up")
+            return
+
+        if wrap_up_requested:
+            answer_label.update("Wrap-up pending")
+            answer_label.add_class("wrapping-up")
+            return
+
+        answer_label.update("Answer Now")
 
     def set_tokens(self, agent_id: str, tokens: int) -> None:
         """Set the token count for an agent.
@@ -1026,6 +1133,7 @@ class AgentStatusRibbon(Widget):
         """Refresh all displays for the current agent."""
         self._update_round_display()
         self._update_activity_display()
+        self._update_answer_now_display()
         self._update_timeout_display()
         self._update_tasks_display()
         self._update_background_display()
